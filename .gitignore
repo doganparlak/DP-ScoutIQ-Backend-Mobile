@@ -1,0 +1,16 @@
+# Data
+data_module/events
+data_module/lineups
+data_module/faiss_index
+data_module/match_metadata.json
+data_module/player_level_stats.csv
+
+# Virtual environment
+.env
+venv
+
+# Byte-compiled / optimized / DLL files
+__pycache__/
+*.py[cod]
+*$py.class
+.DS_Store
