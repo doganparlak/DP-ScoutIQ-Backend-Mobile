@@ -3,7 +3,7 @@ from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel
 from chatbot_module.chatbot import answer_question, get_session_chain, reset_session
-from response_handler import split_response_parts
+from api_module.response_handler import split_response_parts
 
 app = FastAPI()
 # CORS (lock this down to your frontend origin in prod)
