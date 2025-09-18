@@ -1,4 +1,4 @@
-from typing import Dict, Any
+from typing import Dict, Any, Optional
 from dotenv import load_dotenv
 from langchain_community.vectorstores import FAISS
 from langchain_openai import ChatOpenAI, OpenAIEmbeddings
@@ -16,8 +16,7 @@ from chatbot_module.tools import (
     parse_statistical_highlights,
     parse_player_meta,
     filter_players_by_seen,
-    plot_stats_bundle,
-    build_player_tables,
+    build_player_payload,
     strip_meta_stats_text)
 
 # Load environment variables
@@ -58,12 +57,10 @@ def create_qa_chain():
     )
 
 # ===== Stats Parser =====
-
 stats_parser_prompt = ChatPromptTemplate.from_messages([
     ("system", stats_parser_system_message),
     ("human", "Report:\n\n{report_text}\n\nReturn only JSON, no backticks.")
 ])
-
 stats_parser_chain = LLMChain(
     llm=ChatOpenAI(model="gpt-4o", temperature=0),
     prompt=stats_parser_prompt
@@ -98,7 +95,7 @@ def reset_session(session_id: str) -> None:
         sessions[session_id] = create_qa_chain()
 
 # ===== Q&A Actions =====
-def answer_question(question: str, session_id: str = "default") -> Dict[str, Any]:
+def answer_question(question: str, session_id: str = "default", strategy: Optional[str] = None) -> Dict[str, Any]:
 
     # 0) Get/Create Chain
     qa_chain = get_session_chain(session_id)
@@ -106,26 +103,32 @@ def answer_question(question: str, session_id: str = "default") -> Dict[str, Any
 
     # 1) Freeze PRIOR history (before any LLM call can mutate memory)
     prior_history = memory.load_memory_variables({})["chat_history"]
+    print(prior_history)
     prior_history_frozen = list(prior_history)
-
     # 2) Compute seen players from PRIOR assistant messages ONLY
     seen_players = get_seen_players_from_history(prior_history_frozen)
     allowed_players_str = ", ".join(seen_players) if seen_players else "None"
 
-    # inject the constraint into the question (parametric, prompt-level)
+    strat = (strategy or "").strip()
+    strategy_block = (
+        f"User strategy preference (use this to shape the analysis and selections): {strat}\n\n"
+        if strat else ""
+    )
+
     augmented_question = (
-        "Previously mentioned players in this session "
+        strategy_block
+        + "Previously mentioned players in this session "
         "(the only allowed pool for any choose/rank/lineup decisions): "
-        f"{allowed_players_str}\n\n"
-        f"{question}"
+        + (allowed_players_str or "None")
+        + "\n\n"
+        + question
     )
 
     # 3) LLM Call
     inputs = {
-        "question": augmented_question,
-        "chat_history": prior_history_frozen,  # safe snapshot
+        "question": augmented_question
+        #"chat_history": prior_history_frozen
     }
-
     try:
         result = qa_chain.invoke(inputs)
         base_answer = (result.get("answer") or "").strip()
@@ -138,43 +141,22 @@ def answer_question(question: str, session_id: str = "default") -> Dict[str, Any
     try:
         qa_as_report = f"**Statistical Highlights**\n\n{base_answer}\n\n"
         parsed_stats = parse_statistical_highlights(stats_parser_chain, qa_as_report)
-        meta = parse_player_meta(meta_parser_chain, raw_text = base_answer)
-
-        # 5) Keep only NEW players for tables/plots (old = reference-only)
+        meta = parse_player_meta(meta_parser_chain, raw_text=base_answer)
+        # 5) Keep only NEW players for data payload (same dedupe logic as before)
         meta_new, stats_new, new_names = filter_players_by_seen(meta, parsed_stats, seen_players)
 
-        # 6) Build assets for NEW players only
-        player_to_plot = plot_stats_bundle(stats_new) if new_names else {}
-        tables_html = build_player_tables(meta_new, stats_new) if new_names else ""
+        # 6) Build structured data for NEW players only (no HTML/PNGs)
+        payload = build_player_payload(meta_new, stats_new) if new_names else {"players": []}
 
-        # 7) Strip flagged/meta/stats text from the answer body (narrative remains)
+        # 7) Strip flagged/meta/stats text from the narrative
         known_names = [p.get("name") for p in (meta.get("players") or []) if p.get("name")]
         cleaned = strip_meta_stats_text(base_answer, known_names=known_names)
 
-        # 8) Compose: Tables (NEW only) → Plots (NEW only) → narrative
-        parts = []
-        if tables_html:
-            parts.append(tables_html)
+        # 8) Compose: narrative only
+        out = cleaned
 
-        if player_to_plot:
-            #blocks = ["", "**Plots**", ""]
-            blocks = []
-            for name in sorted(player_to_plot.keys(), key=lambda s: s.lower()):
-                val = player_to_plot[name]
-                src = (val.get("src") if isinstance(val, dict) else str(val)) or ""
-                width_px = int(val.get("width_px", 1600)) if isinstance(val, dict) else 1600
-                if src:
-                    #blocks.append(name)
-                    blocks.append(f'<img alt="{name} — Statistical Highlights" src="{src}" width="{width_px}" />')
-                    #blocks.append("")
-            parts.append("\n".join(blocks))
+        # 9) Return narrative PLUS structured data
+        return {"answer": out, "data": payload}
 
-        if cleaned:
-            parts.append(cleaned)
-
-        out = "\n\n".join(p for p in parts if p).replace("**", "")
-    except:
-        # Silently fall back to base_answer if enrichers fail
-        out = base_answer
-
-    return {"answer": out}
+    except Exception as e:
+        return {"answer": "Sorry, I couldn’t generate an answer right now.", "error": str(e)}

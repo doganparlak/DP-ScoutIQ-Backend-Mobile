@@ -99,8 +99,7 @@ def parse_statistical_highlights(stats_parser_chain, report_text: str) -> Dict[s
       - Josko Gvardiol: 2.1 interceptions per game, 3.4 clearances per game, 75% aerial duels won.
     """
     safe = strip_heavy_html(report_text)
-    raw = stats_parser_chain.run(report_text=safe).strip()
-
+    raw = stats_parser_chain.predict(report_text=safe).strip()
     def safe_json_load(s: str) -> Dict[str, Any]:
         try:
             return json.loads(s)
@@ -446,6 +445,7 @@ def build_player_tables(meta: Dict[str, Any], stats: Dict[str, Any]) -> str:
             blocks.append(meta_table + stats_table)
     return "\n".join(blocks)
 
+
 # === STRIP META STATS TEXT TOOL ===
 
 def strip_meta_stats_text(text: str, known_names: list[str] | None = None) -> str:
@@ -538,3 +538,39 @@ def strip_meta_stats_text(text: str, known_names: list[str] | None = None) -> st
 
     cleaned = re.sub(r"\n{3,}", "\n\n", "\n".join(out)).strip()
     return cleaned
+
+# === CONTENT TO SEND TO FRONTEND RAW DATA ===
+# tools.py (add near your existing builders)
+
+def build_player_payload(meta: Dict[str, Any], stats: Dict[str, Any]) -> Dict[str, Any]:
+    """
+    Merge the parsed meta and stats into a frontend-friendly JSON structure.
+
+    Input shapes (already produced by your parsers):
+      meta  = {"players": [{"name", "nationality", "age", "roles": [...]}, ...]}
+      stats = {"players": [{"name", "stats": [{"metric", "value"}, ...]}, ...]}
+
+    Returns:
+      {"players": [{"name", "meta": {...}, "stats": [...]}, ...]}
+    """
+    meta_by = { (p.get("name") or "").strip(): p
+                for p in (meta.get("players") or []) if p.get("name") }
+    stats_by = { (p.get("name") or "").strip(): p
+                 for p in (stats.get("players") or []) if p.get("name") }
+
+    names = sorted(set(meta_by.keys()) | set(stats_by.keys()), key=lambda s: s.lower())
+
+    out: List[Dict[str, Any]] = []
+    for name in names:
+        m = meta_by.get(name, {})
+        s = stats_by.get(name, {})
+        out.append({
+            "name": name,
+            "meta": {
+                "nationality": m.get("nationality"),
+                "age": m.get("age"),
+                "roles": (m.get("roles") or []),
+            },
+            "stats": (s.get("stats") or []),
+        })
+    return {"players": out}

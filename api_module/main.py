@@ -15,6 +15,11 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
+class ChatIn(BaseModel):
+    message: str
+    session_id: Optional[str] = "default"
+    strategy: Optional[str] = None
+
 class Query(BaseModel):
     question: str
     strategy: Optional[str] = None
@@ -25,32 +30,32 @@ async def health() -> Dict[str, Any]:
     return {"ok": True}
 
 @app.post("/chat")
-async def chat(query: Query) -> Dict[str, Any]:
+async def chat(body: ChatIn) -> Dict[str, Any]:
     """
-    - Uses per-session memory from chatbot.py
-    - If `strategy` is provided, we inject it as a user message into that session's memory.
-    - Returns HTML answer and split parts for your frontend.
+    Returns:
+      {
+        "response": "<narrative text only>",
+        "data": {"players": [...]},           # <-- NEW: structured data, no visuals
+        "response_parts": [...]               # optional: split narrative for streaming
+      }
     """
+    result = answer_question(body.message, 
+                             session_id=body.session_id or "default",
+                             strategy=body.strategy)
 
-    if query.strategy:
-        chain = get_session_chain(query.session_id)
-        # Record strategy as a user-side note so it influences retrieval/LLM
-        chain.memory.chat_memory.add_user_message(f"Team Strategy: {query.strategy}")
-
-    resp = answer_question(query.question, session_id=query.session_id)
-    answer_html = resp.get("answer", "No response was generated.")
+    # Back-compat & shape normalization
+    answer_text = (result.get("answer") or "").strip()
+    payload = result.get("data") or {"players": []}
 
     return {
-        "response": answer_html,
-        "response_parts": split_response_parts(answer_html),
+        "response": answer_text,
+        "data": payload,                              # <-- NEW
+        "response_parts": split_response_parts(answer_text),
     }
 
 @app.post("/reset")
 async def reset(session_id: str) -> Dict[str, Any]:
-    """
-    Clears the chat history for a given session.
-    """
     reset_session(session_id)
     return {"ok": True, "session_id": session_id, "reset": True}
 
-# Run with: uvicorn backend.main:app --reload
+# Run with: uvicorn api_module.main:app --reload --port 8000         
