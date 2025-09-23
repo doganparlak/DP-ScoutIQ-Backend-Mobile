@@ -103,7 +103,6 @@ def answer_question(question: str, session_id: str = "default", strategy: Option
 
     # 1) Freeze PRIOR history (before any LLM call can mutate memory)
     prior_history = memory.load_memory_variables({})["chat_history"]
-    print(prior_history)
     prior_history_frozen = list(prior_history)
     # 2) Compute seen players from PRIOR assistant messages ONLY
     seen_players = get_seen_players_from_history(prior_history_frozen)
