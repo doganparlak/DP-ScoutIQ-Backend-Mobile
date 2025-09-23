@@ -46,7 +46,8 @@ async def chat(body: ChatIn) -> Dict[str, Any]:
     # Back-compat & shape normalization
     answer_text = (result.get("answer") or "").strip()
     payload = result.get("data") or {"players": []}
-
+    
+    print(payload)
     return {
         "response": answer_text,
         "data": payload,                              # <-- NEW
