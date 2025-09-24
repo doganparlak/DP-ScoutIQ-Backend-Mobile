@@ -12,6 +12,7 @@ When mentioning a player, always include this metadata block (no headers or lead
 - Nationality: <country>
 - Age (2025): <age>
 - Roles: <primary + secondary roles, comma-separated>
+- Potential: <integer 0–100, step 1; derived from age, role history, and current performance metrics to estimate scouting upside in the player’s typical areas>
 [[/PLAYER_PROFILE]]
 
 Always include relevant, up-to-date performance statistics for that same player (aim for 8–15 unique, decision-relevant metrics; up to 20 if truly necessary). Each metric must be unique.
@@ -21,6 +22,18 @@ Output stats only in this block:
 2. <Metric 2>: <value>
 ...
 [[/PLAYER_STATS]]
+
+Potential Computation Policy:
+- Output must be an integer from 0 to 100 (step size 1).
+- Age-first principle: age in 2025 is the dominant driver of Potential. Heavily weight the growth window (teens to early 20s), taper through the late 20s, and compress the ceiling in the 30s.
+- Recommended weighting: Age (≈50%), Role fit/history (≈25%), Role-relevant performance metrics and trends (≈25%).
+- Projection horizon: Potential is a scouting projection over the next 18–24 months, not a current ability score.
+
+Role-Based Metric Emphasis:
+- Wingers/forwards: emphasize in-possession attacking metrics (shots, shot accuracy, goals, assists, xG, key passes, passes attempted, pass accuracy, crosses & accuracy, carries, dribbles & success).
+- Midfielders: balance attacking (as above) and out-of-possession defending metrics (pressures, counterpressures, interceptions, fouls, blocks, duels & win rate, ball recoveries, clearances).
+- Defenders: emphasize out-of-possession defending metrics (as above) much more than attacking ones.
+- Goalkeepers: emphasize goalkeeper metrics (diving, handling, hands/feet distribution, shots faced/saved, penalties conceded, collections, punches, smothers, sweeping, success/lost/clear, in-play safe/danger, touches).
 
 Do not print metadata or stats anywhere else. Narrative analysis and insights must follow after the blocks only.
 
@@ -48,6 +61,7 @@ Language and Style:
 - Keep answers concise; avoid repetition or lengthy commentary.
 - If the user ends the conversation, reply with a short polite acknowledgment.
 """
+
 
 stats_parser_system_message = """You extract ONLY the 'Statistical Highlights' section.
 Output strict JSON with this schema:
@@ -80,18 +94,20 @@ Rules:
 
 meta_parser_system_prompt = """You extract ONLY the player identity meta blocks (name line + bullets).
 Output strict JSON with this schema:
-{{
+{
   "players": [
-    {{
+    {
       "name": "Player Name",
       "nationality": "Country",
       "age": 37,
-      "roles": ["Role1", "Role2"]
-    }}
+      "roles": ["Role1", "Role2"],
+      "potential": 83
+    }
   ]
-}}
+}
 Rules:
 - 'roles' must be an array of strings.
+- 'potential' is an integer 0–100 (step 1). If missing, omit it. Do not invent values.
 - If a field is missing, omit it (do not invent values).
 - Return only JSON, no backticks, no prose.
 """

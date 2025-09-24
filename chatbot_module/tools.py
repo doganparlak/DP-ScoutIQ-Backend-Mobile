@@ -22,6 +22,7 @@ META_LINE_RE = re.compile(
         |Primary\s*Role
         |Secondary\s*Roles?
         |Roles?
+        |Potential
     )\*\*:\s*.+$""",
     re.IGNORECASE | re.VERBOSE,
 )
@@ -30,6 +31,15 @@ STATS_ITEM_RE = re.compile(
     r"^\s*(?:\d+\.\s+|\-\s+\*\*[^*]+?\*\*:\s+).+?$",
     re.IGNORECASE,
 )
+PROFILE_BLOCK_RE = re.compile(
+    r"\[\[\s*PLAYER_PROFILE\s*:\s*(?P<name>[^\]]+)\s*\]\](?P<body>[\s\S]*?)\[\[\/PLAYER_PROFILE\]\]",
+    re.IGNORECASE
+)
+BUL_NAT_RE  = re.compile(r"^\s*-\s*Nationality\s*:\s*(?P<val>.+?)\s*$", re.IGNORECASE)
+BUL_AGE_RE  = re.compile(r"^\s*-\s*Age(?:\s*\(.*?\))?\s*:\s*(?P<val>\d{1,3})\s*$", re.IGNORECASE)
+BUL_ROLE_RE = re.compile(r"^\s*-\s*Roles?\s*:\s*(?P<val>.+?)\s*$", re.IGNORECASE)
+BUL_POT_RE  = re.compile(r"^\s*-\s*Potential\s*:\s*(?P<val>\d{1,3})\s*$", re.IGNORECASE)
+
 
 # === GET SEEN PLAYERS TOOL ===
 
@@ -134,19 +144,65 @@ def parse_statistical_highlights(stats_parser_chain, report_text: str) -> Dict[s
     return {"players": []}
 
 # === PARSE PLAYER META DATA TOOL ===
-def parse_player_meta(meta_parser_chain, raw_text: str) -> Dict[str, Any]:      
-    # Always guard the parser so it cannot crash the request
-    safe = strip_heavy_html(raw_text) 
+def fallback_parse_profile_block(raw_text: str) -> Dict[str, Any]:
+    m = PROFILE_BLOCK_RE.search(raw_text or "")
+    if not m:
+        return {"players": []}
+    name = (m.group("name") or "").strip()
+    body = m.group("body") or ""
+    nat = None
+    age = None
+    roles_list: list[str] = []
+    pot_int = None
+
+    for line in body.splitlines():
+        if not line.strip():
+            continue
+        if (mm := BUL_NAT_RE.match(line)):
+            nat = mm.group("val").strip()
+            continue
+        if (mm := BUL_AGE_RE.match(line)):
+            try:
+                age = int(mm.group("val"))
+            except Exception:
+                age = None
+            continue
+        if (mm := BUL_ROLE_RE.match(line)):
+            roles_raw = mm.group("val")
+            roles_list = [r.strip() for r in roles_raw.split(",") if r.strip()]
+            continue
+        if (mm := BUL_POT_RE.match(line)):
+            try:
+                pot_int = int(mm.group("val"))
+                pot_int = max(0, min(100, pot_int))
+            except Exception:
+                pot_int = None
+            continue
+
+    if not name:
+        return {"players": []}
+    return {
+        "players": [{
+            "name": name,
+            "nationality": nat,
+            "age": age,
+            "roles": roles_list,
+            "potential": pot_int,
+        }]
+    }
+
+def parse_player_meta(meta_parser_chain, raw_text: str) -> Dict[str, Any]:
+    safe = strip_heavy_html(raw_text)
+
+    # 1) Try LLM JSON
+    data = {}
     try:
         raw = meta_parser_chain.run(raw_text=safe).strip()
-    except Exception:
-        return {"players": []}
-    try:
         data = json.loads(raw)
     except Exception:
-        return {"players": []}
-    
-    # normalize
+        data = {}
+
+    # 2) Normalize LLM result if it looks valid
     out = []
     for p in (data.get("players") or []):
         name = (p or {}).get("name")
@@ -157,13 +213,37 @@ def parse_player_meta(meta_parser_chain, raw_text: str) -> Dict[str, Any]:
         roles = (p or {}).get("roles") or []
         if not isinstance(roles, list):
             roles = [str(roles)]
+        pot = (p or {}).get("potential", None)
+        pot_int = None
+        if pot is not None:
+            try:
+                pot_int = int(float(pot))
+                pot_int = max(0, min(100, pot_int))
+            except Exception:
+                pot_int = None
         out.append({
             "name": str(name),
             "nationality": str(nat) if nat is not None else None,
             "age": int(age) if isinstance(age, (int, float)) else None,
             "roles": [str(r) for r in roles if r is not None],
+            "potential": pot_int,
         })
+
+    # 3) If LLM missed fields (e.g., everything None) or returned nothing, use strict fallback
+    def all_missing(player: Dict[str, Any]) -> bool:
+        return (
+            player.get("nationality") is None and
+            player.get("age") is None and
+            not player.get("roles") and
+            player.get("potential") is None
+        )
+
+    if not out or all(all_missing(p) for p in out):
+        fb = fallback_parse_profile_block(safe)
+        out = fb.get("players", [])
+    
     return {"players": out}
+
 
 # === FILTER SEEN PLAYERS TOOL ===
 
@@ -190,100 +270,6 @@ def filter_players_by_seen(meta: Dict[str, Any], stats: Dict[str, Any], seen_nam
     filt_stats = {"players": [p for p in stats_players if norm(p.get("name") or "") in new_names]}
 
     return filt_meta, filt_stats, new_names
-
-
-# === STRIP META STATS TEXT TOOL ===
-
-def strip_meta_stats_text(text: str, known_names: list[str] | None = None) -> str:
-    """
-    Remove in this order:
-      (A) Any flagged blocks emitted by the LLM:
-          [[PLAYER_PROFILE:<Name>]] ... [[/PLAYER_PROFILE]]
-          [[PLAYER_STATS:<Name>]]   ... [[/PLAYER_STATS]]
-      (B) Legacy/meta bullets and standalone 'Performance Statistics' blocks.
-    Keep the remaining narrative (interpretation) text.
-    """
-    if not text:
-        return text
-
-    lines = text.splitlines()
-    out: list[str] = []
-
-    # ---- (A) First pass: drop flagged blocks entirely ----
-    i, n = 0, len(lines)
-    while i < n:
-        line = lines[i]
-        if FLAG_BLOCK_START_RE.match(line):
-            # Skip until matching END (or EOF)
-            i += 1
-            while i < n and not FLAG_BLOCK_END_RE.match(lines[i]):
-                i += 1
-            if i < n and FLAG_BLOCK_END_RE.match(lines[i]):
-                i += 1  # also skip the END line
-            continue  # continue outer loop
-        out.append(line)
-        i += 1
-
-    # Work on the remainder for legacy cleanups
-    lines = out
-    out = []
-    i, n = 0, len(lines)
-
-    def looks_like_name_or_analysis_header(s: str) -> str | None:
-        m = PLAYER_ANALYSIS_HEADER_RE.fullmatch(s or "")
-        if m:
-            return (m.group("name") or "").strip()
-        s_strip = (s or "").strip()
-        if s_strip and s_strip == s_strip.title() and len(s_strip.split()) >= 2:
-            return s_strip
-        return None
-
-    while i < n:
-        line = lines[i]
-
-        # Drop a name/analysis header if followed by meta bullets or stats block
-        nm = looks_like_name_or_analysis_header(line)
-        if nm:
-            j = i + 1
-            saw_meta = False
-            while j < n and (lines[j].strip() == "" or META_LINE_RE.match(lines[j])):
-                if META_LINE_RE.match(lines[j]):
-                    saw_meta = True
-                j += 1
-            saw_stats = False
-            k = i + 1
-            while k < n and lines[k].strip() == "":
-                k += 1
-            if k < n and STATS_HEADER_RE.match(lines[k]):
-                saw_stats = True
-            if saw_meta or saw_stats:
-                i += 1
-                continue  # skip the header line itself
-
-        # Remove meta bullet lines
-        if META_LINE_RE.match(line):
-            i += 1
-            continue
-
-        # Remove standalone Performance Statistics block
-        if STATS_HEADER_RE.match(line):
-            i += 1
-            while i < n:
-                nxt = lines[i]
-                if not nxt.strip():
-                    i += 1
-                    continue
-                if STATS_ITEM_RE.match(nxt):
-                    i += 1
-                    continue
-                break
-            continue
-
-        out.append(line)
-        i += 1
-
-    cleaned = re.sub(r"\n{3,}", "\n\n", "\n".join(out)).strip()
-    return cleaned
 
 # ------------------------------------------------------------------------------
 # Plotting tool (per-player normalized bar charts for mixed scales)
@@ -429,6 +415,7 @@ def build_player_tables(meta: Dict[str, Any], stats: Dict[str, Any]) -> str:
         if m.get("nationality"): meta_rows.append(("Nationality", str(m["nationality"])))
         if m.get("age") is not None: meta_rows.append(("Age (as of 2025)", str(m["age"])))
         if roles_text: meta_rows.append(("Roles", roles_text))
+        if m.get("potential") is not None: meta_rows.append(("Potential (0–100)", str(m["potential"])))
         meta_table = table_markup(name, meta_rows) if meta_rows else ""
 
         # stats rows
@@ -570,6 +557,7 @@ def build_player_payload(meta: Dict[str, Any], stats: Dict[str, Any]) -> Dict[st
                 "nationality": m.get("nationality"),
                 "age": m.get("age"),
                 "roles": (m.get("roles") or []),
+                "potential": m.get("potential"),
             },
             "stats": (s.get("stats") or []),
         })
