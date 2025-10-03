@@ -9,7 +9,7 @@ from langchain.chains import LLMChain
 from chatbot_module.prompts import (
     system_message,
     stats_parser_system_message,
-    meta_parser_system_prompt,
+    meta_parser_system_prompt
 )
 from chatbot_module.tools import (
     get_seen_players_from_history, 
@@ -17,7 +17,9 @@ from chatbot_module.tools import (
     parse_player_meta,
     filter_players_by_seen,
     build_player_payload,
-    strip_meta_stats_text)
+    strip_meta_stats_text,
+    compose_selection_preamble
+)
 
 # Load environment variables
 load_dotenv()
@@ -99,63 +101,64 @@ def answer_question(question: str, session_id: str = "default", strategy: Option
 
     # 0) Get/Create Chain
     qa_chain = get_session_chain(session_id)
-    memory: ConversationBufferMemory = qa_chain.memory 
+    memory: ConversationBufferMemory = qa_chain.memory
 
     # 1) Freeze PRIOR history (before any LLM call can mutate memory)
     prior_history = memory.load_memory_variables({})["chat_history"]
     prior_history_frozen = list(prior_history)
+
     # 2) Compute seen players from PRIOR assistant messages ONLY
     seen_players = get_seen_players_from_history(prior_history_frozen)
-    allowed_players_str = ", ".join(seen_players) if seen_players else "None"
+    seen_list_lower = { (n or "").lower().strip() for n in seen_players }
 
-    strat = (strategy or "").strip()
-    strategy_block = (
-        f"User strategy preference (use this to shape the analysis and selections): {strat}\n\n"
-        if strat else ""
-    )
+    # 3) Build selection preamble (semantic, no keyword parsing)
+    preamble = compose_selection_preamble(seen_players, strategy)
 
-    augmented_question = (
-        strategy_block
-        + "Previously mentioned players in this session "
-        "(the only allowed pool for any choose/rank/lineup decisions): "
-        + (allowed_players_str or "None")
-        + "\n\n"
-        + question
-    )
+    # 4) Intent hint — ONLY entity resolution (seen name), no keyword lists
+    q_lower = (question or "").lower()
+    mentions_seen_by_name = any(n and n in q_lower for n in seen_list_lower)
 
-    # 3) LLM Call
-    inputs = {
-        "question": augmented_question
-        #"chat_history": prior_history_frozen
-    }
+    # We do not enumerate any “another/alternative” words.
+    # Let the LLM infer intent semantically using the preamble rules.
+    if mentions_seen_by_name:
+        intent_nudge = (
+            "Intent: the user referenced a previously seen player by name. "
+            "Do NOT print any PLAYER_PROFILE/PLAYER_STATS blocks. "
+            "Refer back to earlier blocks and provide narrative only.\n\n"
+        )
+    else:
+        intent_nudge = (
+            "Intent: the user may be asking for a different option or for collective reasoning about previously discussed players. "
+            "Infer intention semantically (not by keywords) using the selection rules above.\n\n"
+        )
+
+    augmented_question = preamble + intent_nudge + "Question: " + (question or "")
+    # 5) LLM Call
+    inputs = {"question": augmented_question}
     try:
         result = qa_chain.invoke(inputs)
         base_answer = (result.get("answer") or "").strip()
     except Exception as e:
-        # If LLM/RAG fails, surface a minimal error message
         return {"answer": "Sorry, I couldn’t generate an answer right now.", "answer_raw": str(e)}
 
-    # 4) Parse current answer into meta/stats
+    # 6) Parse current answer into meta/stats
     out = base_answer
     try:
         qa_as_report = f"**Statistical Highlights**\n\n{base_answer}\n\n"
         parsed_stats = parse_statistical_highlights(stats_parser_chain, qa_as_report)
-        print(base_answer)
-        print("===================")
         meta = parse_player_meta(meta_parser_chain, raw_text=base_answer)
-        # 5) Keep only NEW players for data payload (same dedupe logic as before)   
+
+        # Keep only NEW players for data payload (so cards/plots are printed once per player)
         meta_new, stats_new, new_names = filter_players_by_seen(meta, parsed_stats, seen_players)
-        # 6) Build structured data for NEW players only (no HTML/PNGs)
+
+        # Build structured data for NEW players only (no HTML/PNGs)
         payload = build_player_payload(meta_new, stats_new) if new_names else {"players": []}
 
-        # 7) Strip flagged/meta/stats text from the narrative
+        # Strip flagged/meta/stats text from the narrative; keep only analysis
         known_names = [p.get("name") for p in (meta.get("players") or []) if p.get("name")]
         cleaned = strip_meta_stats_text(base_answer, known_names=known_names)
-
-        # 8) Compose: narrative only
+        print(payload)
         out = cleaned
-
-        # 9) Return narrative PLUS structured data
         return {"answer": out, "data": payload}
 
     except Exception as e:

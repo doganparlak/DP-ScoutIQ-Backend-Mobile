@@ -3,7 +3,7 @@ import io
 import base64
 import json
 import math
-from typing import Dict, List, Any, Tuple
+from typing import Dict, List, Any, Tuple, Iterable
 import matplotlib.pyplot as plt
 
 PLAYER_PROFILE_OPEN_TAG_RE = re.compile(r"\[\[\s*PLAYER_PROFILE\s*:\s*(.*?)\s*\]\]", re.IGNORECASE)
@@ -562,3 +562,42 @@ def build_player_payload(meta: Dict[str, Any], stats: Dict[str, Any]) -> Dict[st
             "stats": (s.get("stats") or []),
         })
     return {"players": out}
+
+# ======== Answer Question Helpers =========
+def normalize_name(s: str) -> str:
+    return (s or "").strip().lower()
+
+def compose_selection_preamble(
+    seen_players: Iterable[str],
+    strategy: str | None,
+) -> str:
+    """
+    Returns a preface instructing the LLM how to behave wrt:
+      - one player per response,
+      - seen players (no reprint of blocks/plots),
+      - new player requests (intent-based, no keywords),
+      - collective references to 'others' (ask user to pick one of seen),
+      - candidate lists (choose exactly one).
+    This contains NO static keyword checks. It asks the LLM to infer intent from semantics.
+    """
+    seen_list = ", ".join(seen_players) if seen_players else "None"
+    strat = (strategy or "").strip()
+
+    strategy_block = (
+        f"User strategy preference (use this to shape the analysis and selections): {strat}\n\n"
+        if strat else ""
+    )
+
+    # Intent rules are semantic: the model decides from user message meaning.
+    selection_rules = (
+        "Selection rules:\n"
+        "- One player per response.\n"
+        f"- Seen players in this chat (do not reprint their blocks): {seen_list}\n"
+        "- Intention resolution (semantic, not keyword-based):\n"
+        "  • If the user clearly refers to one of the seen players by name, do NOT print any blocks; refer back to earlier blocks and add new narrative only.\n"
+        "  • If the user indicates they want a different option (in any wording), select a NEW unseen player (not in the seen set) and print their blocks.\n"
+        "  • If the user refers collectively to previously discussed players (e.g., talks about 'others' discussed earlier without naming one), do NOT introduce a new player; reply with one short sentence asking them to choose ONE of the previously discussed players to analyze next (no blocks).\n"
+        "  • If the user provides a candidate list, choose exactly one from that list only.\n\n"
+    )
+
+    return strategy_block + selection_rules
