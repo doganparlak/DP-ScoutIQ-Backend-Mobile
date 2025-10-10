@@ -9,6 +9,9 @@ data_module/player_level_stats.csv
 .env
 venv
 
+# Local DB
+data/*
+
 # Byte-compiled / optimized / DLL files
 __pycache__/
 *.py[cod]
