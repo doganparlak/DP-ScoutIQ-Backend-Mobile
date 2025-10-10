@@ -18,7 +18,7 @@ settings: Dict[str, Any] = {
 }
 
 # --- DB paths ---
-DB_PATH = os.path.abspath(os.path.join(os.path.dirname(__file__), "..", "data"))
+DB_PATH = os.path.abspath(os.path.join(os.path.dirname(__file__), "..", "user_db"))
 os.makedirs(DB_PATH, exist_ok=True)
 DB_FILE = os.path.join(DB_PATH, "app.db")
 

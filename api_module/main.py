@@ -13,7 +13,7 @@ from api_module.utilities import (
     user_row_to_dict, require_auth, create_email_code, verify_email_code, send_email_code, DB_FILE
 )
 from api_module.models import (
-    SignUpIn, LoginIn, LoginOut, ProfileOut, ProfilePatch,
+    SignUpIn, LoginIn, LoginOut, ProfileOut, ProfilePatch, SetNewPasswordIn,
     PasswordResetRequestIn, VerifyResetIn, VerifySignupIn, SignupCodeRequestIn, ChatIn
 )
 
@@ -70,7 +70,6 @@ def signup(payload: SignUpIn):
 
 @app.post("/auth/login", response_model=LoginOut)
 def login(payload: LoginIn):
-    import hmac
     conn = get_db()
     cur = conn.cursor()
     cur.execute("SELECT * FROM users WHERE email=?", (payload.email,))
@@ -92,6 +91,28 @@ def login(payload: LoginIn):
     conn.close()
     return {"token": token, "user": user}
 
+@app.post("/auth/set_new_password")
+def set_new_password(body: SetNewPasswordIn):
+    if len(body.new_password) < 6:
+        raise HTTPException(status_code=400, detail="Password must be at least 6 characters")
+
+    conn = get_db()
+    cur = conn.cursor()
+    cur.execute("SELECT id FROM users WHERE email=?", (body.email,))
+    row = cur.fetchone()
+    if not row:
+        conn.close()
+        # Don’t reveal existence
+        return {"ok": True}
+
+    salt = new_salt()
+    pw_hash = hash_pw(body.new_password, salt)
+    cur.execute("UPDATE users SET password_hash=?, salt=? WHERE email=?",
+                (pw_hash, salt, body.email))
+    conn.commit()
+    conn.close()
+    return {"ok": True}
+
 @app.get("/me", response_model=ProfileOut)
 def me(user_id: int = Depends(require_auth)):
     conn = get_db()
@@ -105,7 +126,6 @@ def me(user_id: int = Depends(require_auth)):
 
 @app.patch("/me", response_model=ProfileOut)
 def update_me(patch: ProfilePatch, user_id: int = Depends(require_auth)):
-    import json
     conn = get_db()
     cur = conn.cursor()
     cur.execute("SELECT * FROM users WHERE id=?", (user_id,))

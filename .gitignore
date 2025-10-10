@@ -10,7 +10,7 @@ data_module/player_level_stats.csv
 venv
 
 # Local DB
-data/*
+user_db/*
 
 # Byte-compiled / optimized / DLL files
 __pycache__/

@@ -49,6 +49,10 @@ class VerifySignupIn(BaseModel):
   email: EmailStr
   code: str
 
+class SetNewPasswordIn(BaseModel):
+    email: EmailStr
+    new_password: str
+
 # ---- Chat models (existing) ----
 class ChatIn(BaseModel):
     message: str
