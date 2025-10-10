@@ -10,11 +10,11 @@ from api_module.response_handler import split_response_parts
 # import our refactored pieces
 from api_module.utilities import (
     get_db, init_db, hash_pw, new_salt, now_iso,
-    user_row_to_dict, require_auth, create_reset_code, send_email_code, verify_reset_code, DB_FILE
+    user_row_to_dict, require_auth, create_email_code, verify_email_code, send_email_code, DB_FILE
 )
 from api_module.models import (
     SignUpIn, LoginIn, LoginOut, ProfileOut, ProfilePatch,
-    PasswordResetRequestIn, VerifyResetIn, ChatIn
+    PasswordResetRequestIn, VerifyResetIn, VerifySignupIn, SignupCodeRequestIn, ChatIn
 )
 
 import hmac, uuid, json
@@ -145,33 +145,42 @@ def logout_all(user_id: int = Depends(require_auth)):
     conn.close()
     return {"ok": True}
 
-# --- password reset ---
+# --- email codes: reset ---
 @app.post("/auth/request_reset")
 def request_reset(body: PasswordResetRequestIn):
-    """
-    Always returns ok (to avoid email enumeration).
-    If user exists -> create code, email code.
-    """
+    # always ok; only send if user exists
     email = body.email
-    conn = get_db()
-    cur = conn.cursor()
+    conn = get_db(); cur = conn.cursor()
     cur.execute("SELECT id FROM users WHERE email=?", (email,))
-    row = cur.fetchone()
-    conn.close()
-
-    # Create/send code only if user exists
+    row = cur.fetchone(); conn.close()
     if row:
-        code = create_reset_code(email)
-        send_email_code(email, code, mail_type="Reset")
-
+        code = create_email_code(email, purpose="reset")
+        send_email_code(email, code, mail_type="reset")
     return {"ok": True}
 
 @app.post("/auth/verify_reset")
 def verify_reset(body: VerifyResetIn):
-    ok = verify_reset_code(body.email, body.code)
-    if not ok:
-        raise HTTPException(status_code=400, detail="Invalid or expired code")
-    # If you later add a "Set New Password" screen, return a short-lived token here.
+    ok = verify_email_code(body.email, body.code, purpose="reset")
+    if not ok: raise HTTPException(status_code=400, detail="Invalid or expired code")
+    return {"ok": True}
+
+# --- email codes: signup ---
+@app.post("/auth/request_signup_code")
+def request_signup_code(body: SignupCodeRequestIn):
+    # Only send if a user record exists (you create on /auth/signup first)
+    email = body.email
+    conn = get_db(); cur = conn.cursor()
+    cur.execute("SELECT id FROM users WHERE email=?", (email,))
+    row = cur.fetchone(); conn.close()
+    if row:
+        code = create_email_code(email, purpose="signup")
+        send_email_code(email, code, mail_type="signup")
+    return {"ok": True}
+
+@app.post("/auth/verify_signup_code")
+def verify_signup_code(body: VerifySignupIn):
+    ok = verify_email_code(body.email, body.code, purpose="signup")
+    if not ok: raise HTTPException(status_code=400, detail="Invalid or expired code")
     return {"ok": True}
 
 

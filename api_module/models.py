@@ -34,13 +34,20 @@ class ProfilePatch(BaseModel):
     plan: Optional[str] = None
     favorite_players: Optional[List[Dict[str, Any]]] = None
 
-# Password reset
+# email codes
 class PasswordResetRequestIn(BaseModel):
-    email: EmailStr
+  email: EmailStr
 
 class VerifyResetIn(BaseModel):
-    email: EmailStr
-    code: str  # 6-digit
+  email: EmailStr
+  code: str
+
+class SignupCodeRequestIn(BaseModel):
+  email: EmailStr
+
+class VerifySignupIn(BaseModel):
+  email: EmailStr
+  code: str
 
 # ---- Chat models (existing) ----
 class ChatIn(BaseModel):
