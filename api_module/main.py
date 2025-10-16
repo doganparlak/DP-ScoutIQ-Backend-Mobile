@@ -2,6 +2,10 @@
 from typing import Optional, Dict, Any
 from fastapi import FastAPI, HTTPException, Depends, Header, status, Response
 from fastapi.middleware.cors import CORSMiddleware
+from contextlib import asynccontextmanager
+from dotenv import load_dotenv
+
+load_dotenv() 
 
 # your existing chat utilities
 from chatbot_module.chatbot import answer_question, reset_session
@@ -9,7 +13,7 @@ from api_module.response_handler import split_response_parts
 
 # import our refactored pieces
 from api_module.utilities import (
-    get_db, init_db, hash_pw, new_salt, now_iso, get_user_email_by_id, delete_user_everywhere,
+    get_db, init_db, hash_pw, new_salt, now_iso, get_user_email_by_id, delete_user_everywhere, get_bearer_token, revoke_session,
     user_row_to_dict, require_auth, create_email_code, verify_email_code, send_email_code, DB_FILE
 )
 from api_module.models import (
@@ -17,26 +21,31 @@ from api_module.models import (
     PasswordResetRequestIn, VerifyResetIn, VerifySignupIn, SignupCodeRequestIn, ChatIn
 )
 
-import hmac, uuid, json
+import hmac, uuid, json, re, os
+
+PASSWORD_RE = re.compile(r'^(?=.*[A-Za-z])(?=.*\d).{8,}$')
 
 app = FastAPI()
 
 # CORS (lock this down to your frontend origin in prod)
+origins_env = os.environ.get("CORS_ORIGINS")
+origins = [o.strip() for o in origins_env.split(",")] if origins_env else ["http://localhost:19006"]
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["*"],  # e.g., ["http://localhost:19006", "http://localhost:3000"]
+    allow_origins=origins,  # e.g., ["http://localhost:19006", "http://localhost:3000"]
     allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],
 )
 
-# init DB on import
-init_db()
-
 # (dev) show DB file once on startup for clarity
-@app.on_event("startup")
-def show_db_path():
-    print("SQLite DB:", DB_FILE)
+@asynccontextmanager
+async def lifespan(app: FastAPI):
+    # --- STARTUP ---
+    init_db()  # idempotent table creation
+    if os.environ.get("ENV", "dev") != "prod":
+        print("SQLite DB:", DB_FILE)
+    yield
 
 # ---------- endpoints ----------
 @app.get("/health")
@@ -45,13 +54,23 @@ async def health() -> Dict[str, Any]:
 
 @app.post("/auth/signup")
 def signup(payload: SignUpIn):
+    # 1) server-side password validation
+    if not PASSWORD_RE.match(payload.password):
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="Password must be at least 8 characters and include at least one letter and one number.",
+        )
+    
     conn = get_db()
     cur = conn.cursor()
+
+    # 2) check if email exists
     cur.execute("SELECT 1 FROM users WHERE email=?", (payload.email,))
     if cur.fetchone():
         conn.close()
         raise HTTPException(status_code=400, detail="Email already registered")
 
+    # 3) create user
     salt = new_salt()
     pw_hash = hash_pw(payload.password, salt)
     favorites_json = json.dumps(payload.favorite_players or [])
@@ -91,26 +110,62 @@ def login(payload: LoginIn):
     conn.close()
     return {"token": token, "user": user}
 
-@app.post("/auth/set_new_password")
-def set_new_password(body: SetNewPasswordIn):
-    if len(body.new_password) < 6:
-        raise HTTPException(status_code=400, detail="Password must be at least 6 characters")
+@app.post("/logout", status_code=status.HTTP_204_NO_CONTENT)
+def logout(authorization: str | None = Header(None)):
+    """
+    Log out only the *current* session by deleting the bearer token from `sessions`.
+    Always returns 204 (idempotent).
+    """
+    try:
+        token = get_bearer_token(authorization)
+    except HTTPException:
+        # If there's no/invalid header, still respond 204 to be idempotent
+        return Response(status_code=status.HTTP_204_NO_CONTENT)
 
     conn = get_db()
-    cur = conn.cursor()
-    cur.execute("SELECT id FROM users WHERE email=?", (body.email,))
+    try:
+        revoke_session(conn, token)  # deletes the row if it exists
+    finally:
+        try:
+            conn.close()
+        except:
+            pass
+    return Response(status_code=status.HTTP_204_NO_CONTENT)
+
+@app.post("/auth/set_new_password")
+def set_new_password(body: SetNewPasswordIn):
+    # 1) Strength check (same as signup)
+    if not PASSWORD_RE.match(body.new_password):
+        raise HTTPException(
+            status_code=400,
+            detail="Password must be at least 8 characters and include at least one letter and one number."
+        )
+
+    conn = get_db(); cur = conn.cursor()
+    cur.execute("SELECT id, password_hash, salt FROM users WHERE email=?", (body.email,))
     row = cur.fetchone()
     if not row:
         conn.close()
-        # Don’t reveal existence
+        # Don’t reveal if email exists
         return {"ok": True}
 
-    salt = new_salt()
-    pw_hash = hash_pw(body.new_password, salt)
-    cur.execute("UPDATE users SET password_hash=?, salt=? WHERE email=?",
-                (pw_hash, salt, body.email))
-    conn.commit()
-    conn.close()
+    user_id = int(row["id"])
+    old_hash = row["password_hash"]
+    old_salt = row["salt"]
+
+    # 2) Block reuse: hash new password with the OLD salt and compare
+    new_with_old_salt = hash_pw(body.new_password, old_salt)
+    if hmac.compare_digest(new_with_old_salt, old_hash):
+        conn.close()
+        raise HTTPException(status_code=400, detail="New password must be different from your current password.")
+
+    # 3) Save new password with a FRESH salt, then revoke all sessions
+    fresh_salt = new_salt()
+    fresh_hash = hash_pw(body.new_password, fresh_salt)
+
+    cur.execute("UPDATE users SET password_hash=?, salt=? WHERE id=?", (fresh_hash, fresh_salt, user_id))
+    cur.execute("DELETE FROM sessions WHERE user_id=?", (user_id,))
+    conn.commit(); conn.close()
     return {"ok": True}
 
 @app.get("/me", response_model=ProfileOut)
@@ -147,15 +202,6 @@ def update_me(patch: ProfilePatch, user_id: int = Depends(require_auth)):
     row2 = cur.fetchone()
     conn.close()
     return user_row_to_dict(row2)
-
-@app.post("/logout")
-def logout(user_id: int = Depends(require_auth), authorization: Optional[str] = Header(None)):
-    token = authorization.split(" ", 1)[1].strip() if authorization else ""
-    conn = get_db()
-    conn.execute("DELETE FROM sessions WHERE token=?", (token,))
-    conn.commit()
-    conn.close()
-    return {"ok": True}
 
 @app.post("/logout_all")
 def logout_all(user_id: int = Depends(require_auth)):

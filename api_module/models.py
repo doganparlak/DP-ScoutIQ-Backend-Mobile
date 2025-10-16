@@ -5,7 +5,7 @@ from pydantic import BaseModel, Field, EmailStr
 # ---- Auth & Profile models ----
 class SignUpIn(BaseModel):
     email: EmailStr
-    password: str = Field(min_length=6)
+    password: str = Field(min_length=8)
     dob: str                    # YYYY-MM-DD
     country: str
     favorite_players: List[Dict[str, Any]] = []

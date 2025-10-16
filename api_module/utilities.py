@@ -12,10 +12,10 @@ from email.mime.text import MIMEText
 # --- Email settings (you provided) ---
 settings: Dict[str, Any] = {
     "email": {
-        "sender_email": "dogan.parlak.1404@gmail.com",
-        "smtp_server": "smtp.gmail.com",
-        "sender_password": "kouq fqhn rsgh smrf",  # Gmail App Password (ok for local dev)
-        "smtp_port": 587,
+        "sender_email": os.environ.get("SMTP_SENDER_EMAIL", ""),
+        "smtp_server": os.environ.get("SMTP_SERVER", "smtp.gmail.com"),
+        "sender_password": os.environ.get("SMTP_APP_PASSWORD", ""),
+        "smtp_port": int(os.environ.get("SMTP_PORT", "587")),
     }
 }
 
@@ -143,6 +143,23 @@ def require_auth(authorization: Optional[str] = Header(None)) -> int:
     if not row:
         raise HTTPException(status_code=401, detail="Invalid token")
     return int(row["user_id"])
+
+# --- Logout helpers ---
+def get_bearer_token(authorization: Optional[str]) -> str:
+    """
+    Extract the bearer token string or raise 401 for missing/invalid headers.
+    """
+    if not authorization or not authorization.lower().startswith("bearer "):
+        raise HTTPException(status_code=401, detail="Missing/invalid Authorization")
+    return authorization.split(" ", 1)[1].strip()
+
+def revoke_session(conn: sqlite3.Connection, token: str) -> None:
+    """
+    Delete a single session row for this token. Idempotent (no error if not found).
+    """
+    cur = conn.cursor()
+    cur.execute("DELETE FROM sessions WHERE token=?", (token,))
+    conn.commit()
 
 # ---------- email-code helpers ----------
 def _gen_code() -> str:
