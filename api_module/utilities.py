@@ -1,7 +1,9 @@
 # api_module/utilities.py
 from __future__ import annotations
 from typing import Optional, Dict, Any
-from fastapi import Header, HTTPException
+from fastapi import Depends, Header, HTTPException
+from fastapi.security import OAuth2PasswordBearer
+from pydantic import EmailStr
 import os, sqlite3, uuid, hashlib, hmac, json, datetime as dt
 import random, smtplib
 from email.mime.multipart import MIMEMultipart
@@ -22,10 +24,15 @@ DB_PATH = os.path.abspath(os.path.join(os.path.dirname(__file__), "..", "user_db
 os.makedirs(DB_PATH, exist_ok=True)
 DB_FILE = os.path.join(DB_PATH, "app.db")
 
+oauth2_scheme = OAuth2PasswordBearer(tokenUrl="/auth/login")
 # --- DB helpers ---
 def get_db() -> sqlite3.Connection:
     conn = sqlite3.connect(DB_FILE)
     conn.row_factory = sqlite3.Row
+    try:
+        conn.execute("PRAGMA foreign_keys = ON;")
+    except Exception:
+        pass
     return conn
 
 def init_db() -> None:
@@ -87,6 +94,36 @@ def user_row_to_dict(row: sqlite3.Row) -> Dict[str, Any]:
         "favorite_players": json.loads(row["favorites_json"] or "[]"),
         "created_at": row["created_at"],
     }
+# ----- deletion helpers -----
+def get_user_email_by_id(conn: sqlite3.Connection, user_id: int) -> Optional[str]:
+    cur = conn.cursor()
+    cur.execute("SELECT email FROM users WHERE id=?", (user_id,))
+    row = cur.fetchone()
+    return row["email"] if row else None
+
+def delete_user_everywhere(conn: sqlite3.Connection, user_id: int) -> None:
+    """
+    Hard-delete the user and related artifacts from SQLite:
+      - sessions (by user_id)
+      - email_codes (by email)
+      - users (by id)
+    """
+    email = get_user_email_by_id(conn, user_id)
+    if not email:
+        # Nothing to delete
+        return
+    cur = conn.cursor()
+    try:
+        # Delete auth sessions first
+        cur.execute("DELETE FROM sessions WHERE user_id=?", (user_id,))
+        # Delete email codes for this user
+        cur.execute("DELETE FROM email_codes WHERE email=?", (email,))
+        # Finally delete the user record
+        cur.execute("DELETE FROM users WHERE id=?", (user_id,))
+        conn.commit()
+    except Exception:
+        conn.rollback()
+        raise
 
 # --- auth dependency ---
 def require_auth(authorization: Optional[str] = Header(None)) -> int:

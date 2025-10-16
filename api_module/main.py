@@ -1,15 +1,15 @@
 # api_module/main.py
 from typing import Optional, Dict, Any
-from fastapi import FastAPI, HTTPException, Depends, Header
+from fastapi import FastAPI, HTTPException, Depends, Header, status, Response
 from fastapi.middleware.cors import CORSMiddleware
 
 # your existing chat utilities
-from chatbot_module.chatbot import answer_question, get_session_chain, reset_session
+from chatbot_module.chatbot import answer_question, reset_session
 from api_module.response_handler import split_response_parts
 
 # import our refactored pieces
 from api_module.utilities import (
-    get_db, init_db, hash_pw, new_salt, now_iso,
+    get_db, init_db, hash_pw, new_salt, now_iso, get_user_email_by_id, delete_user_everywhere,
     user_row_to_dict, require_auth, create_email_code, verify_email_code, send_email_code, DB_FILE
 )
 from api_module.models import (
@@ -203,6 +203,26 @@ def verify_signup_code(body: VerifySignupIn):
     if not ok: raise HTTPException(status_code=400, detail="Invalid or expired code")
     return {"ok": True}
 
+@app.delete("/me", status_code=status.HTTP_204_NO_CONTENT)
+def delete_me(user_id: int = Depends(require_auth)):
+    conn = get_db()
+    try:
+        email = get_user_email_by_id(conn, user_id)
+        if not email:
+            raise HTTPException(status_code=404, detail="User not found")
+        delete_user_everywhere(conn, user_id)
+    except HTTPException:
+        raise
+    except Exception:
+        # Any DB error becomes 500
+        raise HTTPException(status_code=500, detail="Could not delete account")
+    finally:
+        try:
+            conn.close()
+        except:
+            pass
+    # 204 No Content
+    return Response(status_code=status.HTTP_204_NO_CONTENT)
 
 # --- chat ---
 @app.post("/chat")
