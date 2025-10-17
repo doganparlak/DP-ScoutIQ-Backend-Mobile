@@ -25,7 +25,16 @@ import hmac, uuid, json, re, os
 
 PASSWORD_RE = re.compile(r'^(?=.*[A-Za-z])(?=.*\d).{8,}$')
 
-app = FastAPI()
+# (dev) show DB file once on startup for clarity
+@asynccontextmanager
+async def lifespan(app: FastAPI):
+    # --- STARTUP ---
+    init_db()  # idempotent table creation
+    if os.environ.get("ENV", "dev") != "prod":
+        print("SQLite DB:", DB_FILE)
+    yield
+
+app = FastAPI(lifespan=lifespan)
 
 # CORS (lock this down to your frontend origin in prod)
 origins_env = os.environ.get("CORS_ORIGINS")
@@ -38,14 +47,7 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
-# (dev) show DB file once on startup for clarity
-@asynccontextmanager
-async def lifespan(app: FastAPI):
-    # --- STARTUP ---
-    init_db()  # idempotent table creation
-    if os.environ.get("ENV", "dev") != "prod":
-        print("SQLite DB:", DB_FILE)
-    yield
+
 
 # ---------- endpoints ----------
 @app.get("/health")
