@@ -1,5 +1,5 @@
 # api_module/main.py
-from typing import Optional, Dict, Any
+from typing import Optional, Dict, Any, List
 from fastapi import FastAPI, HTTPException, Depends, Header, status, Response
 from fastapi.middleware.cors import CORSMiddleware
 from contextlib import asynccontextmanager
@@ -14,11 +14,12 @@ from api_module.response_handler import split_response_parts
 # import our refactored pieces
 from api_module.utilities import (
     get_db, init_db, hash_pw, new_salt, now_iso, get_user_email_by_id, delete_user_everywhere, get_bearer_token, revoke_session,
-    user_row_to_dict, require_auth, create_email_code, verify_email_code, send_email_code, DB_FILE
+    user_row_to_dict, require_auth, create_email_code, verify_email_code, send_email_code, to_long_roles, DB_FILE
 )
 from api_module.models import (
     SignUpIn, LoginIn, LoginOut, ProfileOut, ProfilePatch, SetNewPasswordIn,
-    PasswordResetRequestIn, VerifyResetIn, VerifySignupIn, SignupCodeRequestIn, ChatIn
+    PasswordResetRequestIn, VerifyResetIn, VerifySignupIn, SignupCodeRequestIn, ChatIn,
+    FavoritePlayerIn, FavoritePlayerOut
 )
 
 import hmac, uuid, json, re, os
@@ -300,3 +301,138 @@ async def chat(body: ChatIn) -> Dict[str, Any]:
 async def reset(session_id: str) -> Dict[str, Any]:
     reset_session(session_id)
     return {"ok": True, "session_id": session_id, "reset": True}
+
+# --- favorite players ---
+@app.get("/me/favorites", response_model=List[FavoritePlayerOut])
+def list_favorites(user_id: int = Depends(require_auth)):
+    conn = get_db()
+    cur = conn.cursor()
+    cur.execute("""
+        SELECT id, name, nationality, age, potential, roles_json
+        FROM favorite_players
+        WHERE user_id = ?
+        ORDER BY datetime(created_at) DESC
+    """, (user_id,))
+    rows = cur.fetchall()
+    conn.close()
+
+    print(f"[favorites] LIST user={user_id} -> {len(rows)} rows")
+
+    out: List[FavoritePlayerOut] = []
+    for r in rows:
+        try:
+            roles = json.loads(r["roles_json"]) or []
+        except Exception:
+            roles = []
+        out.append(FavoritePlayerOut(
+            id=r["id"],
+            name=r["name"],
+            nationality=r["nationality"],
+            age=r["age"],
+            potential=r["potential"],
+            roles=roles,  # LONG strings
+        ))
+    return out
+
+@app.post("/me/favorites", response_model=FavoritePlayerOut, status_code=status.HTTP_201_CREATED)
+def add_favorite(payload: FavoritePlayerIn, user_id: int = Depends(require_auth), response: Response = None):
+    # DEBUG (incoming)
+    print(f"[favorites] ADD request user={user_id} name={payload.name!r} "
+          f"nat={payload.nationality!r} age={payload.age} pot={payload.potential} roles_in={payload.roles}")
+
+    # Normalize roles to LONG for storage (FE may send short)
+    roles_long = to_long_roles(payload.roles)
+
+    # DEBUG (normalized)
+    print(f"[favorites] ADD normalized roles (to LONG) user={user_id} name={payload.name!r} roles_long={roles_long}")
+
+    conn = get_db()
+    cur = conn.cursor()
+
+    # --- DUPLICATE CHECK: same (name, nationality, age) for this user ---
+    # Case-insensitive for name/nationality, null-safe for nationality/age.
+    cur.execute("""
+        SELECT id, name, nationality, age, potential, roles_json
+        FROM favorite_players
+        WHERE user_id = ?
+          AND lower(name) = lower(?)
+          AND lower(COALESCE(nationality, '')) = lower(COALESCE(?, ''))
+          AND COALESCE(age, -1) = COALESCE(?, -1)
+        LIMIT 1
+    """, (user_id, payload.name, payload.nationality, payload.age))
+    existing = cur.fetchone()
+
+    if existing:
+        # Already exists → return the existing row with 200 OK
+        try:
+            existing_roles = json.loads(existing["roles_json"]) or []
+        except Exception:
+            existing_roles = []
+        conn.close()
+
+        if response is not None:
+            response.status_code = status.HTTP_200_OK
+
+        print(f"[favorites] ADD SKIP (already exists by name/nat/age) user={user_id} id={existing['id']}")
+        return FavoritePlayerOut(
+            id=existing["id"],
+            name=existing["name"],
+            nationality=existing["nationality"],
+            age=existing["age"],
+            potential=existing["potential"],
+            roles=existing_roles,
+        )
+
+    # --- Insert new favorite ---
+    fav_id = uuid.uuid4().hex
+    created_at = now_iso()
+
+    cur.execute("""
+        INSERT INTO favorite_players (id, user_id, name, nationality, age, potential, roles_json, created_at)
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+    """, (
+        fav_id,
+        user_id,
+        payload.name,
+        payload.nationality,
+        payload.age,
+        payload.potential,
+        json.dumps(roles_long, ensure_ascii=False),
+        created_at,
+    ))
+    conn.commit()
+    conn.close()
+
+    print(f"[favorites] ADD OK user={user_id} id={fav_id} name={payload.name!r} created_at={created_at}")
+
+    return FavoritePlayerOut(
+        id=fav_id,
+        name=payload.name,
+        nationality=payload.nationality,
+        age=payload.age,
+        potential=payload.potential,
+        roles=roles_long,
+    )
+
+@app.delete("/me/favorites/{favorite_id}", status_code=status.HTTP_204_NO_CONTENT)
+def delete_favorite(favorite_id: str, user_id: int = Depends(require_auth)):
+    # DEBUG (incoming)
+    print(f"[favorites] DELETE request user={user_id} id={favorite_id}")
+    conn = get_db()
+    cur = conn.cursor()
+    cur.execute("""
+        DELETE FROM favorite_players
+        WHERE id = ? AND user_id = ?
+    """, (favorite_id, user_id))
+    deleted = cur.rowcount
+    conn.commit()
+    conn.close()
+
+    if deleted == 0:
+        print(f"[favorites] DELETE MISS user={user_id} id={favorite_id} -> 404")
+        raise HTTPException(status_code=404, detail="Favorite not found")
+    
+    # DEBUG (success)
+    print(f"[favorites] DELETE OK user={user_id} id={favorite_id}")
+    return Response(status_code=status.HTTP_204_NO_CONTENT)
+

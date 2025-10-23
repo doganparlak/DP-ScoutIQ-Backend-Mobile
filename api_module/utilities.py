@@ -69,6 +69,19 @@ def init_db() -> None:
       used INTEGER NOT NULL DEFAULT 0
     );
     """)
+    cur.execute("""
+    CREATE TABLE IF NOT EXISTS favorite_players (
+      id TEXT PRIMARY KEY,                -- uuid string
+      user_id INTEGER NOT NULL,           -- fk to users.id
+      name TEXT NOT NULL,
+      nationality TEXT,
+      age INTEGER,
+      potential INTEGER,                  -- 0..100 (nullable)
+      roles_json TEXT NOT NULL,           -- JSON array of LONG role names, e.g. ["Center Back","Right Back"]
+      created_at TEXT NOT NULL,           -- ISO timestamp
+      FOREIGN KEY(user_id) REFERENCES users(id) ON DELETE CASCADE
+    );
+    """)
     cur.execute("CREATE INDEX IF NOT EXISTS idx_email_codes_email ON email_codes(email);")
     cur.execute("CREATE INDEX IF NOT EXISTS idx_email_codes_purpose ON email_codes(purpose);")
     conn.commit()
@@ -239,3 +252,36 @@ def send_email_code(receiver_email: str, code: str, mail_type: str) -> None:
     finally:
         try: server.quit()
         except: pass
+
+ROLE_SHORT_TO_LONG = {
+    "GK": "Goal Keeper",
+    "LWB": "Left Wing Back",
+    "LB": "Left Back",
+    "LCB": "Left Center Back",
+    "CB": "Center Back",
+    "RCB": "Right Center Back",
+    "RB": "Right Back",
+    "RWB": "Right Wing Back",
+    "LCM": "Left Center Midfield",
+    "CM": "Center Midfield",
+    "CDM": "Center Defensive Midfield",
+    "RCM": "Right Center Midfield",
+    "CF": "Center Forward",
+    "RCF": "Right Center Forward",
+    "LCF": "Left Center Forward",
+    "LW": "Left Wing",
+    "RW": "Right Wing",
+}
+
+ROLE_LONG_TO_SHORT = {v: k for k, v in ROLE_SHORT_TO_LONG.items()}
+
+def to_long_roles(maybe_short_or_long_list):
+    out = []
+    for r in maybe_short_or_long_list or []:
+        if r in ROLE_SHORT_TO_LONG:
+            out.append(ROLE_SHORT_TO_LONG[r])
+        elif r in ROLE_LONG_TO_SHORT:
+            out.append(r)
+        else:
+            out.append(r)
+    return out

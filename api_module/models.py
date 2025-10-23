@@ -2,6 +2,24 @@
 from typing import Optional, Dict, Any, List
 from pydantic import BaseModel, Field, EmailStr
 
+# ---- Favorite Players I/O ----
+class FavoritePlayerIn(BaseModel):
+    name: str
+    nationality: Optional[str] = None
+    age: Optional[int] = Field(default=None, ge=0)
+    potential: Optional[int] = Field(default=None, ge=0, le=100)
+    # Accepts SHORT or LONG; backend will normalize to LONG before storing.
+    roles: List[str] = Field(default_factory=list)
+
+class FavoritePlayerOut(BaseModel):
+    id: str
+    name: str
+    nationality: Optional[str] = None
+    age: Optional[int] = None
+    potential: Optional[int] = None
+    # LONG strings (e.g., "Center Back")
+    roles: List[str]
+
 # ---- Auth & Profile models ----
 class SignUpIn(BaseModel):
     email: EmailStr
