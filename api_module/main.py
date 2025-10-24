@@ -14,7 +14,7 @@ from api_module.response_handler import split_response_parts
 # import our refactored pieces
 from api_module.utilities import (
     get_db, init_db, hash_pw, new_salt, now_iso, get_user_email_by_id, delete_user_everywhere, get_bearer_token, revoke_session,
-    user_row_to_dict, require_auth, create_email_code, verify_email_code, send_email_code, to_long_roles, DB_FILE
+    user_row_to_dict, require_auth, create_email_code, verify_email_code, send_email_code, to_long_roles, normalize_lang, DB_FILE
 )
 from api_module.models import (
     SignUpIn, LoginIn, LoginOut, ProfileOut, ProfilePatch, SetNewPasswordIn,
@@ -91,7 +91,7 @@ def signup(payload: SignUpIn):
     return {"ok": True}
 
 @app.post("/auth/login", response_model=LoginOut)
-def login(payload: LoginIn):
+def login(payload: LoginIn, accept_language: str | None = Header(default=None)):
     conn = get_db()
     cur = conn.cursor()
     cur.execute("SELECT * FROM users WHERE email=?", (payload.email,))
@@ -105,13 +105,38 @@ def login(payload: LoginIn):
         conn.close()
         raise HTTPException(status_code=400, detail="Invalid credentials")
 
+    # Determine preferred language
+    preferred = normalize_lang(payload.uiLanguage) or normalize_lang(accept_language)
+    if preferred:
+        # Only update if changed or previously NULL
+        cur.execute("UPDATE users SET language=? WHERE id=?", (preferred, row["id"]))
+        conn.commit()
+        # re-fetch the user to include the new language in response
+        cur.execute("SELECT * FROM users WHERE id=?", (row["id"],))
+        row = cur.fetchone()
+
     token = uuid.uuid4().hex
-    cur.execute("INSERT INTO sessions (token, user_id, created_at) VALUES (?, ?, ?)",
-                (token, row["id"], now_iso()))
+    cur.execute(
+        "INSERT INTO sessions (token, user_id, created_at) VALUES (?, ?, ?)",
+        (token, row["id"], now_iso())
+    )
     conn.commit()
     user = user_row_to_dict(row)
+    # ---- PRINT USER INFO (safe) ----
+    log_data = {
+        "event": "login_success",
+        "user_id": user["id"],
+        "email": user["email"],                   # OK to print; do NOT print password/salt
+        "plan": user.get("plan"),
+        "uiLanguage": user.get("uiLanguage"),     # 'en' | 'tr' | None
+        "created_at": user.get("created_at"),
+    }
+    # Single-line JSON for easy grepping/ingestion
+    print(json.dumps(log_data, ensure_ascii=False))
+
     conn.close()
     return {"token": token, "user": user}
+
 
 @app.post("/logout", status_code=status.HTTP_204_NO_CONTENT)
 def logout(authorization: str | None = Header(None)):

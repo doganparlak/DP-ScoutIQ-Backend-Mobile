@@ -1,5 +1,5 @@
 # api_module/models.py
-from typing import Optional, Dict, Any, List
+from typing import Optional, Dict, Any, List, Literal
 from pydantic import BaseModel, Field, EmailStr
 
 # ---- Favorite Players I/O ----
@@ -33,6 +33,7 @@ class SignUpIn(BaseModel):
 class LoginIn(BaseModel):
     email: EmailStr
     password: str
+    uiLanguage: Optional[Literal["en", "tr"]] = None
 
 class LoginOut(BaseModel):
     token: str
@@ -45,6 +46,7 @@ class ProfileOut(BaseModel):
     country: Optional[str] = None
     plan: str
     favorite_players: List[Dict[str, Any]]
+    uiLanguage: Optional[Literal["en", "tr"]] = None  # <-- NEW
 
 class ProfilePatch(BaseModel):
     dob: Optional[str] = None

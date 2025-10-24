@@ -48,7 +48,8 @@ def init_db() -> None:
       country TEXT,
       plan TEXT DEFAULT 'Free',
       favorites_json TEXT DEFAULT '[]',
-      created_at TEXT NOT NULL
+      created_at TEXT NOT NULL,
+      language TEXT
     );
     """)
     cur.execute("""
@@ -106,6 +107,7 @@ def user_row_to_dict(row: sqlite3.Row) -> Dict[str, Any]:
         "plan": row["plan"],
         "favorite_players": json.loads(row["favorites_json"] or "[]"),
         "created_at": row["created_at"],
+        "uiLanguage": row["language"],     # 'en' | 'tr' | None
     }
 # ----- deletion helpers -----
 def get_user_email_by_id(conn: sqlite3.Connection, user_id: int) -> Optional[str]:
@@ -262,10 +264,13 @@ ROLE_SHORT_TO_LONG = {
     "RCB": "Right Center Back",
     "RB": "Right Back",
     "RWB": "Right Wing Back",
+    "LM": 'Left Midfield',
     "LCM": "Left Center Midfield",
     "CM": "Center Midfield",
+    "CAM": 'Center Attacking Midfield',
     "CDM": "Center Defensive Midfield",
     "RCM": "Right Center Midfield",
+    "RM": 'Right Midfield',
     "CF": "Center Forward",
     "RCF": "Right Center Forward",
     "LCF": "Left Center Forward",
@@ -285,3 +290,23 @@ def to_long_roles(maybe_short_or_long_list):
         else:
             out.append(r)
     return out
+
+def normalize_lang(value: Optional[str]) -> Optional[str]:
+    """
+    Accepts 'en'/'tr', 'EN'/'TR', 'English', 'Türkçe', or full BCP-47 like 'en-US'/'tr-TR'.
+    Returns 'en' or 'tr' or None.
+    """
+    if not value:
+        return None
+    v = value.strip().lower()
+    if v in {"en", "tr"}:
+        return v
+    if v.startswith("en"):
+        return "en"
+    if v.startswith("tr"):
+        return "tr"
+    if "english" in v:
+        return "en"
+    if "türkçe" in v or "turkish" in v:
+        return "tr"
+    return None
