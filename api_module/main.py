@@ -5,16 +5,18 @@ from fastapi.middleware.cors import CORSMiddleware
 from contextlib import asynccontextmanager
 from dotenv import load_dotenv
 
+
 load_dotenv() 
 
 # your existing chat utilities
-from chatbot_module.chatbot import answer_question, reset_session
+from chatbot_module.chatbot import answer_question
 from api_module.response_handler import split_response_parts
 
 # import our refactored pieces
 from api_module.utilities import (
     get_db, init_db, hash_pw, new_salt, now_iso, get_user_email_by_id, delete_user_everywhere, get_bearer_token, revoke_session,
-    user_row_to_dict, require_auth, create_email_code, verify_email_code, send_email_code, to_long_roles, normalize_lang, DB_FILE
+    user_row_to_dict, require_auth, create_email_code, verify_email_code, send_email_code, to_long_roles, normalize_lang, get_user_language,
+    session_exists_and_active, delete_chat_messages,  DB_FILE
 )
 from api_module.models import (
     SignUpIn, LoginIn, LoginOut, ProfileOut, ProfilePatch, SetNewPasswordIn,
@@ -49,7 +51,6 @@ app.add_middleware(
 )
 
 
-
 # ---------- endpoints ----------
 @app.get("/health")
 async def health() -> Dict[str, Any]:
@@ -78,12 +79,12 @@ def signup(payload: SignUpIn):
     pw_hash = hash_pw(payload.password, salt)
     favorites_json = json.dumps(payload.favorite_players or [])
     plan = payload.plan or "Free"
-
+    newsletter_int = 1 if bool(payload.newsletter) else 0
     try:
         cur.execute(
-            "INSERT INTO users (email, password_hash, salt, dob, country, plan, favorites_json, created_at) "
-            "VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
-            (payload.email, pw_hash, salt, payload.dob, payload.country, plan, favorites_json, now_iso())
+            "INSERT INTO users (email, password_hash, salt, dob, country, plan, favorites_json, created_at, newsletter) "
+            "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)",
+            (payload.email, pw_hash, salt, payload.dob, payload.country, plan, favorites_json, now_iso(), newsletter_int)
         )
         conn.commit()
     finally:
@@ -116,9 +117,11 @@ def login(payload: LoginIn, accept_language: str | None = Header(default=None)):
         row = cur.fetchone()
 
     token = uuid.uuid4().hex
+    # ⬇️ Snapshot the user language into the session
+    lang_for_session = normalize_lang(row["language"]) or "en"
     cur.execute(
-        "INSERT INTO sessions (token, user_id, created_at) VALUES (?, ?, ?)",
-        (token, row["id"], now_iso())
+        "INSERT INTO sessions (token, user_id, language, created_at) VALUES (?, ?, ?, ?)",
+        (token, row["id"], lang_for_session, now_iso())
     )
     conn.commit()
     user = user_row_to_dict(row)
@@ -300,7 +303,7 @@ def delete_me(user_id: int = Depends(require_auth)):
 
 # --- chat ---
 @app.post("/chat")
-async def chat(body: ChatIn) -> Dict[str, Any]:
+async def chat(body: ChatIn, user_id: int = Depends(require_auth)) -> Dict[str, Any]:
     """
     Returns:
       {
@@ -309,10 +312,28 @@ async def chat(body: ChatIn) -> Dict[str, Any]:
         "response_parts": [...]
       }
     """
+    session_id = body.session_id or "default"
+    print(body)
+    # Ensure an active sessions row exists for this session_id.
+    conn = get_db()
+    cur = conn.cursor()
+    try:
+        if not session_exists_and_active(cur, session_id):
+            lang = normalize_lang(get_user_language(conn, user_id)) or "en"
+            cur.execute(
+                "INSERT OR REPLACE INTO sessions (token, user_id, language, created_at, ended_at) "
+                "VALUES (?, ?, ?, ?, NULL)",
+                (session_id, user_id, lang, now_iso())
+            )
+            conn.commit()
+    finally:
+        conn.close()
+
+    # Build chain (rehydrates history from DB and injects session language)
     result = answer_question(
         body.message,
-        session_id=body.session_id or "default",
-        strategy=body.strategy
+        session_id=session_id,
+        strategy=body.strategy,
     )
     answer_text = (result.get("answer") or "").strip()
     payload = result.get("data") or {"players": []}
@@ -324,7 +345,19 @@ async def chat(body: ChatIn) -> Dict[str, Any]:
 
 @app.post("/reset")
 async def reset(session_id: str) -> Dict[str, Any]:
-    reset_session(session_id)
+    """
+    Ends a chat: drops persisted history and marks the session ended.
+    Next message with the same session_id will create a fresh session row.
+    """
+    # Mark DB session ended
+    conn = get_db()
+    cur = conn.cursor()
+    try:
+        delete_chat_messages(conn, session_id)
+        cur.execute("UPDATE sessions SET ended_at=? WHERE token=?", (now_iso(), session_id))
+        conn.commit()
+    finally:
+        conn.close()
     return {"ok": True, "session_id": session_id, "reset": True}
 
 # --- favorite players ---

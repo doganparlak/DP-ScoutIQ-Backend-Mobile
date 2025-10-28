@@ -3,9 +3,27 @@ import io
 import base64
 import json
 import math
-from typing import Dict, List, Any, Tuple, Iterable
+from typing import Dict, List, Any, Tuple, Iterable, Optional
 import matplotlib.pyplot as plt
 
+LANG_DIRECTIVES = {
+    "en": (
+        "LANGUAGE POLICY — ENGLISH ONLY:\n"
+        "- You must respond in English only.\n"
+        "- Do not switch languages for any reason (even if the user writes or asks in another language).\n"
+        "- If the user writes in another language, reply in English and briefly note you will continue in English.\n"
+        "- Do not include side-by-side translations. Keep proper nouns as-is. Numbers are fine.\n"
+        "- If asked to translate or switch language, refuse and state you can only reply in English."
+    ),
+    "tr": (
+        "DİL POLİTİKASI — YALNIZCA TÜRKÇE:\n"
+        "- Yalnızca Türkçe yanıt ver.\n"
+        "- Hiçbir koşulda dil değiştirme (kullanıcı başka dilde yazsa veya istese bile).\n"
+        "- Kullanıcı başka dilde yazarsa, Türkçe yanıt ver ve kısaca Türkçe devam edeceğini belirt.\n"
+        "- Yan yana çeviriler verme. Özel isimleri olduğu gibi bırak. Sayılar sorun değil.\n"
+        "- Dili değiştirme veya çeviri talebi gelirse, yalnızca Türkçe yanıt verebildiğini belirt ve reddet."
+    ),
+}
 PLAYER_PROFILE_OPEN_TAG_RE = re.compile(r"\[\[\s*PLAYER_PROFILE\s*:\s*(.*?)\s*\]\]", re.IGNORECASE)
 HEAVY_TAGS_RE = re.compile(r"(<img[^>]*>|<table[\s\S]*?</table>)", re.IGNORECASE)
 # Flagged block delimiters (exact tokens instructed in system_message)
@@ -601,3 +619,24 @@ def compose_selection_preamble(
     )
 
     return strategy_block + selection_rules
+
+# ------- Language Adjustment --------
+def _normalize_lang_code(code: Optional[str]) -> str:
+    c = (code or "").lower().strip()
+    if c.startswith("tr"):
+        return "tr"
+    if c.startswith("en"):
+        return "en"
+    return "en"  # fallback
+
+def inject_language(base_system_message: str, lang_code: Optional[str]) -> str:
+    """
+    Make the language constraint dominate and be hard to override by:
+    - Prepending the directive (highest priority),
+    - Keeping your original system message,
+    - Appending the directive again (redundancy to resist drift).
+    """
+    lang = _normalize_lang_code(lang_code)
+    directive = LANG_DIRECTIVES.get(lang, LANG_DIRECTIVES["en"])
+    core = base_system_message.strip()
+    return f"{directive}\n\n{core}\n\n{directive}\n"

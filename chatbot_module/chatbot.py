@@ -1,11 +1,18 @@
-from typing import Dict, Any, Optional
+from typing import Dict, Any, Optional, List
 from dotenv import load_dotenv
 from langchain_community.vectorstores import FAISS
 from langchain_openai import ChatOpenAI, OpenAIEmbeddings
 from langchain.prompts import ChatPromptTemplate
 from langchain.chains import ConversationalRetrievalChain
 from langchain.memory import ConversationBufferMemory
+from langchain.schema import AIMessage, HumanMessage
 from langchain.chains import LLMChain
+from api_module.utilities import (
+    get_db,
+    get_session_language,
+    append_chat_message,
+    load_chat_messages
+)
 from chatbot_module.prompts import (
     system_message,
     stats_parser_system_message,
@@ -18,7 +25,8 @@ from chatbot_module.tools import (
     filter_players_by_seen,
     build_player_payload,
     strip_meta_stats_text,
-    compose_selection_preamble
+    compose_selection_preamble,
+    inject_language
 )
 
 # Load environment variables
@@ -37,20 +45,40 @@ except Exception as e:
         "was built with the same embedding model."
     ) from e
 
-retriever = vectorstore.as_retriever(search_kwargs={"k": 10})
-
 # === QA Chain with RAG & Memory ===
-prompt = ChatPromptTemplate.from_messages([
-    ("system", system_message),
-    ("human",
-     "{context}\n\n"
-     "Question: {question}"
-    )
-])
+def add_language_to_prompt(ui_language: Optional[str]) -> ChatPromptTemplate:
+    sys_msg = inject_language(system_message, ui_language)
+    return ChatPromptTemplate.from_messages([
+        ("system", sys_msg),
+        ("human",
+         "{context}\n\n"
+         "Question: {question}"
+        )
+    ])
 
-def create_qa_chain():
-    llm = ChatOpenAI(model="gpt-4o", temperature=0.3)
+def create_qa_chain(session_id: str) -> ConversationalRetrievalChain:
+    # 1) get session language
+    conn = get_db()
+    try:
+        lang = get_session_language(conn, session_id) or "en"
+        history_rows = load_chat_messages(conn, session_id)
+    finally:
+        conn.close()
+
+    # 2) hydrate memory from persisted history
     memory = ConversationBufferMemory(memory_key="chat_history", return_messages=True)
+    msgs: List = []
+    for row in history_rows:
+        if row["role"] == "human":
+            msgs.append(HumanMessage(content=row["content"]))
+        elif row["role"] == "ai":
+            msgs.append(AIMessage(content=row["content"]))
+        # ignore any 'system' rows for chat_history
+    memory.chat_memory.messages = msgs
+
+    llm = ChatOpenAI(model="gpt-4o", temperature=0.3)
+    retriever = vectorstore.as_retriever(search_kwargs={"k": 10})
+    prompt = add_language_to_prompt(lang)
     return ConversationalRetrievalChain.from_llm(
         llm=llm,
         retriever=retriever,
@@ -80,27 +108,15 @@ meta_parser_chain = LLMChain(
     prompt=meta_parser_prompt
 )
 
-# === Per-session chains (so different users/chats don't share memory) ===
-sessions: Dict[str, ConversationalRetrievalChain] = {}
-
-def get_session_chain(session_id: str) -> ConversationalRetrievalChain:
-    chain = sessions.get(session_id)
-    if chain is None:
-        chain = create_qa_chain()
-        sessions[session_id] = chain
-    return chain
-
-def reset_session(session_id: str) -> None:
-    """Clears chat history for a given session."""
-    if session_id in sessions:
-        # Recreate to reset memory cleanly
-        sessions[session_id] = create_qa_chain()
-
 # ===== Q&A Actions =====
-def answer_question(question: str, session_id: str = "default", strategy: Optional[str] = None) -> Dict[str, Any]:
+def answer_question(
+    question: str, 
+    session_id: str = "default", 
+    strategy: Optional[str] = None
+) -> Dict[str, Any]:
 
     # 0) Get/Create Chain
-    qa_chain = get_session_chain(session_id)
+    qa_chain = create_qa_chain(session_id)
     memory: ConversationBufferMemory = qa_chain.memory
 
     # 1) Freeze PRIOR history (before any LLM call can mutate memory)
@@ -138,7 +154,21 @@ def answer_question(question: str, session_id: str = "default", strategy: Option
     try:
         result = qa_chain.invoke(inputs)
         base_answer = (result.get("answer") or "").strip()
+
+        conn = get_db()
+        try:
+            append_chat_message(conn, session_id, "human", question or "")
+            append_chat_message(conn, session_id, "ai", base_answer)
+        finally:
+            conn.close()
     except Exception as e:
+        # Persist the user's message even if model fails
+        conn = get_db()
+        try:
+            append_chat_message(conn, session_id, "human", question or "")
+            append_chat_message(conn, session_id, "ai", "Sorry, I couldn’t generate an answer right now.")
+        finally:
+            conn.close()
         return {"answer": "Sorry, I couldn’t generate an answer right now.", "answer_raw": str(e)}
 
     # 6) Parse current answer into meta/stats
@@ -157,9 +187,17 @@ def answer_question(question: str, session_id: str = "default", strategy: Option
         # Strip flagged/meta/stats text from the narrative; keep only analysis
         known_names = [p.get("name") for p in (meta.get("players") or []) if p.get("name")]
         cleaned = strip_meta_stats_text(base_answer, known_names=known_names)
-        print(payload)
+        #print(payload)
         out = cleaned
+
         return {"answer": out, "data": payload}
 
     except Exception as e:
+        # Persist raw base answer if parsing failed (optional)
+        conn = get_db()
+        try:
+            append_chat_message(conn, session_id, "human", question or "")
+            append_chat_message(conn, session_id, "ai", base_answer)
+        finally:
+            conn.close()
         return {"answer": "Sorry, I couldn’t generate an answer right now.", "error": str(e)}

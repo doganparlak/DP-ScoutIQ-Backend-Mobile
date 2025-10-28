@@ -1,6 +1,6 @@
 # api_module/utilities.py
 from __future__ import annotations
-from typing import Optional, Dict, Any
+from typing import Optional, Dict, Any, List
 from fastapi import Depends, Header, HTTPException
 from fastapi.security import OAuth2PasswordBearer
 from pydantic import EmailStr
@@ -8,6 +8,7 @@ import os, sqlite3, uuid, hashlib, hmac, json, datetime as dt
 import random, smtplib
 from email.mime.multipart import MIMEMultipart
 from email.mime.text import MIMEText
+from datetime import datetime, timezone
 
 # --- Email settings (you provided) ---
 settings: Dict[str, Any] = {
@@ -49,14 +50,17 @@ def init_db() -> None:
       plan TEXT DEFAULT 'Free',
       favorites_json TEXT DEFAULT '[]',
       created_at TEXT NOT NULL,
-      language TEXT
+      language TEXT,
+      newsletter INTEGER NOT NULL DEFAULT 0   -- 0 = no, 1 = yes
     );
     """)
     cur.execute("""
     CREATE TABLE IF NOT EXISTS sessions (
       token TEXT PRIMARY KEY,
       user_id INTEGER NOT NULL,
+      language TEXT,
       created_at TEXT NOT NULL,
+      ended_at TEXT,
       FOREIGN KEY(user_id) REFERENCES users(id)
     );
     """)
@@ -83,10 +87,52 @@ def init_db() -> None:
       FOREIGN KEY(user_id) REFERENCES users(id) ON DELETE CASCADE
     );
     """)
+    cur.execute("""
+    CREATE TABLE IF NOT EXISTS chat_messages (
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      session_token TEXT NOT NULL,            -- FK to sessions.token
+      role TEXT NOT NULL CHECK(role IN ('human','ai','system')),
+      content TEXT NOT NULL,
+      created_at TEXT NOT NULL,
+      FOREIGN KEY(session_token) REFERENCES sessions(token) ON DELETE CASCADE
+    );
+    """)
+
+    cur.execute("CREATE INDEX IF NOT EXISTS idx_chat_messages_session ON chat_messages(session_token);")
+    cur.execute("CREATE INDEX IF NOT EXISTS idx_chat_messages_time ON chat_messages(created_at);")
     cur.execute("CREATE INDEX IF NOT EXISTS idx_email_codes_email ON email_codes(email);")
     cur.execute("CREATE INDEX IF NOT EXISTS idx_email_codes_purpose ON email_codes(purpose);")
+    cur.execute("CREATE INDEX IF NOT EXISTS idx_sessions_user_id ON sessions(user_id);")
     conn.commit()
     conn.close()
+
+
+def append_chat_message(conn, session_token: str, role: str, content: str) -> None:
+    cur = conn.cursor()
+    cur.execute(
+        "INSERT INTO chat_messages (session_token, role, content, created_at) VALUES (?, ?, ?, ?)",
+        (session_token, role, content, now_iso())
+    )
+    conn.commit()
+
+def delete_chat_messages(conn, session_token: str) -> None:
+    cur = conn.cursor()
+    cur.execute("DELETE FROM chat_messages WHERE session_token=?", (session_token,))
+    conn.commit()
+
+def load_chat_messages(conn, session_token: str) -> List[Dict[str, str]]:
+    cur = conn.cursor()
+    cur.execute(
+        "SELECT role, content FROM chat_messages WHERE session_token=? ORDER BY id ASC",
+        (session_token,)
+    )
+    rows = cur.fetchall() or []
+    return [{"role": r["role"], "content": r["content"]} for r in rows]
+
+def session_exists_and_active(cur, session_id: str) -> bool:
+    cur.execute("SELECT 1 FROM sessions WHERE token=? AND ended_at IS NULL", (session_id,))
+    return cur.fetchone() is not None
+
 
 # --- utilities ---
 def hash_pw(password: str, salt: str) -> str:
@@ -96,7 +142,7 @@ def new_salt() -> str:
     return uuid.uuid4().hex
 
 def now_iso() -> str:
-    return dt.datetime.utcnow().isoformat()
+     return datetime.now(timezone.utc).isoformat()
 
 def user_row_to_dict(row: sqlite3.Row) -> Dict[str, Any]:
     return {
@@ -118,23 +164,47 @@ def get_user_email_by_id(conn: sqlite3.Connection, user_id: int) -> Optional[str
 
 def delete_user_everywhere(conn: sqlite3.Connection, user_id: int) -> None:
     """
-    Hard-delete the user and related artifacts from SQLite:
-      - sessions (by user_id)
+    Hard-delete a user and all related data:
+
+      - sessions (by user_id)  -> cascades to chat_messages
+      - chat_messages (defensive fallback if cascade isn't active)
       - email_codes (by email)
-      - users (by id)
+      - users (by id)          -> cascades to favorite_players
+
+    Requires: sessions.token is FK for chat_messages.session_token (ON DELETE CASCADE)
+              favorite_players.user_id FK to users(id) (ON DELETE CASCADE)
     """
     email = get_user_email_by_id(conn, user_id)
     if not email:
-        # Nothing to delete
         return
+
     cur = conn.cursor()
     try:
-        # Delete auth sessions first
+        # Ensure cascades are honored on this connection
+        cur.execute("PRAGMA foreign_keys = ON;")
+
+        # Collect session tokens up-front (for defensive cleanup if needed)
+        cur.execute("SELECT token FROM sessions WHERE user_id=?", (user_id,))
+        tokens = [row["token"] for row in cur.fetchall() or []]
+
+        # 1) Delete auth/chat sessions (should cascade to chat_messages)
         cur.execute("DELETE FROM sessions WHERE user_id=?", (user_id,))
-        # Delete email codes for this user
+
+        # 1a) Defensive fallback: if FK cascade wasn't active previously,
+        #     explicitly remove chat messages for those session tokens.
+        if tokens:
+            # Use executemany to avoid huge IN clauses; small lists can use IN (...)
+            cur.executemany(
+                "DELETE FROM chat_messages WHERE session_token=?",
+                [(t,) for t in tokens],
+            )
+
+        # 2) Delete email verification/reset codes tied to this user
         cur.execute("DELETE FROM email_codes WHERE email=?", (email,))
-        # Finally delete the user record
+
+        # 3) Delete the user (cascades to favorite_players)
         cur.execute("DELETE FROM users WHERE id=?", (user_id,))
+
         conn.commit()
     except Exception:
         conn.rollback()
@@ -204,9 +274,22 @@ def verify_email_code(email: str, code: str, purpose: str, expiry_minutes: int =
         conn.close(); return False
     if int(row["used"]) == 1:
         conn.close(); return False
-    created = dt.datetime.fromisoformat(row["created_at"])
-    if dt.datetime.utcnow() - created > dt.timedelta(minutes=expiry_minutes):
+    
+    # Parse created_at robustly
+    try:
+        created = dt.datetime.fromisoformat(row["created_at"].replace("Z", "+00:00"))
+    except Exception:
+        # Fallback if stored in a non-ISO format (unlikely)
         conn.close(); return False
+     
+    # Normalize to aware UTC if the row happened to be stored naive in older data
+    if created.tzinfo is None:
+        created = created.replace(tzinfo=dt.timezone.utc)
+
+    now = dt.datetime.now(dt.timezone.utc)  # aware UTC
+    if now - created >  dt.timedelta(minutes=expiry_minutes):
+        conn.close(); return False
+    
     cur.execute("UPDATE email_codes SET used=1 WHERE id=?", (row["id"],))
     conn.commit()
     conn.close()
@@ -255,6 +338,7 @@ def send_email_code(receiver_email: str, code: str, mail_type: str) -> None:
         try: server.quit()
         except: pass
 
+# ---------- ROLE Utilities ----------
 ROLE_SHORT_TO_LONG = {
     "GK": "Goal Keeper",
     "LWB": "Left Wing Back",
@@ -291,6 +375,8 @@ def to_long_roles(maybe_short_or_long_list):
             out.append(r)
     return out
 
+#---------- Language Utilities ----------
+
 def normalize_lang(value: Optional[str]) -> Optional[str]:
     """
     Accepts 'en'/'tr', 'EN'/'TR', 'English', 'Türkçe', or full BCP-47 like 'en-US'/'tr-TR'.
@@ -310,3 +396,39 @@ def normalize_lang(value: Optional[str]) -> Optional[str]:
     if "türkçe" in v or "turkish" in v:
         return "tr"
     return None
+
+def get_user_language(conn: sqlite3.Connection, user_id: int) -> Optional[str]:
+    cur = conn.cursor()
+    cur.execute("SELECT language FROM users WHERE id=?", (user_id,))
+    row = cur.fetchone()
+    return (row["language"] or None) if row else None
+
+def set_session_language(conn, token: str, lang: Optional[str]) -> None:
+    cur = conn.cursor()
+    cur.execute("UPDATE sessions SET language=? WHERE token=?", (lang, token))
+    if cur.rowcount == 0:
+        # Optional: create if not present (depends on your login flow)
+        cur.execute(
+            "INSERT INTO sessions(token, user_id, language, created_at) VALUES (?, ?, ?, ?)",
+            (token, -1, lang, now_iso())  # -1 only if you truly don't know user_id here
+        )
+    conn.commit()
+
+def get_session_language(conn, token: str) -> Optional[str]:
+    cur = conn.cursor()
+    cur.execute("SELECT language FROM sessions WHERE token=? AND ended_at IS NULL", (token,))
+    row = cur.fetchone()
+    return row["language"] if row and row["language"] else None
+
+def mark_session_started(conn, token: str, user_id: int, lang: Optional[str]) -> None:
+    cur = conn.cursor()
+    cur.execute("""
+        INSERT OR REPLACE INTO sessions(token, user_id, language, created_at, ended_at)
+        VALUES (?, ?, ?, COALESCE((SELECT created_at FROM sessions WHERE token=?), ?), NULL)
+    """, (token, user_id, lang, token, now_iso()))
+    conn.commit()
+
+def mark_session_ended(conn, token: str) -> None:
+    cur = conn.cursor()
+    cur.execute("UPDATE sessions SET ended_at=? WHERE token=?", (now_iso(), token))
+    conn.commit()
