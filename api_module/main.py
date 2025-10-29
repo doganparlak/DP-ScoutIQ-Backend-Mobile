@@ -2,22 +2,22 @@
 from typing import Optional, Dict, Any, List
 from fastapi import FastAPI, HTTPException, Depends, Header, status, Response
 from fastapi.middleware.cors import CORSMiddleware
-from contextlib import asynccontextmanager
 from dotenv import load_dotenv
-
 
 load_dotenv() 
 
-# your existing chat utilities
-from chatbot_module.chatbot import answer_question
-from api_module.response_handler import split_response_parts
+from sqlalchemy.orm import Session
+from sqlalchemy import text
+from sqlalchemy.exc import SQLAlchemyError
 
+from chatbot_module.chatbot import answer_question
 # import our refactored pieces
 from api_module.utilities import (
-    get_db, init_db, hash_pw, new_salt, now_iso, get_user_email_by_id, delete_user_everywhere, get_bearer_token, revoke_session,
+    hash_pw, new_salt, now_iso, get_user_email_by_id, delete_user_everywhere, get_bearer_token, revoke_session,
     user_row_to_dict, require_auth, create_email_code, verify_email_code, send_email_code, to_long_roles, normalize_lang, get_user_language,
-    session_exists_and_active, delete_chat_messages,  DB_FILE
+    session_exists_and_active, delete_chat_messages, split_response_parts, pick
 )
+from api_module.database import get_db
 from api_module.models import (
     SignUpIn, LoginIn, LoginOut, ProfileOut, ProfilePatch, SetNewPasswordIn,
     PasswordResetRequestIn, VerifyResetIn, VerifySignupIn, SignupCodeRequestIn, ChatIn,
@@ -28,28 +28,18 @@ import hmac, uuid, json, re, os
 
 PASSWORD_RE = re.compile(r'^(?=.*[A-Za-z])(?=.*\d).{8,}$')
 
-# (dev) show DB file once on startup for clarity
-@asynccontextmanager
-async def lifespan(app: FastAPI):
-    # --- STARTUP ---
-    init_db()  # idempotent table creation
-    if os.environ.get("ENV", "dev") != "prod":
-        print("SQLite DB:", DB_FILE)
-    yield
+app = FastAPI()
 
-app = FastAPI(lifespan=lifespan)
-
-# CORS (lock this down to your frontend origin in prod)
+# CORS
 origins_env = os.environ.get("CORS_ORIGINS")
 origins = [o.strip() for o in origins_env.split(",")] if origins_env else ["http://localhost:19006"]
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=origins,  # e.g., ["http://localhost:19006", "http://localhost:3000"]
+    allow_origins=origins,
     allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],
 )
-
 
 # ---------- endpoints ----------
 @app.get("/health")
@@ -57,167 +47,170 @@ async def health() -> Dict[str, Any]:
     return {"ok": True}
 
 @app.post("/auth/signup")
-def signup(payload: SignUpIn):
-    # 1) server-side password validation
+def signup(payload: SignUpIn, db: Session = Depends(get_db)):
     if not PASSWORD_RE.match(payload.password):
         raise HTTPException(
             status_code=status.HTTP_400_BAD_REQUEST,
             detail="Password must be at least 8 characters and include at least one letter and one number.",
         )
-    
-    conn = get_db()
-    cur = conn.cursor()
 
     # 2) check if email exists
-    cur.execute("SELECT 1 FROM users WHERE email=?", (payload.email,))
-    if cur.fetchone():
-        conn.close()
-        raise HTTPException(status_code=400, detail="Email already registered")
-
-    # 3) create user
-    salt = new_salt()
-    pw_hash = hash_pw(payload.password, salt)
-    favorites_json = json.dumps(payload.favorite_players or [])
-    plan = payload.plan or "Free"
-    newsletter_int = 1 if bool(payload.newsletter) else 0
     try:
-        cur.execute(
-            "INSERT INTO users (email, password_hash, salt, dob, country, plan, favorites_json, created_at, newsletter) "
-            "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)",
-            (payload.email, pw_hash, salt, payload.dob, payload.country, plan, favorites_json, now_iso(), newsletter_int)
+        exists = db.execute(text("SELECT 1 FROM users WHERE email = :e"), {"e": payload.email}).first()
+        if exists:
+            raise HTTPException(status_code=400, detail="Email already registered")
+        # 3) create user
+        salt = new_salt()
+        pw_hash = hash_pw(payload.password, salt)
+        favorites_py = payload.favorite_players or []
+        plan = payload.plan or "Free"
+        newsletter_bool = bool(payload.newsletter)
+        dob_str = payload.dob or None
+        db.execute(
+            text("""
+                INSERT INTO users
+                (email, password_hash, salt, dob, country, plan, favorites_json, created_at, language, newsletter)
+                VALUES
+                (:email, :ph, :salt, CAST(:dob AS date), :country, :plan, CAST(:favs AS jsonb), NOW(), NULL, CAST(:newsletter AS boolean))
+                """),
+            {
+                "email": payload.email,
+                "ph": pw_hash,
+                "salt": salt,
+                "dob": dob_str,                 # 'YYYY-MM-DD' or None
+                "country": payload.country,
+                "plan": plan,
+                "favs": json.dumps(favorites_py, ensure_ascii=False),
+                "newsletter": newsletter_bool,
+            }
         )
-        conn.commit()
-    finally:
-        conn.close()
-    return {"ok": True}
+        db.commit()
+        return {"ok": True}
+    except SQLAlchemyError as e:
+        db.rollback()
+        print("[signup][db-error]", str(e))
+        raise HTTPException(status_code=500, detail="Signup failed")
 
 @app.post("/auth/login", response_model=LoginOut)
-def login(payload: LoginIn, accept_language: str | None = Header(default=None)):
-    conn = get_db()
-    cur = conn.cursor()
-    cur.execute("SELECT * FROM users WHERE email=?", (payload.email,))
-    row = cur.fetchone()
+def login(payload: LoginIn, accept_language: str | None = Header(default=None), db: Session = Depends(get_db)):
+    row = db.execute(text("SELECT * FROM users WHERE email = :e"), {"e": payload.email}).mappings().first()
+    print(row)
     if not row:
-        conn.close()
         raise HTTPException(status_code=400, detail="Invalid credentials")
 
     salt = row["salt"]
     if not hmac.compare_digest(hash_pw(payload.password, salt), row["password_hash"]):
-        conn.close()
         raise HTTPException(status_code=400, detail="Invalid credentials")
 
     # Determine preferred language
     preferred = normalize_lang(payload.uiLanguage) or normalize_lang(accept_language)
     if preferred:
-        # Only update if changed or previously NULL
-        cur.execute("UPDATE users SET language=? WHERE id=?", (preferred, row["id"]))
-        conn.commit()
-        # re-fetch the user to include the new language in response
-        cur.execute("SELECT * FROM users WHERE id=?", (row["id"],))
-        row = cur.fetchone()
+        db.execute(text("UPDATE users SET language = :l WHERE id = :id"), {"l": preferred, "id": row["id"]})
+        db.commit()
+        row = db.execute(text("SELECT * FROM users WHERE id = :id"), {"id": row["id"]}).mappings().first()
 
     token = uuid.uuid4().hex
-    # ⬇️ Snapshot the user language into the session
-    lang_for_session = normalize_lang(row["language"]) or "en"
-    cur.execute(
-        "INSERT INTO sessions (token, user_id, language, created_at) VALUES (?, ?, ?, ?)",
-        (token, row["id"], lang_for_session, now_iso())
-    )
-    conn.commit()
-    user = user_row_to_dict(row)
-    # ---- PRINT USER INFO (safe) ----
-    log_data = {
-        "event": "login_success",
-        "user_id": user["id"],
-        "email": user["email"],                   # OK to print; do NOT print password/salt
-        "plan": user.get("plan"),
-        "uiLanguage": user.get("uiLanguage"),     # 'en' | 'tr' | None
-        "created_at": user.get("created_at"),
-    }
-    # Single-line JSON for easy grepping/ingestion
-    print(json.dumps(log_data, ensure_ascii=False))
+    lang_for_session = normalize_lang(row.get("language")) or "en"
 
-    conn.close()
+    db.execute(
+        text("""
+        INSERT INTO sessions (token, user_id, language, created_at, ended_at)
+        VALUES (:t, :uid, :l, :ts, NULL)
+        """),
+        {"t": token, "uid": row["id"], "l": lang_for_session, "ts": now_iso()}
+    )
+    db.commit()
+
+    user = user_row_to_dict(row)
+    print(json.dumps({
+    "event": "login_success",
+    "user_id": user["id"],
+    "email": user["email"],
+    "plan": user.get("plan"),
+    "uiLanguage": user.get("uiLanguage"),
+    "created_at": user.get("created_at"),
+    }, ensure_ascii=False, default=str))
+
     return {"token": token, "user": user}
 
-
 @app.post("/logout", status_code=status.HTTP_204_NO_CONTENT)
-def logout(authorization: str | None = Header(None)):
-    """
-    Log out only the *current* session by deleting the bearer token from `sessions`.
-    Always returns 204 (idempotent).
-    """
+def logout(authorization: str | None = Header(None), db: Session = Depends(get_db)):
     try:
         token = get_bearer_token(authorization)
     except HTTPException:
-        # If there's no/invalid header, still respond 204 to be idempotent
         return Response(status_code=status.HTTP_204_NO_CONTENT)
 
-    conn = get_db()
-    try:
-        revoke_session(conn, token)  # deletes the row if it exists
-    finally:
-        try:
-            conn.close()
-        except:
-            pass
+    revoke_session(db, token)
     return Response(status_code=status.HTTP_204_NO_CONTENT)
 
 @app.post("/auth/set_new_password")
-def set_new_password(body: SetNewPasswordIn):
-    # 1) Strength check (same as signup)
+def set_new_password(
+    body: SetNewPasswordIn,
+    accept_language: str | None = Header(default=None),
+    db: Session = Depends(get_db),
+):
+    # Determine preferred language: DB (by email) -> Accept-Language -> 'en'
+    row_lang = db.execute(
+        text("SELECT language FROM users WHERE lower(email) = lower(:e)"),
+        {"e": body.email},
+    ).mappings().first()
+    preferred_lang = normalize_lang((row_lang or {}).get("language")) or normalize_lang(accept_language) or "en"
+
+    # 1) Password strength check
     if not PASSWORD_RE.match(body.new_password):
         raise HTTPException(
             status_code=400,
-            detail="Password must be at least 8 characters and include at least one letter and one number."
+            detail=pick(preferred_lang, "weak_pw"),
+            headers={"Content-Language": preferred_lang},
         )
 
-    conn = get_db(); cur = conn.cursor()
-    cur.execute("SELECT id, password_hash, salt FROM users WHERE email=?", (body.email,))
-    row = cur.fetchone()
+    # 2) Fetch user creds
+    row = db.execute(
+        text("SELECT id, password_hash, salt FROM users WHERE lower(email) = lower(:e)"),
+        {"e": body.email}
+    ).mappings().first()
+
     if not row:
-        conn.close()
-        # Don’t reveal if email exists
+        # Don't reveal whether the email exists; just return OK
         return {"ok": True}
 
     user_id = int(row["id"])
     old_hash = row["password_hash"]
     old_salt = row["salt"]
 
-    # 2) Block reuse: hash new password with the OLD salt and compare
+    # 3) Prevent reusing the same password
     new_with_old_salt = hash_pw(body.new_password, old_salt)
     if hmac.compare_digest(new_with_old_salt, old_hash):
-        conn.close()
-        raise HTTPException(status_code=400, detail="New password must be different from your current password.")
+        raise HTTPException(
+            status_code=400,
+            detail=pick(preferred_lang, "same_pw"),
+            headers={"Content-Language": preferred_lang},
+        )
 
-    # 3) Save new password with a FRESH salt, then revoke all sessions
+    # 4) Update password + invalidate sessions
     fresh_salt = new_salt()
     fresh_hash = hash_pw(body.new_password, fresh_salt)
 
-    cur.execute("UPDATE users SET password_hash=?, salt=? WHERE id=?", (fresh_hash, fresh_salt, user_id))
-    cur.execute("DELETE FROM sessions WHERE user_id=?", (user_id,))
-    conn.commit(); conn.close()
+    db.execute(
+        text("UPDATE users SET password_hash = :ph, salt = :s WHERE id = :id"),
+        {"ph": fresh_hash, "s": fresh_salt, "id": user_id}
+    )
+    db.execute(text("DELETE FROM sessions WHERE user_id = :id"), {"id": user_id})
+    db.commit()
+
     return {"ok": True}
 
 @app.get("/me", response_model=ProfileOut)
-def me(user_id: int = Depends(require_auth)):
-    conn = get_db()
-    cur = conn.cursor()
-    cur.execute("SELECT * FROM users WHERE id=?", (user_id,))
-    row = cur.fetchone()
-    conn.close()
+def me(user_id: int = Depends(require_auth), db: Session = Depends(get_db)):
+    row = db.execute(text("SELECT * FROM users WHERE id = :id"), {"id": user_id}).mappings().first()
     if not row:
         raise HTTPException(status_code=404, detail="User not found")
     return user_row_to_dict(row)
 
 @app.patch("/me", response_model=ProfileOut)
-def update_me(patch: ProfilePatch, user_id: int = Depends(require_auth)):
-    conn = get_db()
-    cur = conn.cursor()
-    cur.execute("SELECT * FROM users WHERE id=?", (user_id,))
-    row = cur.fetchone()
+def update_me(patch: ProfilePatch, user_id: int = Depends(require_auth), db: Session = Depends(get_db)):
+    row = db.execute(text("SELECT * FROM users WHERE id = :id"), {"id": user_id}).mappings().first()
     if not row:
-        conn.close()
         raise HTTPException(status_code=404, detail="User not found")
 
     dob = patch.dob if patch.dob is not None else row["dob"]
@@ -225,31 +218,26 @@ def update_me(patch: ProfilePatch, user_id: int = Depends(require_auth)):
     plan = patch.plan if patch.plan is not None else row["plan"]
     favs = json.dumps(patch.favorite_players) if patch.favorite_players is not None else row["favorites_json"]
 
-    cur.execute("UPDATE users SET dob=?, country=?, plan=?, favorites_json=? WHERE id=?",
-                (dob, country, plan, favs, user_id))
-    conn.commit()
+    db.execute(
+        text("UPDATE users SET dob = :dob, country = :country, plan = :plan, favorites_json = :favs WHERE id = :id"),
+        {"dob": dob, "country": country, "plan": plan, "favs": favs, "id": user_id}
+    )
+    db.commit()
 
-    cur.execute("SELECT * FROM users WHERE id=?", (user_id,))
-    row2 = cur.fetchone()
-    conn.close()
+    row2 = db.execute(text("SELECT * FROM users WHERE id = :id"), {"id": user_id}).mappings().first()
     return user_row_to_dict(row2)
 
 @app.post("/logout_all")
-def logout_all(user_id: int = Depends(require_auth)):
-    conn = get_db()
-    conn.execute("DELETE FROM sessions WHERE user_id=?", (user_id,))
-    conn.commit()
-    conn.close()
+def logout_all(user_id: int = Depends(require_auth), db: Session = Depends(get_db)):
+    db.execute(text("DELETE FROM sessions WHERE user_id = :id"), {"id": user_id})
+    db.commit()
     return {"ok": True}
 
 # --- email codes: reset ---
 @app.post("/auth/request_reset")
-def request_reset(body: PasswordResetRequestIn):
-    # always ok; only send if user exists
+def request_reset(body: PasswordResetRequestIn, db: Session = Depends(get_db)):
     email = body.email
-    conn = get_db(); cur = conn.cursor()
-    cur.execute("SELECT id FROM users WHERE email=?", (email,))
-    row = cur.fetchone(); conn.close()
+    row = db.execute(text("SELECT id FROM users WHERE email = :e"), {"e": email}).mappings().first()
     if row:
         code = create_email_code(email, purpose="reset")
         send_email_code(email, code, mail_type="reset")
@@ -258,17 +246,15 @@ def request_reset(body: PasswordResetRequestIn):
 @app.post("/auth/verify_reset")
 def verify_reset(body: VerifyResetIn):
     ok = verify_email_code(body.email, body.code, purpose="reset")
-    if not ok: raise HTTPException(status_code=400, detail="Invalid or expired code")
+    if not ok:
+        raise HTTPException(status_code=400, detail="Invalid or expired code")
     return {"ok": True}
 
 # --- email codes: signup ---
 @app.post("/auth/request_signup_code")
-def request_signup_code(body: SignupCodeRequestIn):
-    # Only send if a user record exists (you create on /auth/signup first)
+def request_signup_code(body: SignupCodeRequestIn, db: Session = Depends(get_db)):
     email = body.email
-    conn = get_db(); cur = conn.cursor()
-    cur.execute("SELECT id FROM users WHERE email=?", (email,))
-    row = cur.fetchone(); conn.close()
+    row = db.execute(text("SELECT id FROM users WHERE email = :e"), {"e": email}).mappings().first()
     if row:
         code = create_email_code(email, purpose="signup")
         send_email_code(email, code, mail_type="signup")
@@ -277,59 +263,48 @@ def request_signup_code(body: SignupCodeRequestIn):
 @app.post("/auth/verify_signup_code")
 def verify_signup_code(body: VerifySignupIn):
     ok = verify_email_code(body.email, body.code, purpose="signup")
-    if not ok: raise HTTPException(status_code=400, detail="Invalid or expired code")
+    if not ok:
+        raise HTTPException(status_code=400, detail="Invalid or expired code")
     return {"ok": True}
 
 @app.delete("/me", status_code=status.HTTP_204_NO_CONTENT)
-def delete_me(user_id: int = Depends(require_auth)):
-    conn = get_db()
+def delete_me(user_id: int = Depends(require_auth), db: Session = Depends(get_db)):
     try:
-        email = get_user_email_by_id(conn, user_id)
+        email = get_user_email_by_id(db, user_id)
         if not email:
             raise HTTPException(status_code=404, detail="User not found")
-        delete_user_everywhere(conn, user_id)
+        delete_user_everywhere(db, user_id)
     except HTTPException:
         raise
     except Exception:
-        # Any DB error becomes 500
         raise HTTPException(status_code=500, detail="Could not delete account")
-    finally:
-        try:
-            conn.close()
-        except:
-            pass
-    # 204 No Content
     return Response(status_code=status.HTTP_204_NO_CONTENT)
 
 # --- chat ---
 @app.post("/chat")
-async def chat(body: ChatIn, user_id: int = Depends(require_auth)) -> Dict[str, Any]:
-    """
-    Returns:
-      {
-        "response": "<narrative text only>",
-        "data": {"players": [...]},
-        "response_parts": [...]
-      }
-    """
+async def chat(body: ChatIn, user_id: int = Depends(require_auth), db: Session = Depends(get_db)) -> Dict[str, Any]:
     session_id = body.session_id or "default"
     print(body)
-    # Ensure an active sessions row exists for this session_id.
-    conn = get_db()
-    cur = conn.cursor()
-    try:
-        if not session_exists_and_active(cur, session_id):
-            lang = normalize_lang(get_user_language(conn, user_id)) or "en"
-            cur.execute(
-                "INSERT OR REPLACE INTO sessions (token, user_id, language, created_at, ended_at) "
-                "VALUES (?, ?, ?, ?, NULL)",
-                (session_id, user_id, lang, now_iso())
-            )
-            conn.commit()
-    finally:
-        conn.close()
 
-    # Build chain (rehydrates history from DB and injects session language)
+    try:
+        if not session_exists_and_active(db, session_id):
+            lang = normalize_lang(get_user_language(db, user_id)) or "en"
+            # emulate SQLite INSERT OR REPLACE with UPSERT
+            db.execute(
+                text("""
+                INSERT INTO sessions (token, user_id, language, created_at, ended_at)
+                VALUES (:t, :uid, :l, :ts, NULL)
+                ON CONFLICT (token) DO UPDATE
+                SET user_id = EXCLUDED.user_id,
+                    language = EXCLUDED.language,
+                    ended_at = NULL
+                """),
+                {"t": session_id, "uid": user_id, "l": lang, "ts": now_iso()}
+            )
+            db.commit()
+    finally:
+        pass
+
     result = answer_question(
         body.message,
         session_id=session_id,
@@ -344,39 +319,40 @@ async def chat(body: ChatIn, user_id: int = Depends(require_auth)) -> Dict[str, 
     }
 
 @app.post("/reset")
-async def reset(session_id: str) -> Dict[str, Any]:
+async def reset(session_id: str, db: Session = Depends(get_db)) -> Dict[str, Any]:
     """
     Ends a chat: drops persisted history and marks the session ended.
     Next message with the same session_id will create a fresh session row.
     """
-    # Mark DB session ended
-    conn = get_db()
-    cur = conn.cursor()
-    try:
-        delete_chat_messages(conn, session_id)
-        cur.execute("UPDATE sessions SET ended_at=? WHERE token=?", (now_iso(), session_id))
-        conn.commit()
-    finally:
-        conn.close()
+    # delete chat history
+    delete_chat_messages(db, session_id)
+
+    # mark session ended (soft logout for this token)
+    db.execute(
+        text("UPDATE sessions SET ended_at = :ts WHERE token = :t AND ended_at IS NULL"),
+        {"ts": now_iso(), "t": session_id}
+    )
+    db.commit()
+
     return {"ok": True, "session_id": session_id, "reset": True}
 
 # --- favorite players ---
 @app.get("/me/favorites", response_model=List[FavoritePlayerOut])
-def list_favorites(user_id: int = Depends(require_auth)):
-    conn = get_db()
-    cur = conn.cursor()
-    cur.execute("""
+def list_favorites(user_id: int = Depends(require_auth), db: Session = Depends(get_db)):
+    rows = db.execute(
+        text("""
         SELECT id, name, nationality, age, potential, roles_json
         FROM favorite_players
-        WHERE user_id = ?
-        ORDER BY datetime(created_at) DESC
-    """, (user_id,))
-    rows = cur.fetchall()
-    conn.close()
+        WHERE user_id = :uid
+        ORDER BY created_at DESC
+        """),
+        {"uid": user_id}
+    ).mappings().all()
 
     print(f"[favorites] LIST user={user_id} -> {len(rows)} rows")
 
     out: List[FavoritePlayerOut] = []
+    print(rows)
     for r in rows:
         try:
             roles = json.loads(r["roles_json"]) or []
@@ -388,49 +364,39 @@ def list_favorites(user_id: int = Depends(require_auth)):
             nationality=r["nationality"],
             age=r["age"],
             potential=r["potential"],
-            roles=roles,  # LONG strings
+            roles=roles,
         ))
     return out
 
+
 @app.post("/me/favorites", response_model=FavoritePlayerOut, status_code=status.HTTP_201_CREATED)
-def add_favorite(payload: FavoritePlayerIn, user_id: int = Depends(require_auth), response: Response = None):
-    # DEBUG (incoming)
+def add_favorite(payload: FavoritePlayerIn, user_id: int = Depends(require_auth), response: Response = None, db: Session = Depends(get_db)):
     print(f"[favorites] ADD request user={user_id} name={payload.name!r} "
           f"nat={payload.nationality!r} age={payload.age} pot={payload.potential} roles_in={payload.roles}")
 
-    # Normalize roles to LONG for storage (FE may send short)
     roles_long = to_long_roles(payload.roles)
-
-    # DEBUG (normalized)
     print(f"[favorites] ADD normalized roles (to LONG) user={user_id} name={payload.name!r} roles_long={roles_long}")
 
-    conn = get_db()
-    cur = conn.cursor()
-
-    # --- DUPLICATE CHECK: same (name, nationality, age) for this user ---
-    # Case-insensitive for name/nationality, null-safe for nationality/age.
-    cur.execute("""
+    existing = db.execute(
+        text("""
         SELECT id, name, nationality, age, potential, roles_json
         FROM favorite_players
-        WHERE user_id = ?
-          AND lower(name) = lower(?)
-          AND lower(COALESCE(nationality, '')) = lower(COALESCE(?, ''))
-          AND COALESCE(age, -1) = COALESCE(?, -1)
+        WHERE user_id = :uid
+          AND lower(name) = lower(:name)
+          AND lower(COALESCE(nationality, '')) = lower(COALESCE(:nat, ''))
+          AND COALESCE(age, -1) = COALESCE(:age, -1)
         LIMIT 1
-    """, (user_id, payload.name, payload.nationality, payload.age))
-    existing = cur.fetchone()
+        """),
+        {"uid": user_id, "name": payload.name, "nat": payload.nationality, "age": payload.age}
+    ).mappings().first()
 
     if existing:
-        # Already exists → return the existing row with 200 OK
         try:
             existing_roles = json.loads(existing["roles_json"]) or []
         except Exception:
             existing_roles = []
-        conn.close()
-
         if response is not None:
             response.status_code = status.HTTP_200_OK
-
         print(f"[favorites] ADD SKIP (already exists by name/nat/age) user={user_id} id={existing['id']}")
         return FavoritePlayerOut(
             id=existing["id"],
@@ -441,25 +407,26 @@ def add_favorite(payload: FavoritePlayerIn, user_id: int = Depends(require_auth)
             roles=existing_roles,
         )
 
-    # --- Insert new favorite ---
     fav_id = uuid.uuid4().hex
     created_at = now_iso()
 
-    cur.execute("""
+    db.execute(
+        text("""
         INSERT INTO favorite_players (id, user_id, name, nationality, age, potential, roles_json, created_at)
-        VALUES (?, ?, ?, ?, ?, ?, ?, ?)
-    """, (
-        fav_id,
-        user_id,
-        payload.name,
-        payload.nationality,
-        payload.age,
-        payload.potential,
-        json.dumps(roles_long, ensure_ascii=False),
-        created_at,
-    ))
-    conn.commit()
-    conn.close()
+        VALUES (:id, :uid, :name, :nat, :age, :pot, :roles, :ts)
+        """),
+        {
+            "id": fav_id,
+            "uid": user_id,
+            "name": payload.name,
+            "nat": payload.nationality,
+            "age": payload.age,
+            "pot": payload.potential,
+            "roles": json.dumps(roles_long, ensure_ascii=False),
+            "ts": created_at
+        }
+    )
+    db.commit()
 
     print(f"[favorites] ADD OK user={user_id} id={fav_id} name={payload.name!r} created_at={created_at}")
 
@@ -472,25 +439,21 @@ def add_favorite(payload: FavoritePlayerIn, user_id: int = Depends(require_auth)
         roles=roles_long,
     )
 
+
 @app.delete("/me/favorites/{favorite_id}", status_code=status.HTTP_204_NO_CONTENT)
-def delete_favorite(favorite_id: str, user_id: int = Depends(require_auth)):
-    # DEBUG (incoming)
+def delete_favorite(favorite_id: str, user_id: int = Depends(require_auth), db: Session = Depends(get_db)):
     print(f"[favorites] DELETE request user={user_id} id={favorite_id}")
-    conn = get_db()
-    cur = conn.cursor()
-    cur.execute("""
-        DELETE FROM favorite_players
-        WHERE id = ? AND user_id = ?
-    """, (favorite_id, user_id))
-    deleted = cur.rowcount
-    conn.commit()
-    conn.close()
+    res = db.execute(
+        text("DELETE FROM favorite_players WHERE id = :id AND user_id = :uid"),
+        {"id": favorite_id, "uid": user_id}
+    )
+    deleted = res.rowcount or 0
+    db.commit()
 
     if deleted == 0:
         print(f"[favorites] DELETE MISS user={user_id} id={favorite_id} -> 404")
         raise HTTPException(status_code=404, detail="Favorite not found")
-    
-    # DEBUG (success)
+
     print(f"[favorites] DELETE OK user={user_id} id={favorite_id}")
     return Response(status_code=status.HTTP_204_NO_CONTENT)
 

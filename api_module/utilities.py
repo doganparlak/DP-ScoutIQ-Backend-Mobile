@@ -9,6 +9,30 @@ import random, smtplib
 from email.mime.multipart import MIMEMultipart
 from email.mime.text import MIMEText
 from datetime import datetime, timezone
+import re
+from collections.abc import Mapping
+
+from sqlalchemy import text
+from sqlalchemy.orm import Session
+
+# DB session provider
+from api_module.database import SessionLocal
+from api_module.database import get_db as _get_db_dep  # FastAPI dependency factory
+
+MESSAGES = {
+    "weak_pw": {
+        "en": "Password must be at least 8 characters and include at least one letter and one number.",
+        "tr": "Parola en az 8 karakter olmalı ve en az bir harf ile bir rakam içermelidir.",
+    },
+    "same_pw": {
+        "en": "New password must be different from your current password.",
+        "tr": "Yeni parola mevcut parolanızdan farklı olmalıdır.",
+    },
+}
+
+def pick(lang: str | None, key: str) -> str:
+    lang_norm = normalize_lang(lang) or "en"
+    return MESSAGES[key].get(lang_norm, MESSAGES[key]["en"])
 
 # --- Email settings (you provided) ---
 settings: Dict[str, Any] = {
@@ -19,119 +43,47 @@ settings: Dict[str, Any] = {
         "smtp_port": int(os.environ.get("SMTP_PORT", "587")),
     }
 }
-
-# --- DB paths ---
-DB_PATH = os.path.abspath(os.path.join(os.path.dirname(__file__), "..", "user_db"))
-os.makedirs(DB_PATH, exist_ok=True)
-DB_FILE = os.path.join(DB_PATH, "app.db")
-
+IMG_TAG = re.compile(r'<img[^>]+src="([^"]+)"[^>]*>', re.IGNORECASE)
+HTMLY_RE = re.compile(r'</?(table|thead|tbody|tr|td|th|ul|ol|li|div|p|h[1-6]|span)\b', re.IGNORECASE)
+DB_FILE = "supabase://postgres"
 oauth2_scheme = OAuth2PasswordBearer(tokenUrl="/auth/login")
 # --- DB helpers ---
 def get_db() -> sqlite3.Connection:
-    conn = sqlite3.connect(DB_FILE)
-    conn.row_factory = sqlite3.Row
-    try:
-        conn.execute("PRAGMA foreign_keys = ON;")
-    except Exception:
-        pass
-    return conn
+    return SessionLocal()
 
-def init_db() -> None:
-    conn = get_db()
-    cur = conn.cursor()
-    cur.execute("""
-    CREATE TABLE IF NOT EXISTS users (
-      id INTEGER PRIMARY KEY AUTOINCREMENT,
-      email TEXT UNIQUE NOT NULL,
-      password_hash TEXT NOT NULL,
-      salt TEXT NOT NULL,
-      dob TEXT,
-      country TEXT,
-      plan TEXT DEFAULT 'Free',
-      favorites_json TEXT DEFAULT '[]',
-      created_at TEXT NOT NULL,
-      language TEXT,
-      newsletter INTEGER NOT NULL DEFAULT 0   -- 0 = no, 1 = yes
-    );
-    """)
-    cur.execute("""
-    CREATE TABLE IF NOT EXISTS sessions (
-      token TEXT PRIMARY KEY,
-      user_id INTEGER NOT NULL,
-      language TEXT,
-      created_at TEXT NOT NULL,
-      ended_at TEXT,
-      FOREIGN KEY(user_id) REFERENCES users(id)
-    );
-    """)
-    cur.execute("""
-    CREATE TABLE IF NOT EXISTS email_codes (
-      id INTEGER PRIMARY KEY AUTOINCREMENT,
-      email TEXT NOT NULL,
-      code TEXT NOT NULL,
-      purpose TEXT NOT NULL,           -- 'signup' | 'reset'
-      created_at TEXT NOT NULL,
-      used INTEGER NOT NULL DEFAULT 0
-    );
-    """)
-    cur.execute("""
-    CREATE TABLE IF NOT EXISTS favorite_players (
-      id TEXT PRIMARY KEY,                -- uuid string
-      user_id INTEGER NOT NULL,           -- fk to users.id
-      name TEXT NOT NULL,
-      nationality TEXT,
-      age INTEGER,
-      potential INTEGER,                  -- 0..100 (nullable)
-      roles_json TEXT NOT NULL,           -- JSON array of LONG role names, e.g. ["Center Back","Right Back"]
-      created_at TEXT NOT NULL,           -- ISO timestamp
-      FOREIGN KEY(user_id) REFERENCES users(id) ON DELETE CASCADE
-    );
-    """)
-    cur.execute("""
-    CREATE TABLE IF NOT EXISTS chat_messages (
-      id INTEGER PRIMARY KEY AUTOINCREMENT,
-      session_token TEXT NOT NULL,            -- FK to sessions.token
-      role TEXT NOT NULL CHECK(role IN ('human','ai','system')),
-      content TEXT NOT NULL,
-      created_at TEXT NOT NULL,
-      FOREIGN KEY(session_token) REFERENCES sessions(token) ON DELETE CASCADE
-    );
-    """)
-
-    cur.execute("CREATE INDEX IF NOT EXISTS idx_chat_messages_session ON chat_messages(session_token);")
-    cur.execute("CREATE INDEX IF NOT EXISTS idx_chat_messages_time ON chat_messages(created_at);")
-    cur.execute("CREATE INDEX IF NOT EXISTS idx_email_codes_email ON email_codes(email);")
-    cur.execute("CREATE INDEX IF NOT EXISTS idx_email_codes_purpose ON email_codes(purpose);")
-    cur.execute("CREATE INDEX IF NOT EXISTS idx_sessions_user_id ON sessions(user_id);")
-    conn.commit()
-    conn.close()
-
-
-def append_chat_message(conn, session_token: str, role: str, content: str) -> None:
-    cur = conn.cursor()
-    cur.execute(
-        "INSERT INTO chat_messages (session_token, role, content, created_at) VALUES (?, ?, ?, ?)",
-        (session_token, role, content, now_iso())
+def append_chat_message(db: Session, session_token: str, role: str, content: str) -> None:
+    db.execute(
+        text("""
+        INSERT INTO chat_messages (session_token, role, content, created_at)
+        VALUES (:token, :role, :content, :ts)
+        """),
+        {"token": session_token, "role": role, "content": content, "ts": now_iso()}
     )
-    conn.commit()
+    db.commit()
 
-def delete_chat_messages(conn, session_token: str) -> None:
-    cur = conn.cursor()
-    cur.execute("DELETE FROM chat_messages WHERE session_token=?", (session_token,))
-    conn.commit()
+def delete_chat_messages(db: Session, session_token: str) -> None:
+    db.execute(text("DELETE FROM chat_messages WHERE session_token = :t"), {"t": session_token})
+    db.commit()
 
-def load_chat_messages(conn, session_token: str) -> List[Dict[str, str]]:
-    cur = conn.cursor()
-    cur.execute(
-        "SELECT role, content FROM chat_messages WHERE session_token=? ORDER BY id ASC",
-        (session_token,)
-    )
-    rows = cur.fetchall() or []
+def load_chat_messages(db: Session, session_token: str) -> List[Dict[str, str]]:
+    rows = db.execute(
+        text("""
+        SELECT role, content
+        FROM chat_messages
+        WHERE session_token = :t
+        ORDER BY id ASC
+        """),
+        {"t": session_token}
+    ).mappings().all()
     return [{"role": r["role"], "content": r["content"]} for r in rows]
 
-def session_exists_and_active(cur, session_id: str) -> bool:
-    cur.execute("SELECT 1 FROM sessions WHERE token=? AND ended_at IS NULL", (session_id,))
-    return cur.fetchone() is not None
+
+def session_exists_and_active(db: Session, session_id: str) -> bool:
+    row = db.execute(
+        text("SELECT 1 FROM sessions WHERE token = :t AND ended_at IS NULL"),
+        {"t": session_id}
+    ).first()
+    return row is not None
 
 
 # --- utilities ---
@@ -144,71 +96,80 @@ def new_salt() -> str:
 def now_iso() -> str:
      return datetime.now(timezone.utc).isoformat()
 
-def user_row_to_dict(row: sqlite3.Row) -> Dict[str, Any]:
+def user_row_to_dict(row: any) -> dict:
+    """
+    Accepts either:
+      - SQLAlchemy Row (has ._mapping)
+      - dict-like mapping (from .mappings().first())
+      - or a plain object with __dict__
+    Returns a normalized user dict.
+    """
+    if hasattr(row, "_mapping"):              # SQLAlchemy Row
+        m = row._mapping
+    elif isinstance(row, Mapping):            # dict or mapping
+        m = row
+    elif hasattr(row, "__dict__"):            # fallback
+        m = row.__dict__
+    else:
+        raise TypeError(f"Unsupported row type: {type(row)}")
+
+    get = m.get
+
+    favs = get("favorites_json")
+    if isinstance(favs, str):
+        try:
+            fav_list = json.loads(favs)
+        except Exception:
+            fav_list = []
+    elif favs is None:
+        fav_list = []
+    else:
+        # already a JSON/array from the DB (e.g., jsonb via .mappings())
+        fav_list = favs
+
     return {
-        "id": row["id"],
-        "email": row["email"],
-        "dob": row["dob"],
-        "country": row["country"],
-        "plan": row["plan"],
-        "favorite_players": json.loads(row["favorites_json"] or "[]"),
-        "created_at": row["created_at"],
-        "uiLanguage": row["language"],     # 'en' | 'tr' | None
+        "id": get("id"),
+        "email": get("email"),
+        "dob": get("dob"),
+        "country": get("country"),
+        "plan": get("plan"),
+        "favorite_players": fav_list,
+        "created_at": get("created_at"),
+        "uiLanguage": get("language"),
     }
 # ----- deletion helpers -----
-def get_user_email_by_id(conn: sqlite3.Connection, user_id: int) -> Optional[str]:
-    cur = conn.cursor()
-    cur.execute("SELECT email FROM users WHERE id=?", (user_id,))
-    row = cur.fetchone()
+def get_user_email_by_id(db: Session, user_id: int) -> Optional[str]:
+    row = db.execute(
+        text("SELECT email FROM users WHERE id = :id"),
+        {"id": user_id}
+    ).mappings().first()
     return row["email"] if row else None
 
-def delete_user_everywhere(conn: sqlite3.Connection, user_id: int) -> None:
-    """
-    Hard-delete a user and all related data:
-
-      - sessions (by user_id)  -> cascades to chat_messages
-      - chat_messages (defensive fallback if cascade isn't active)
-      - email_codes (by email)
-      - users (by id)          -> cascades to favorite_players
-
-    Requires: sessions.token is FK for chat_messages.session_token (ON DELETE CASCADE)
-              favorite_players.user_id FK to users(id) (ON DELETE CASCADE)
-    """
-    email = get_user_email_by_id(conn, user_id)
+def delete_user_everywhere(db: Session, user_id: int) -> None:
+    email = get_user_email_by_id(db, user_id)
     if not email:
         return
 
-    cur = conn.cursor()
-    try:
-        # Ensure cascades are honored on this connection
-        cur.execute("PRAGMA foreign_keys = ON;")
+    # Gather tokens (defensive)
+    tokens = [r["token"] for r in db.execute(
+        text("SELECT token FROM sessions WHERE user_id = :uid"), {"uid": user_id}
+    ).mappings().all()]
 
-        # Collect session tokens up-front (for defensive cleanup if needed)
-        cur.execute("SELECT token FROM sessions WHERE user_id=?", (user_id,))
-        tokens = [row["token"] for row in cur.fetchall() or []]
+    # 1) Delete sessions (FK ON DELETE CASCADE should handle chat_messages)
+    db.execute(text("DELETE FROM sessions WHERE user_id = :uid"), {"uid": user_id})
 
-        # 1) Delete auth/chat sessions (should cascade to chat_messages)
-        cur.execute("DELETE FROM sessions WHERE user_id=?", (user_id,))
+    # 1a) Defensive cleanup if cascade was not present previously
+    if tokens:
+        for t in tokens:
+            db.execute(text("DELETE FROM chat_messages WHERE session_token = :t"), {"t": t})
 
-        # 1a) Defensive fallback: if FK cascade wasn't active previously,
-        #     explicitly remove chat messages for those session tokens.
-        if tokens:
-            # Use executemany to avoid huge IN clauses; small lists can use IN (...)
-            cur.executemany(
-                "DELETE FROM chat_messages WHERE session_token=?",
-                [(t,) for t in tokens],
-            )
+    # 2) Delete email codes
+    db.execute(text("DELETE FROM email_codes WHERE email = :e"), {"e": email})
 
-        # 2) Delete email verification/reset codes tied to this user
-        cur.execute("DELETE FROM email_codes WHERE email=?", (email,))
+    # 3) Delete user (cascades to favorite_players)
+    db.execute(text("DELETE FROM users WHERE id = :uid"), {"uid": user_id})
 
-        # 3) Delete the user (cascades to favorite_players)
-        cur.execute("DELETE FROM users WHERE id=?", (user_id,))
-
-        conn.commit()
-    except Exception:
-        conn.rollback()
-        raise
+    db.commit()
 
 # --- auth dependency ---
 def require_auth(authorization: Optional[str] = Header(None)) -> int:
@@ -220,80 +181,96 @@ def require_auth(authorization: Optional[str] = Header(None)) -> int:
         raise HTTPException(status_code=401, detail="Missing/invalid Authorization")
     token = authorization.split(" ", 1)[1].strip()
 
-    conn = get_db()
-    cur = conn.cursor()
-    cur.execute("SELECT user_id FROM sessions WHERE token=?", (token,))
-    row = cur.fetchone()
-    conn.close()
+    db = get_db()
+    try:
+        row = db.execute(
+            text("SELECT user_id FROM sessions WHERE token = :t"),
+            {"t": token}
+        ).mappings().first()
+    finally:
+        db.close()
+
     if not row:
         raise HTTPException(status_code=401, detail="Invalid token")
     return int(row["user_id"])
 
 # --- Logout helpers ---
 def get_bearer_token(authorization: Optional[str]) -> str:
-    """
-    Extract the bearer token string or raise 401 for missing/invalid headers.
-    """
     if not authorization or not authorization.lower().startswith("bearer "):
         raise HTTPException(status_code=401, detail="Missing/invalid Authorization")
     return authorization.split(" ", 1)[1].strip()
 
-def revoke_session(conn: sqlite3.Connection, token: str) -> None:
-    """
-    Delete a single session row for this token. Idempotent (no error if not found).
-    """
-    cur = conn.cursor()
-    cur.execute("DELETE FROM sessions WHERE token=?", (token,))
-    conn.commit()
+def revoke_session(db: Session, token: str) -> None:
+    db.execute(text("DELETE FROM sessions WHERE token = :t"), {"t": token})
+    db.commit()
+
 
 # ---------- email-code helpers ----------
 def _gen_code() -> str:
     return f"{random.randint(0, 999999):06d}"
 
+
 def create_email_code(email: str, purpose: str) -> str:
     code = _gen_code()
-    conn = get_db()
-    conn.execute(
-        "INSERT INTO email_codes (email, code, purpose, created_at, used) VALUES (?, ?, ?, ?, 0)",
-        (email, code, purpose, now_iso()),
-    )
-    conn.commit()
-    conn.close()
+    db = get_db()
+    try:
+        db.execute(
+            text("""
+            INSERT INTO email_codes (email, code, purpose, created_at, used)
+            VALUES (:e, :c, :p, CAST(:ts AS timestamptz), :used)
+            """),
+            {
+                "e": email,
+                "c": code,
+                "p": purpose,
+                "ts": now_iso(),
+                "used": False,          # << boolean, not 0
+            }
+        )
+        db.commit()
+    finally:
+        db.close()
     return code
 
 def verify_email_code(email: str, code: str, purpose: str, expiry_minutes: int = 10) -> bool:
-    conn = get_db()
-    cur = conn.cursor()
-    cur.execute("""
-        SELECT id, created_at, used FROM email_codes
-        WHERE email=? AND code=? AND purpose=?
-        ORDER BY id DESC LIMIT 1
-    """, (email, code, purpose))
-    row = cur.fetchone()
-    if not row:
-        conn.close(); return False
-    if int(row["used"]) == 1:
-        conn.close(); return False
-    
-    # Parse created_at robustly
+    db = get_db()
     try:
-        created = dt.datetime.fromisoformat(row["created_at"].replace("Z", "+00:00"))
-    except Exception:
-        # Fallback if stored in a non-ISO format (unlikely)
-        conn.close(); return False
-     
-    # Normalize to aware UTC if the row happened to be stored naive in older data
-    if created.tzinfo is None:
-        created = created.replace(tzinfo=dt.timezone.utc)
+        row = db.execute(
+            text("""
+            SELECT id, created_at, used
+            FROM email_codes
+            WHERE email = :e AND code = :c AND purpose = :p
+            ORDER BY id DESC
+            LIMIT 1
+            """),
+            {"e": email, "c": code, "p": purpose}
+        ).mappings().first()
+        if not row:
+            return False
 
-    now = dt.datetime.now(dt.timezone.utc)  # aware UTC
-    if now - created >  dt.timedelta(minutes=expiry_minutes):
-        conn.close(); return False
-    
-    cur.execute("UPDATE email_codes SET used=1 WHERE id=?", (row["id"],))
-    conn.commit()
-    conn.close()
-    return True
+        # used is a boolean in Postgres
+        if bool(row["used"]):
+            return False
+
+        # created_at parse (unchanged)
+        try:
+            created = dt.datetime.fromisoformat(str(row["created_at"]).replace("Z", "+00:00"))
+        except Exception:
+            return False
+        if created.tzinfo is None:
+            created = created.replace(tzinfo=dt.timezone.utc)
+
+        now = dt.datetime.now(dt.timezone.utc)
+        if now - created > dt.timedelta(minutes=expiry_minutes):
+            return False
+
+        # mark as used with a boolean
+        db.execute(text("UPDATE email_codes SET used = TRUE WHERE id = :id"), {"id": row["id"]})
+        db.commit()
+        return True
+    finally:
+        db.close()
+
 
 def send_email_code(receiver_email: str, code: str, mail_type: str) -> None:
     se = settings['email']['sender_email']
@@ -310,7 +287,7 @@ def send_email_code(receiver_email: str, code: str, mail_type: str) -> None:
             "The code expires in 10 minutes.\n\n"
             "Best,\nScoutIQ Support"
         )
-    else:  # 'signup'
+    else:
         subject = 'Your ScoutIQ sign-up verification code'
         body = (
             "Dear User,\n\n"
@@ -397,38 +374,75 @@ def normalize_lang(value: Optional[str]) -> Optional[str]:
         return "tr"
     return None
 
-def get_user_language(conn: sqlite3.Connection, user_id: int) -> Optional[str]:
-    cur = conn.cursor()
-    cur.execute("SELECT language FROM users WHERE id=?", (user_id,))
-    row = cur.fetchone()
+def get_user_language(db: Session, user_id: int) -> Optional[str]:
+    row = db.execute(text("SELECT language FROM users WHERE id = :id"), {"id": user_id}).mappings().first()
     return (row["language"] or None) if row else None
 
-def set_session_language(conn, token: str, lang: Optional[str]) -> None:
-    cur = conn.cursor()
-    cur.execute("UPDATE sessions SET language=? WHERE token=?", (lang, token))
-    if cur.rowcount == 0:
-        # Optional: create if not present (depends on your login flow)
-        cur.execute(
-            "INSERT INTO sessions(token, user_id, language, created_at) VALUES (?, ?, ?, ?)",
-            (token, -1, lang, now_iso())  # -1 only if you truly don't know user_id here
-        )
-    conn.commit()
+def set_session_language(db: Session, token: str, lang: Optional[str]) -> None:
+    db.execute(text("UPDATE sessions SET language = :l WHERE token = :t"), {"l": lang, "t": token})
+    db.commit()
 
-def get_session_language(conn, token: str) -> Optional[str]:
-    cur = conn.cursor()
-    cur.execute("SELECT language FROM sessions WHERE token=? AND ended_at IS NULL", (token,))
-    row = cur.fetchone()
+def get_session_language(db: Session, token: str) -> Optional[str]:
+    row = db.execute(
+        text("SELECT language FROM sessions WHERE token = :t AND ended_at IS NULL"),
+        {"t": token}
+    ).mappings().first()
     return row["language"] if row and row["language"] else None
 
-def mark_session_started(conn, token: str, user_id: int, lang: Optional[str]) -> None:
-    cur = conn.cursor()
-    cur.execute("""
-        INSERT OR REPLACE INTO sessions(token, user_id, language, created_at, ended_at)
-        VALUES (?, ?, ?, COALESCE((SELECT created_at FROM sessions WHERE token=?), ?), NULL)
-    """, (token, user_id, lang, token, now_iso()))
-    conn.commit()
+def mark_session_started(db: Session, token: str, user_id: int, lang: Optional[str]) -> None:
+    # Postgres doesn't have INSERT OR REPLACE; emulate with upsert:
+    db.execute(
+        text("""
+        INSERT INTO sessions (token, user_id, language, created_at, ended_at)
+        VALUES (:t, :uid, :l, COALESCE(
+            (SELECT created_at FROM sessions WHERE token = :t),
+            :now
+        ), NULL)
+        ON CONFLICT (token) DO UPDATE
+        SET user_id = EXCLUDED.user_id,
+            language = EXCLUDED.language,
+            ended_at = NULL
+        """),
+        {"t": token, "uid": user_id, "l": lang, "now": now_iso()}
+    )
+    db.commit()
 
-def mark_session_ended(conn, token: str) -> None:
-    cur = conn.cursor()
-    cur.execute("UPDATE sessions SET ended_at=? WHERE token=?", (now_iso(), token))
-    conn.commit()
+def mark_session_ended(db: Session, token: str) -> None:
+    db.execute(text("UPDATE sessions SET ended_at = :now WHERE token = :t"),
+               {"now": now_iso(), "t": token})
+    db.commit()
+
+# === SPLIT RESPONSE PARTS TOOL ===
+
+def split_response_parts(html: str):
+    """
+    Split assistant HTML into parts: text, image, and html (tables/divs).
+    Images are isolated; chunks that have HTML tags (e.g., <table>) are marked as 'html'
+    so the frontend renders them directly (no streaming).
+    """
+    parts = []
+    pos = 0
+    html = html or ""
+
+    for m in IMG_TAG.finditer(html):
+        start, end = m.start(), m.end()
+        if start > pos:
+            chunk = html[pos:start].strip()
+            if chunk:
+                if HTMLY_RE.search(chunk):
+                    parts.append({"type": "html", "html": chunk})   # NEW
+                else:
+                    parts.append({"type": "text", "html": chunk})
+        src = m.group(1)
+        parts.append({"type": "image", "src": src})
+        pos = end
+
+    if pos < len(html):
+        tail = html[pos:].strip()
+        if tail:
+            if HTMLY_RE.search(tail):
+                parts.append({"type": "html", "html": tail})        # NEW
+            else:
+                parts.append({"type": "text", "html": tail})
+
+    return parts

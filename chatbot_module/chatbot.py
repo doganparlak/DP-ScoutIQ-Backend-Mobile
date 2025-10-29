@@ -58,12 +58,12 @@ def add_language_to_prompt(ui_language: Optional[str]) -> ChatPromptTemplate:
 
 def create_qa_chain(session_id: str) -> ConversationalRetrievalChain:
     # 1) get session language
-    conn = get_db()
+    db = get_db()
     try:
-        lang = get_session_language(conn, session_id) or "en"
-        history_rows = load_chat_messages(conn, session_id)
+        lang = get_session_language(db, session_id) or "en"
+        history_rows = load_chat_messages(db, session_id)
     finally:
-        conn.close()
+        db.close()
 
     # 2) hydrate memory from persisted history
     memory = ConversationBufferMemory(memory_key="chat_history", return_messages=True)
@@ -155,20 +155,20 @@ def answer_question(
         result = qa_chain.invoke(inputs)
         base_answer = (result.get("answer") or "").strip()
 
-        conn = get_db()
+        db = get_db()
         try:
-            append_chat_message(conn, session_id, "human", question or "")
-            append_chat_message(conn, session_id, "ai", base_answer)
+            append_chat_message(db, session_id, "human", question or "")
+            append_chat_message(db, session_id, "ai", base_answer)
         finally:
-            conn.close()
+            db.close()
     except Exception as e:
         # Persist the user's message even if model fails
-        conn = get_db()
+        db = get_db()
         try:
-            append_chat_message(conn, session_id, "human", question or "")
-            append_chat_message(conn, session_id, "ai", "Sorry, I couldn’t generate an answer right now.")
+            append_chat_message(db, session_id, "human", question or "")
+            append_chat_message(db, session_id, "ai", "Sorry, I couldn’t generate an answer right now.")
         finally:
-            conn.close()
+            db.close()
         return {"answer": "Sorry, I couldn’t generate an answer right now.", "answer_raw": str(e)}
 
     # 6) Parse current answer into meta/stats
@@ -194,10 +194,10 @@ def answer_question(
 
     except Exception as e:
         # Persist raw base answer if parsing failed (optional)
-        conn = get_db()
+        db = get_db()
         try:
-            append_chat_message(conn, session_id, "human", question or "")
-            append_chat_message(conn, session_id, "ai", base_answer)
+            append_chat_message(db, session_id, "human", question or "")
+            append_chat_message(db, session_id, "ai", base_answer)
         finally:
-            conn.close()
+            db.close()
         return {"answer": "Sorry, I couldn’t generate an answer right now.", "error": str(e)}

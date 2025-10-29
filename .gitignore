@@ -11,6 +11,7 @@ venv
 
 # Local DB
 user_db/*
+sqlite_schema.sql
 
 # Byte-compiled / optimized / DLL files
 __pycache__/

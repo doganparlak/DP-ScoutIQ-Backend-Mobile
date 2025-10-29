@@ -16,6 +16,8 @@ cycler==0.12.1
 dataclasses-json==0.6.7
 defusedxml==0.7.1
 distro==1.9.0
+dnspython==2.8.0
+email-validator==2.3.0
 faiss-cpu==1.11.0.post1
 fastapi==0.116.1
 fonttools==4.59.0
@@ -62,6 +64,8 @@ pandas==2.3.1
 pillow==11.3.0
 propcache==0.3.2
 protobuf==6.31.1
+psycopg==3.2.12
+psycopg-binary==3.2.12
 pyarrow==21.0.0
 pydantic==2.11.7
 pydantic-settings==2.10.1
