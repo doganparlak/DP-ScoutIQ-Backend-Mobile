@@ -349,15 +349,25 @@ def list_favorites(user_id: int = Depends(require_auth), db: Session = Depends(g
         {"uid": user_id}
     ).mappings().all()
 
-    print(f"[favorites] LIST user={user_id} -> {len(rows)} rows")
-
     out: List[FavoritePlayerOut] = []
-    print(rows)
     for r in rows:
-        try:
-            roles = json.loads(r["roles_json"]) or []
-        except Exception:
+        val = r["roles_json"]
+        if isinstance(val, str):
+            try:
+                roles = json.loads(val) or []
+            except Exception:
+                roles = []
+        elif isinstance(val, (list, tuple)):
+            roles = list(val)
+        elif val is None:
             roles = []
+        else:
+            # some drivers may return dict/other – be defensive
+            try:
+                roles = list(val)  # best effort
+            except Exception:
+                roles = []
+
         out.append(FavoritePlayerOut(
             id=r["id"],
             name=r["name"],
@@ -367,7 +377,6 @@ def list_favorites(user_id: int = Depends(require_auth), db: Session = Depends(g
             roles=roles,
         ))
     return out
-
 
 @app.post("/me/favorites", response_model=FavoritePlayerOut, status_code=status.HTTP_201_CREATED)
 def add_favorite(payload: FavoritePlayerIn, user_id: int = Depends(require_auth), response: Response = None, db: Session = Depends(get_db)):
