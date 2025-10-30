@@ -50,6 +50,7 @@ except Exception as e:
     ) from e
 
 # === QA Chain with RAG & Memory ===
+
 def add_language_to_prompt(ui_language: Optional[str]) -> ChatPromptTemplate:
     sys_msg = inject_language(system_message, ui_language)
     return ChatPromptTemplate.from_messages([
@@ -81,7 +82,7 @@ def create_qa_chain(session_id: str) -> ConversationalRetrievalChain:
     memory.chat_memory.messages = msgs
 
     llm = ChatOpenAI(model="gpt-4o", temperature=0.3)
-    retriever = vectorstore.as_retriever(search_kwargs={"k": 10})
+    retriever = vectorstore.as_retriever(search_kwargs={"k": 5})
     prompt = add_language_to_prompt(lang)
     return ConversationalRetrievalChain.from_llm(
         llm=llm,
