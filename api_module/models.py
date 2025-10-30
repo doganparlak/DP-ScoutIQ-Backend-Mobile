@@ -54,7 +54,9 @@ class ProfilePatch(BaseModel):
     plan: Optional[str] = None
     favorite_players: Optional[List[Dict[str, Any]]] = None
 
-# email codes
+# Email
+class ReachOutIn(BaseModel):
+    message: str
 class PasswordResetRequestIn(BaseModel):
   email: EmailStr
 

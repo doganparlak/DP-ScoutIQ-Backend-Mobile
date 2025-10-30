@@ -306,6 +306,45 @@ def verify_email_code(email: str, code: str, purpose: str, expiry_minutes: int =
     finally:
         db.close()
 
+def send_reachout_email(user_email: str, note: str) -> None:
+    """
+    Sends the user's message to *your* support inbox.
+    We use the configured sender address as BOTH from/to (send to yourself),
+    and put the user's email in the subject.
+    """
+    se = settings['email']['sender_email']
+    spw = settings['email']['sender_password']
+    host = settings['email']['smtp_server']
+    port = settings['email']['smtp_port']
+
+    subject = f"[ScoutIQ Reach Out] From: {user_email}"
+    timestamp = datetime.now(timezone.utc).isoformat()
+
+    body = (
+        "User message received via Help Center.\n\n"
+        f"From: {user_email}\n"
+        f"At:   {timestamp}\n\n"
+        "Message:\n"
+        f"{note}\n"
+    )
+
+    msg = MIMEMultipart()
+    msg["From"] = se
+    msg["To"] = se                 # send to yourself
+    msg["Subject"] = subject
+    msg.attach(MIMEText(body, "plain"))
+
+    try:
+        server = smtplib.SMTP(host, port)
+        server.starttls()
+        server.login(se, spw)
+        server.sendmail(se, se, msg.as_string())
+        #print(f"[mail] reachout from {user_email} sent to {se}")
+    except Exception as e:
+        pass
+    finally:
+        try: server.quit()
+        except: pass
 
 def send_email_code(receiver_email: str, code: str, mail_type: str) -> None:
     se = settings['email']['sender_email']
@@ -343,9 +382,9 @@ def send_email_code(receiver_email: str, code: str, mail_type: str) -> None:
         server.starttls()
         server.login(se, spw)
         server.sendmail(se, receiver_email, msg.as_string())
-        print(f"[mail] sent {mail_type} code to {receiver_email}")
+        #print(f"[mail] sent {mail_type} code to {receiver_email}")
     except Exception as e:
-        print(f"[mail] failed: {e}")
+        pass
     finally:
         try: server.quit()
         except: pass

@@ -15,13 +15,13 @@ from chatbot_module.chatbot import answer_question
 from api_module.utilities import (
     hash_pw, new_salt, now_iso, get_user_email_by_id, delete_user_everywhere, get_bearer_token, revoke_session,
     user_row_to_dict, require_auth, create_email_code, verify_email_code, send_email_code, to_long_roles, normalize_lang, get_user_language,
-    session_exists_and_active, delete_chat_messages, split_response_parts, pick
+    session_exists_and_active, delete_chat_messages, split_response_parts, pick, send_reachout_email
 )
 from api_module.database import get_db
 from api_module.models import (
     SignUpIn, LoginIn, LoginOut, ProfileOut, ProfilePatch, SetNewPasswordIn,
     PasswordResetRequestIn, VerifyResetIn, VerifySignupIn, SignupCodeRequestIn, ChatIn,
-    FavoritePlayerIn, FavoritePlayerOut
+    FavoritePlayerIn, FavoritePlayerOut, ReachOutIn
 )
 
 import hmac, uuid, json, re, os
@@ -97,7 +97,6 @@ def signup(payload: SignUpIn, db: Session = Depends(get_db)):
 @app.post("/auth/login", response_model=LoginOut)
 def login(payload: LoginIn, accept_language: str | None = Header(default=None), db: Session = Depends(get_db)):
     row = db.execute(text("SELECT * FROM users WHERE email = :e"), {"e": payload.email}).mappings().first()
-    print(row)
     if not row:
         raise HTTPException(status_code=400, detail="Invalid credentials")
 
@@ -125,6 +124,7 @@ def login(payload: LoginIn, accept_language: str | None = Header(default=None), 
     db.commit()
 
     user = user_row_to_dict(row)
+    ''''
     print(json.dumps({
     "event": "login_success",
     "user_id": user["id"],
@@ -132,7 +132,8 @@ def login(payload: LoginIn, accept_language: str | None = Header(default=None), 
     "plan": user.get("plan"),
     "uiLanguage": user.get("uiLanguage"),
     "created_at": user.get("created_at"),
-    }, ensure_ascii=False, default=str))
+    }, ensure_ascii=False, default=str)) 
+    '''
 
     return {"token": token, "user": user}
 
@@ -208,8 +209,6 @@ def me(user_id: int = Depends(require_auth), db: Session = Depends(get_db)):
     row = db.execute(text("SELECT * FROM users WHERE id = :id"), {"id": user_id}).mappings().first()
     if not row:
         raise HTTPException(status_code=404, detail="User not found")
-    print(row)
-    print(user_row_to_dict(row))
     return user_row_to_dict(row)
 
 @app.patch("/me", response_model=ProfileOut)
@@ -246,6 +245,25 @@ def request_reset(body: PasswordResetRequestIn, db: Session = Depends(get_db)):
     if row:
         code = create_email_code(email, purpose="reset")
         send_email_code(email, code, mail_type="reset")
+    return {"ok": True}
+
+@app.post("/help/reach_out")
+def reach_out(
+    body: ReachOutIn,
+    user_id: int = Depends(require_auth),
+    db: Session = Depends(get_db),
+):
+    msg = (body.message or "").strip()
+    if not msg or len(msg) > 2000:
+        return {"ok": True}
+
+    # Use the authenticated user's email in the subject
+    email = get_user_email_by_id(db, user_id) or "unknown@user"
+    try:
+        send_reachout_email(email, msg)
+    except Exception:
+        return {"ok": True}
+
     return {"ok": True}
 
 @app.post("/auth/verify_reset")
