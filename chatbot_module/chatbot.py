@@ -7,6 +7,10 @@ from langchain.chains import ConversationalRetrievalChain
 from langchain.memory import ConversationBufferMemory
 from langchain.schema import AIMessage, HumanMessage
 from langchain.chains import LLMChain
+from langchain_core.output_parsers import StrOutputParser
+import warnings
+warnings.filterwarnings("ignore", category=DeprecationWarning, module="langchain")
+
 from api_module.utilities import (
     get_db,
     get_session_language,
@@ -91,10 +95,9 @@ stats_parser_prompt = ChatPromptTemplate.from_messages([
     ("system", stats_parser_system_message),
     ("human", "Report:\n\n{report_text}\n\nReturn only JSON, no backticks.")
 ])
-stats_parser_chain = LLMChain(
-    llm=ChatOpenAI(model="gpt-4o", temperature=0),
-    prompt=stats_parser_prompt
-)
+
+llm_parser= ChatOpenAI(model="gpt-4o", temperature=0)
+stats_parser_chain = stats_parser_prompt | llm_parser | StrOutputParser()
 
 # ===== Player Meta Parser =====
 
@@ -103,11 +106,7 @@ meta_parser_prompt = ChatPromptTemplate.from_messages([
     ("human", "Text:\n\n{raw_text}\n\nReturn only JSON, no backticks.")
 ])
 
-meta_parser_chain = LLMChain(                                     
-    llm=ChatOpenAI(model="gpt-4o", temperature=0),
-    prompt=meta_parser_prompt
-)
-
+meta_parser_chain = meta_parser_prompt | llm_parser | StrOutputParser()
 # ===== Q&A Actions =====
 def answer_question(
     question: str, 
