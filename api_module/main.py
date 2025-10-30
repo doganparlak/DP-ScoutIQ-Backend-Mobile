@@ -54,42 +54,45 @@ def signup(payload: SignUpIn, db: Session = Depends(get_db)):
             detail="Password must be at least 8 characters and include at least one letter and one number.",
         )
 
-    # 2) check if email exists
-    try:
-        exists = db.execute(text("SELECT 1 FROM users WHERE email = :e"), {"e": payload.email}).first()
-        if exists:
-            raise HTTPException(status_code=400, detail="Email already registered")
-        # 3) create user
-        salt = new_salt()
-        pw_hash = hash_pw(payload.password, salt)
-        favorites_py = payload.favorite_players or []
-        plan = payload.plan or "Free"
-        newsletter_bool = bool(payload.newsletter)
-        dob_str = payload.dob or None
-        db.execute(
-            text("""
-                INSERT INTO users
-                (email, password_hash, salt, dob, country, plan, favorites_json, created_at, language, newsletter)
-                VALUES
-                (:email, :ph, :salt, CAST(:dob AS date), :country, :plan, CAST(:favs AS jsonb), NOW(), NULL, CAST(:newsletter AS boolean))
-                """),
-            {
-                "email": payload.email,
-                "ph": pw_hash,
-                "salt": salt,
-                "dob": dob_str,                 # 'YYYY-MM-DD' or None
-                "country": payload.country,
-                "plan": plan,
-                "favs": json.dumps(favorites_py, ensure_ascii=False),
-                "newsletter": newsletter_bool,
-            }
-        )
-        db.commit()
-        return {"ok": True}
-    except SQLAlchemyError as e:
-        db.rollback()
-        print("[signup][db-error]", str(e))
-        raise HTTPException(status_code=500, detail="Signup failed")
+    email_norm = payload.email.strip()
+
+    # Block if already a real user
+    exists = db.execute(
+        text("SELECT 1 FROM users WHERE lower(email) = lower(:e)"),
+        {"e": email_norm}
+    ).first()
+    if exists:
+        raise HTTPException(status_code=400, detail="Email already registered")
+
+    salt = new_salt()
+    pw_hash = hash_pw(payload.password, salt)
+
+    db.execute(text("""
+        INSERT INTO pending_signups (email, password_hash, salt, dob, country, plan, favorites_json, newsletter, created_at)
+        VALUES (:email, :ph, :salt, CAST(:dob AS date), :country, :plan, CAST(:favs AS jsonb), CAST(:newsletter AS boolean), NOW())
+        ON CONFLICT (email) DO UPDATE
+        SET password_hash = EXCLUDED.password_hash,
+            salt          = EXCLUDED.salt,
+            dob           = EXCLUDED.dob,
+            country       = EXCLUDED.country,
+            plan          = EXCLUDED.plan,
+            favorites_json= EXCLUDED.favorites_json,
+            newsletter    = EXCLUDED.newsletter,
+            created_at    = NOW()
+    """), {
+        "email": email_norm,
+        "ph": pw_hash,
+        "salt": salt,
+        "dob": payload.dob or None,
+        "country": payload.country,
+        "plan": (payload.plan or "Free"),
+        "favs": json.dumps(payload.favorite_players or [], ensure_ascii=False),
+        "newsletter": bool(payload.newsletter),
+    })
+    db.commit()
+
+    # No code here — client should call /auth/request_signup_code next
+    return {"ok": True}
 
 @app.post("/auth/login", response_model=LoginOut)
 def login(payload: LoginIn, accept_language: str | None = Header(default=None), db: Session = Depends(get_db)):
@@ -253,19 +256,65 @@ def verify_reset(body: VerifyResetIn):
 # --- email codes: signup ---
 @app.post("/auth/request_signup_code")
 def request_signup_code(body: SignupCodeRequestIn, db: Session = Depends(get_db)):
-    email = body.email
-    row = db.execute(text("SELECT id FROM users WHERE email = :e"), {"e": email}).mappings().first()
-    if row:
-        code = create_email_code(email, purpose="signup")
-        send_email_code(email, code, mail_type="signup")
+    email = body.email.strip()
+    staged_exists = db.execute(
+        text("SELECT 1 FROM pending_signups WHERE lower(email) = lower(:e)"),
+        {"e": email}
+    ).first()
+    if not staged_exists:
+        db.execute(text("""
+            INSERT INTO pending_signups (email, password_hash, salt, created_at)
+            VALUES (:email, '', '', NOW())
+            ON CONFLICT (email) DO NOTHING
+        """), {"email": email})
+        db.commit()
+
+    code = create_email_code(email, purpose="signup")
+    send_email_code(email, code, mail_type="signup")
     return {"ok": True}
 
 @app.post("/auth/verify_signup_code")
-def verify_signup_code(body: VerifySignupIn):
-    ok = verify_email_code(body.email, body.code, purpose="signup")
-    if not ok:
+def verify_signup_code(body: VerifySignupIn, db: Session = Depends(get_db)):
+    email = body.email.strip()
+
+    if not verify_email_code(email, body.code, purpose="signup"):
         raise HTTPException(status_code=400, detail="Invalid or expired code")
+
+    ps = db.execute(text("""
+        SELECT email, password_hash, salt, dob, country, plan, favorites_json, newsletter
+        FROM pending_signups
+        WHERE lower(email) = lower(:e)
+    """), {"e": email}).mappings().first()
+    if not ps:
+        raise HTTPException(status_code=400, detail="No pending signup for this email")
+
+    # If user already created meanwhile, just clean staged row and return ok
+    already = db.execute(
+        text("SELECT 1 FROM users WHERE lower(email) = lower(:e)"),
+        {"e": email}
+    ).first()
+    if not already:
+        db.execute(text("""
+            INSERT INTO users
+            (email, password_hash, salt, dob, country, plan, favorites_json, created_at, language, newsletter)
+            VALUES
+            (:email, :ph, :salt, :dob, :country, :plan, :favs, NOW(), NULL, :newsletter)
+        """), {
+            "email": ps["email"],
+            "ph": ps["password_hash"],
+            "salt": ps["salt"],
+            "dob": ps["dob"],
+            "country": ps["country"],
+            "plan": ps["plan"] or "Free",
+            "favs": ps["favorites_json"],        # already jsonb
+            "newsletter": bool(ps["newsletter"]),
+        })
+
+    db.execute(text("DELETE FROM pending_signups WHERE lower(email) = lower(:e)"), {"e": email})
+    db.commit()
     return {"ok": True}
+
+
 
 @app.delete("/me", status_code=status.HTTP_204_NO_CONTENT)
 def delete_me(user_id: int = Depends(require_auth), db: Session = Depends(get_db)):
