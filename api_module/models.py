@@ -45,8 +45,8 @@ class ProfileOut(BaseModel):
     dob: Optional[str] = None
     country: Optional[str] = None
     plan: str
-    favorite_players: List[Dict[str, Any]]
-    uiLanguage: Optional[Literal["en", "tr"]] = None  # <-- NEW
+    favorite_players: List[Any] = []
+    uiLanguage: Optional[Literal["en", "tr"]] = None  
 
 class ProfilePatch(BaseModel):
     dob: Optional[str] = None

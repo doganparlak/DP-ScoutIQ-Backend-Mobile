@@ -208,6 +208,8 @@ def me(user_id: int = Depends(require_auth), db: Session = Depends(get_db)):
     row = db.execute(text("SELECT * FROM users WHERE id = :id"), {"id": user_id}).mappings().first()
     if not row:
         raise HTTPException(status_code=404, detail="User not found")
+    print(row)
+    print(user_row_to_dict(row))
     return user_row_to_dict(row)
 
 @app.patch("/me", response_model=ProfileOut)
@@ -222,7 +224,7 @@ def update_me(patch: ProfilePatch, user_id: int = Depends(require_auth), db: Ses
     favs = json.dumps(patch.favorite_players) if patch.favorite_players is not None else row["favorites_json"]
 
     db.execute(
-        text("UPDATE users SET dob = :dob, country = :country, plan = :plan, favorites_json = :favs WHERE id = :id"),
+        text("UPDATE users SET dob = CAST(:dob AS date), country = :country, plan = :plan, favorites_json = :favs WHERE id = :id"),
         {"dob": dob, "country": country, "plan": plan, "favs": favs, "id": user_id}
     )
     db.commit()
@@ -298,7 +300,7 @@ def verify_signup_code(body: VerifySignupIn, db: Session = Depends(get_db)):
             INSERT INTO users
             (email, password_hash, salt, dob, country, plan, favorites_json, created_at, language, newsletter)
             VALUES
-            (:email, :ph, :salt, :dob, :country, :plan, :favs, NOW(), NULL, :newsletter)
+            (:email, :ph, :salt, CAST(:dob AS date), :country, :plan, CAST(:favs AS jsonb), NOW(), NULL, :newsletter)
         """), {
             "email": ps["email"],
             "ph": ps["password_hash"],
@@ -333,7 +335,6 @@ def delete_me(user_id: int = Depends(require_auth), db: Session = Depends(get_db
 @app.post("/chat")
 async def chat(body: ChatIn, user_id: int = Depends(require_auth), db: Session = Depends(get_db)) -> Dict[str, Any]:
     session_id = body.session_id or "default"
-    print(body)
 
     try:
         if not session_exists_and_active(db, session_id):
@@ -429,11 +430,11 @@ def list_favorites(user_id: int = Depends(require_auth), db: Session = Depends(g
 
 @app.post("/me/favorites", response_model=FavoritePlayerOut, status_code=status.HTTP_201_CREATED)
 def add_favorite(payload: FavoritePlayerIn, user_id: int = Depends(require_auth), response: Response = None, db: Session = Depends(get_db)):
-    print(f"[favorites] ADD request user={user_id} name={payload.name!r} "
-          f"nat={payload.nationality!r} age={payload.age} pot={payload.potential} roles_in={payload.roles}")
+    #print(f"[favorites] ADD request user={user_id} name={payload.name!r} "
+    #      f"nat={payload.nationality!r} age={payload.age} pot={payload.potential} roles_in={payload.roles}")
 
     roles_long = to_long_roles(payload.roles)
-    print(f"[favorites] ADD normalized roles (to LONG) user={user_id} name={payload.name!r} roles_long={roles_long}")
+    #print(f"[favorites] ADD normalized roles (to LONG) user={user_id} name={payload.name!r} roles_long={roles_long}")
 
     existing = db.execute(
         text("""
@@ -455,7 +456,7 @@ def add_favorite(payload: FavoritePlayerIn, user_id: int = Depends(require_auth)
             existing_roles = []
         if response is not None:
             response.status_code = status.HTTP_200_OK
-        print(f"[favorites] ADD SKIP (already exists by name/nat/age) user={user_id} id={existing['id']}")
+        #print(f"[favorites] ADD SKIP (already exists by name/nat/age) user={user_id} id={existing['id']}")
         return FavoritePlayerOut(
             id=existing["id"],
             name=existing["name"],
@@ -486,7 +487,7 @@ def add_favorite(payload: FavoritePlayerIn, user_id: int = Depends(require_auth)
     )
     db.commit()
 
-    print(f"[favorites] ADD OK user={user_id} id={fav_id} name={payload.name!r} created_at={created_at}")
+    #print(f"[favorites] ADD OK user={user_id} id={fav_id} name={payload.name!r} created_at={created_at}")
 
     return FavoritePlayerOut(
         id=fav_id,
@@ -500,7 +501,7 @@ def add_favorite(payload: FavoritePlayerIn, user_id: int = Depends(require_auth)
 
 @app.delete("/me/favorites/{favorite_id}", status_code=status.HTTP_204_NO_CONTENT)
 def delete_favorite(favorite_id: str, user_id: int = Depends(require_auth), db: Session = Depends(get_db)):
-    print(f"[favorites] DELETE request user={user_id} id={favorite_id}")
+    #print(f"[favorites] DELETE request user={user_id} id={favorite_id}")
     res = db.execute(
         text("DELETE FROM favorite_players WHERE id = :id AND user_id = :uid"),
         {"id": favorite_id, "uid": user_id}
@@ -509,9 +510,9 @@ def delete_favorite(favorite_id: str, user_id: int = Depends(require_auth), db: 
     db.commit()
 
     if deleted == 0:
-        print(f"[favorites] DELETE MISS user={user_id} id={favorite_id} -> 404")
+        #print(f"[favorites] DELETE MISS user={user_id} id={favorite_id} -> 404")
         raise HTTPException(status_code=404, detail="Favorite not found")
 
-    print(f"[favorites] DELETE OK user={user_id} id={favorite_id}")
+    #print(f"[favorites] DELETE OK user={user_id} id={favorite_id}")
     return Response(status_code=status.HTTP_204_NO_CONTENT)
 

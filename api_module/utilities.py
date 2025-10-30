@@ -48,7 +48,7 @@ HTMLY_RE = re.compile(r'</?(table|thead|tbody|tr|td|th|ul|ol|li|div|p|h[1-6]|spa
 DB_FILE = "supabase://postgres"
 oauth2_scheme = OAuth2PasswordBearer(tokenUrl="/auth/login")
 # --- DB helpers ---
-def get_db() -> sqlite3.Connection:
+def get_db() -> Session:
     return SessionLocal()
 
 def append_chat_message(db: Session, session_token: str, role: str, content: str) -> None:
@@ -96,19 +96,51 @@ def new_salt() -> str:
 def now_iso() -> str:
      return datetime.now(timezone.utc).isoformat()
 
+def _to_iso_date(val):
+    # Always return str or None
+    if val is None:
+        return None
+    # Accept date OR datetime
+    try:
+        # datetime.date (no time)
+        import datetime as _dt
+        if isinstance(val, _dt.datetime):
+            return val.date().isoformat()
+        if isinstance(val, _dt.date):
+            return val.isoformat()
+        # if it’s already a string, leave it
+        if isinstance(val, str):
+            return val
+    except Exception:
+        pass
+    return str(val)
+
+def _to_iso_datetime(val):
+    if val is None:
+        return None
+    try:
+        import datetime as _dt
+        if isinstance(val, _dt.datetime):
+            return val.isoformat()
+        if isinstance(val, str):
+            return val
+    except Exception:
+        pass
+    return str(val)
+
 def user_row_to_dict(row: any) -> dict:
     """
-    Accepts either:
-      - SQLAlchemy Row (has ._mapping)
-      - dict-like mapping (from .mappings().first())
-      - or a plain object with __dict__
-    Returns a normalized user dict.
+    Normalize a user row into JSON-serializable dict:
+      - dob -> ISO date string or None
+      - created_at -> ISO datetime string
+      - favorite_players -> list
     """
-    if hasattr(row, "_mapping"):              # SQLAlchemy Row
+    from collections.abc import Mapping
+    if hasattr(row, "_mapping"):
         m = row._mapping
-    elif isinstance(row, Mapping):            # dict or mapping
+    elif isinstance(row, Mapping):
         m = row
-    elif hasattr(row, "__dict__"):            # fallback
+    elif hasattr(row, "__dict__"):
         m = row.__dict__
     else:
         raise TypeError(f"Unsupported row type: {type(row)}")
@@ -116,27 +148,30 @@ def user_row_to_dict(row: any) -> dict:
     get = m.get
 
     favs = get("favorites_json")
+    # Normalize favorites to a list
     if isinstance(favs, str):
         try:
-            fav_list = json.loads(favs)
+            parsed = json.loads(favs)
         except Exception:
-            fav_list = []
-    elif favs is None:
-        fav_list = []
-    else:
-        # already a JSON/array from the DB (e.g., jsonb via .mappings())
+            parsed = []
+        fav_list = parsed if isinstance(parsed, list) else []
+    elif isinstance(favs, list):
         fav_list = favs
+    else:
+        # None, dict, other -> empty list
+        fav_list = []
 
     return {
         "id": get("id"),
         "email": get("email"),
-        "dob": get("dob"),
+        "dob": _to_iso_date(get("dob")),
         "country": get("country"),
         "plan": get("plan"),
         "favorite_players": fav_list,
-        "created_at": get("created_at"),
+        "created_at": _to_iso_datetime(get("created_at")),
         "uiLanguage": get("language"),
     }
+
 # ----- deletion helpers -----
 def get_user_email_by_id(db: Session, user_id: int) -> Optional[str]:
     row = db.execute(
