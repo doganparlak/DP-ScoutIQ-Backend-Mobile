@@ -1,12 +1,12 @@
 from typing import Dict, Any, Optional, List
 from dotenv import load_dotenv
-from langchain_community.vectorstores import FAISS
+load_dotenv()
+#from langchain_community.vectorstores import FAISS
 from langchain_openai import ChatOpenAI, OpenAIEmbeddings
 from langchain.prompts import ChatPromptTemplate
-from langchain.chains import ConversationalRetrievalChain
 from langchain.memory import ConversationBufferMemory
+from langchain.chains import ConversationalRetrievalChain
 from langchain.schema import AIMessage, HumanMessage
-from langchain.chains import LLMChain
 from langchain_core.output_parsers import StrOutputParser
 import warnings
 warnings.filterwarnings("ignore", category=DeprecationWarning, module="langchain")
@@ -32,12 +32,13 @@ from chatbot_module.tools import (
     compose_selection_preamble,
     inject_language
 )
-
-# Load environment variables
-load_dotenv()
-
 # === Load Vectorstore ===
+from chatbot_module.vectorstore import get_retriever
+
+
+"""
 embedding = OpenAIEmbeddings(model = "text-embedding-3-large")
+
 
 try:
     vectorstore = FAISS.load_local(
@@ -48,8 +49,9 @@ except Exception as e:
         "Failed to load FAISS index from ./faiss_index. Make sure it exists and "
         "was built with the same embedding model."
     ) from e
-
+"""
 # === QA Chain with RAG & Memory ===
+
 
 def add_language_to_prompt(ui_language: Optional[str]) -> ChatPromptTemplate:
     sys_msg = inject_language(system_message, ui_language)
@@ -81,8 +83,12 @@ def create_qa_chain(session_id: str) -> ConversationalRetrievalChain:
         # ignore any 'system' rows for chat_history
     memory.chat_memory.messages = msgs
 
+    # 3) model + retriever
     llm = ChatOpenAI(model="gpt-4o", temperature=0.3)
-    retriever = vectorstore.as_retriever(search_kwargs={"k": 5})
+    #retriever = vectorstore.as_retriever(search_kwargs={"k": 5})
+    retriever = get_retriever(k=10, filter=None)
+
+    # 4) prompt
     prompt = add_language_to_prompt(lang)
     return ConversationalRetrievalChain.from_llm(
         llm=llm,
@@ -126,7 +132,7 @@ def answer_question(
     # 2) Compute seen players from PRIOR assistant messages ONLY
     seen_players = get_seen_players_from_history(prior_history_frozen)
     seen_list_lower = { (n or "").lower().strip() for n in seen_players }
-
+    print(seen_players)
     # 3) Build selection preamble (semantic, no keyword parsing)
     preamble = compose_selection_preamble(seen_players, strategy)
 
@@ -163,6 +169,7 @@ def answer_question(
             db.close()
     except Exception as e:
         # Persist the user's message even if model fails
+        print(e)
         db = get_db()
         try:
             append_chat_message(db, session_id, "human", question or "")
@@ -193,6 +200,7 @@ def answer_question(
         return {"answer": out, "data": payload}
 
     except Exception as e:
+        print(e)
         # Persist raw base answer if parsing failed (optional)
         db = get_db()
         try:

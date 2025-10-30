@@ -29,7 +29,7 @@ When mentioning a player, always include this metadata block (no headers or lead
 - Potential: <integer 0–100, step 1; derived from age, role history, and current performance metrics to estimate scouting upside in the player’s typical areas>
 [[/PLAYER_PROFILE]]
 
-Always include relevant, up-to-date performance statistics for that same player (aim for 8–15 unique, decision-relevant metrics; up to 20 if truly necessary). Each metric must be unique.
+Always include all, up-to-date performance statistics for that same player (aim for 8–15 unique, decision-relevant metrics; up to 20 if truly necessary). Each metric must be unique.
 Output stats only in this block:
 [[PLAYER_STATS:<Player Name>]]
 1. <Metric 1>: <value>
