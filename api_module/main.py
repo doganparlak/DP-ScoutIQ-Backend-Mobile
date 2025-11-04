@@ -21,7 +21,7 @@ from api_module.database import get_db
 from api_module.models import (
     SignUpIn, LoginIn, LoginOut, ProfileOut, ProfilePatch, SetNewPasswordIn,
     PasswordResetRequestIn, VerifyResetIn, VerifySignupIn, SignupCodeRequestIn, ChatIn,
-    FavoritePlayerIn, FavoritePlayerOut, ReachOutIn
+    FavoritePlayerIn, FavoritePlayerOut, ReachOutIn, PlanUpdateIn
 )
 
 import hmac, uuid, json, re, os
@@ -230,6 +230,22 @@ def update_me(patch: ProfilePatch, user_id: int = Depends(require_auth), db: Ses
 
     row2 = db.execute(text("SELECT * FROM users WHERE id = :id"), {"id": user_id}).mappings().first()
     return user_row_to_dict(row2)
+
+@app.post("/me/plan")
+def update_plan(
+    body: PlanUpdateIn,
+    user_id: int = Depends(require_auth),
+    db: Session = Depends(get_db),
+):
+    # Update the user's plan with a strict, validated payload
+    db.execute(
+        text("UPDATE users SET plan = :plan WHERE id = :id"),
+        {"plan": body.plan, "id": user_id}
+    )
+    db.commit()
+
+    # Return a tiny payload that frontend expects to confirm
+    return {"ok": True, "plan": body.plan}
 
 @app.post("/logout_all")
 def logout_all(user_id: int = Depends(require_auth), db: Session = Depends(get_db)):

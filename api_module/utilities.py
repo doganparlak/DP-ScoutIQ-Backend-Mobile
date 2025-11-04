@@ -1,6 +1,6 @@
 # api_module/utilities.py
 from __future__ import annotations
-from typing import Optional, Dict, Any, List
+from typing import Optional, Dict, Any, List, Literal
 from fastapi import Depends, Header, HTTPException
 from fastapi.security import OAuth2PasswordBearer
 from pydantic import EmailStr
@@ -17,7 +17,8 @@ from sqlalchemy.orm import Session
 
 # DB session provider
 from api_module.database import SessionLocal
-from api_module.database import get_db as _get_db_dep  # FastAPI dependency factory
+
+PlanLiteral = Literal["Free", "Pro", "Elite"]
 
 MESSAGES = {
     "weak_pw": {

@@ -90,14 +90,14 @@ def create_qa_chain(session_id: str) -> ConversationalRetrievalChain:
     llm = ChatOpenAI(model="gpt-4o", temperature=0.3)
     
     # 3)retriever
-    base_retriever = get_retriever(k=5, filter=None)
-    #retriever = vectorstore.as_retriever(search_kwargs={"k": 5})
+    #base_retriever = get_retriever(k=5, filter=None)
+    retriever = get_retriever(k=5, filter=None)
 
     # 4) Translator LLM (cheap/fast)
-    translator = ChatOpenAI(model="gpt-4o", temperature=0)
+    #translator = ChatOpenAI(model="gpt-4o", temperature=0)
 
     # 5) Wrap: translate → retrieve
-    retriever = TranslateQueryRetriever(base=base_retriever, translator=translator)
+    #retriever = TranslateQueryRetriever(base=base_retriever, translator=translator)
 
     # 6) Prompt
     prompt = add_language_to_prompt(lang)

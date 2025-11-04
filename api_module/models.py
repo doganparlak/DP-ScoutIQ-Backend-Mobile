@@ -1,6 +1,9 @@
 # api_module/models.py
 from typing import Optional, Dict, Any, List, Literal
 from pydantic import BaseModel, Field, EmailStr
+from api_module.utilities import PlanLiteral
+
+
 
 # ---- Favorite Players I/O ----
 class FavoritePlayerIn(BaseModel):
@@ -53,6 +56,9 @@ class ProfilePatch(BaseModel):
     country: Optional[str] = None
     plan: Optional[str] = None
     favorite_players: Optional[List[Dict[str, Any]]] = None
+
+class PlanUpdateIn(BaseModel):
+    plan: PlanLiteral
 
 # Email
 class ReachOutIn(BaseModel):
