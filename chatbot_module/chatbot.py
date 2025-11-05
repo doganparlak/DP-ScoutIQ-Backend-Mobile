@@ -90,14 +90,14 @@ def create_qa_chain(session_id: str) -> ConversationalRetrievalChain:
     llm = ChatOpenAI(model="gpt-4o", temperature=0.3)
     
     # 3)retriever
-    #base_retriever = get_retriever(k=5, filter=None)
-    retriever = get_retriever(k=8, filter=None)
+    base_retriever = get_retriever(k=8, filter=None)
+    #retriever = get_retriever(k=8, filter=None)
 
     # 4) Translator LLM (cheap/fast)
-    #translator = ChatOpenAI(model="gpt-4o", temperature=0)
+    translator = ChatOpenAI(model="gpt-4o", temperature=0)
 
     # 5) Wrap: translate → retrieve
-    #retriever = TranslateQueryRetriever(base=base_retriever, translator=translator)
+    retriever = TranslateQueryRetriever(base=base_retriever, translator=translator)
 
     # 6) Prompt
     prompt = add_language_to_prompt(lang)
@@ -144,7 +144,7 @@ def answer_question(
     # 2) Compute seen players from PRIOR assistant messages ONLY
     seen_players = get_seen_players_from_history(prior_history_frozen)
     seen_list_lower = { (n or "").lower().strip() for n in seen_players }
-    print(seen_players)
+    #print(seen_players)
     # 3) Build selection preamble (semantic, no keyword parsing)
     preamble = compose_selection_preamble(seen_players, strategy)
 
@@ -165,8 +165,13 @@ def answer_question(
             "Intent: the user may be asking for a different option or for collective reasoning about previously discussed players. "
             "Infer intention semantically (not by keywords) using the selection rules above.\n\n"
         )
+    no_nationality_bias = (
+        "Nationality constraint: none unless the user explicitly specifies one.\n"
+        "Do NOT infer or prefer a player's nationality from the interface or query language.\n"
+        "When nationality is unspecified, treat it as 'unspecified' and select solely on role fit/history and performance.\n\n"
+    )
 
-    augmented_question = preamble + intent_nudge + "Question: " + (question or "")
+    augmented_question = preamble + no_nationality_bias + intent_nudge + "Question: " + (question or "")
     # 5) LLM Call
     inputs = {"question": augmented_question}
     try:
