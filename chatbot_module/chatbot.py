@@ -91,7 +91,7 @@ def create_qa_chain(session_id: str) -> ConversationalRetrievalChain:
     
     # 3)retriever
     #base_retriever = get_retriever(k=5, filter=None)
-    retriever = get_retriever(k=5, filter=None)
+    retriever = get_retriever(k=8, filter=None)
 
     # 4) Translator LLM (cheap/fast)
     #translator = ChatOpenAI(model="gpt-4o", temperature=0)
