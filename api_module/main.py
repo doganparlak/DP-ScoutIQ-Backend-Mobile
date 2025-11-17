@@ -113,7 +113,6 @@ def login(payload: LoginIn, accept_language: str | None = Header(default=None), 
 
     token = uuid.uuid4().hex
     lang_for_session = normalize_lang(row.get("language")) or "en"
-
     db.execute(
         text("""
         INSERT INTO sessions (token, user_id, language, created_at, ended_at)

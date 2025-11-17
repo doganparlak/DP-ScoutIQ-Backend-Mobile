@@ -3,10 +3,15 @@ from dotenv import load_dotenv
 load_dotenv()
 #from langchain_community.vectorstores import FAISS
 from langchain_openai import ChatOpenAI, OpenAIEmbeddings
-from langchain.prompts import ChatPromptTemplate
-from langchain.memory import ConversationBufferMemory
-from langchain.chains import ConversationalRetrievalChain
-from langchain.schema import AIMessage, HumanMessage
+from langchain_deepseek import ChatDeepSeek
+#from langchain.prompts import ChatPromptTemplate
+from langchain_core.prompts import ChatPromptTemplate
+#from langchain.memory import ConversationBufferMemory
+#from langchain.chains import ConversationalRetrievalChain
+from langchain_classic.memory import ConversationBufferMemory
+from langchain_classic.chains import ConversationalRetrievalChain
+#from langchain.schema import AIMessage, HumanMessage
+from langchain_core.messages import AIMessage, HumanMessage
 from langchain_core.output_parsers import StrOutputParser
 import warnings
 warnings.filterwarnings("ignore", category=DeprecationWarning, module="langchain")
@@ -87,7 +92,11 @@ def create_qa_chain(session_id: str) -> ConversationalRetrievalChain:
 
     
     # 2) LLM for chat
-    llm = ChatOpenAI(model="gpt-4o", temperature=0.3)
+    #llm = ChatOpenAI(model="gpt-4o", temperature=0.3)
+    llm = ChatDeepSeek(
+        model="deepseek-chat",   # non-reasoning mode V3.x
+        temperature=0.3,
+    )
     
     # 3)retriever
     #base_retriever = get_retriever(k=8, filter=None)
@@ -115,7 +124,11 @@ stats_parser_prompt = ChatPromptTemplate.from_messages([
     ("human", "Report:\n\n{report_text}\n\nReturn only JSON, no backticks.")
 ])
 
-llm_parser= ChatOpenAI(model="gpt-4o", temperature=0)
+#llm_parser= ChatOpenAI(model="gpt-4o", temperature=0)
+llm_parser = ChatDeepSeek(
+    model="deepseek-chat",
+    temperature=0,   # keep it deterministic for JSON-style parsing
+)
 stats_parser_chain = stats_parser_prompt | llm_parser | StrOutputParser()
 
 # ===== Player Meta Parser =====
@@ -199,9 +212,10 @@ def answer_question(
     out = base_answer
     try:
         qa_as_report = f"**Statistical Highlights**\n\n{base_answer}\n\n"
+        print(base_answer)
         parsed_stats = parse_statistical_highlights(stats_parser_chain, qa_as_report)
         meta = parse_player_meta(meta_parser_chain, raw_text=base_answer)
-
+        print(meta)
         # Keep only NEW players for data payload (so cards/plots are printed once per player)
         meta_new, stats_new, new_names = filter_players_by_seen(meta, parsed_stats, seen_players)
 

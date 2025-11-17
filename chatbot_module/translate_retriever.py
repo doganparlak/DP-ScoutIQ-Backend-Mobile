@@ -1,7 +1,8 @@
 # chatbot_module/translate_retriever.py
 from typing import List
 from langchain_core.retrievers import BaseRetriever
-from langchain.schema import Document
+#from langchain.schema import Document
+from langchain_core.documents import Document
 from langchain_openai import ChatOpenAI
 from chatbot_module.prompts import TRANSLATE_PROMPT
 

@@ -172,7 +172,7 @@ Rules:
   'Success', 'Lost in Play', 'Clear', 'No Touch', 'In Play Safe', 'In Play Danger', 'Touched Out', 'Touched In',
   'Shots', 'Shot Accuracy (%)', 'Shot Accuracy %', 'Goals', 'Assists', 'xG', 'Key Passes',
   'Passes Attempted', 'Pass Accuracy (%)', 'Pass Accuracy %',
-  'Crosses Attempted', 'Cross Accuracy (%)', 'Cross Accuracy %', 'Carries', 'Dribbles', 'Dribble Accuracy %', 'Dribble Accuracy (%)'
+  'Crosses Attempted', 'Cross Accuracy (%)', 'Cross Accuracy %', 'Carries', 'Dribbles', 'Dribble Accuracy (%)', 'Dribble Accuracy %',
   'Pressures', 'Counterpressures', 'Interceptions', 'Fouls', 'Blocks', 'Duels Attempted',
   'Duel Won Accuracy (%)', 'Duel Won Accuracy %', 'Ball Recoveries', 'Clearances']
 - If nothing found, return {{"players": []}}.
