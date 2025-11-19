@@ -35,11 +35,12 @@ origins_env = os.environ.get("CORS_ORIGINS")
 origins = [o.strip() for o in origins_env.split(",")] if origins_env else ["http://localhost:19006"]
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=origins,
+    allow_origins=["*"],
     allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],
 )
+
 
 # ---------- endpoints ----------
 @app.get("/health")
