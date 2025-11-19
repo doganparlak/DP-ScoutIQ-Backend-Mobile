@@ -60,8 +60,13 @@ except Exception as e:
 # === QA Chain with RAG & Memory ===
 
 
-def add_language_to_prompt(ui_language: Optional[str]) -> ChatPromptTemplate:
+def add_language_strategy_to_prompt(ui_language: Optional[str], strategy: Optional[str]) -> ChatPromptTemplate:
     sys_msg = inject_language(system_message, ui_language)
+    if strategy:
+        sys_msg += (
+            "\n\nCurrent scouting strategy / philosophy (must be followed):\n"
+            f"{strategy}\n"
+        )
     return ChatPromptTemplate.from_messages([
         ("system", sys_msg),
         ("human",
@@ -70,7 +75,7 @@ def add_language_to_prompt(ui_language: Optional[str]) -> ChatPromptTemplate:
         )
     ])
 
-def create_qa_chain(session_id: str) -> ConversationalRetrievalChain:
+def create_qa_chain(session_id: str, strategy: Optional[str] = None) -> ConversationalRetrievalChain:
     # 1) get session language
     db = get_db()
     try:
@@ -99,17 +104,10 @@ def create_qa_chain(session_id: str) -> ConversationalRetrievalChain:
     )
     
     # 3)retriever
-    #base_retriever = get_retriever(k=8, filter=None)
     retriever = get_retriever(k=8, filter=None)
 
-    # 4) Translator LLM (cheap/fast)
-    #translator = ChatOpenAI(model="gpt-4o", temperature=0)
-
-    # 5) Wrap: translate → retrieve
-    #retriever = TranslateQueryRetriever(base=base_retriever, translator=translator)
-
-    # 6) Prompt
-    prompt = add_language_to_prompt(lang)
+    # 4) Prompt
+    prompt = add_language_strategy_to_prompt(lang, strategy)
 
     return ConversationalRetrievalChain.from_llm(
         llm=llm,
@@ -124,11 +122,11 @@ stats_parser_prompt = ChatPromptTemplate.from_messages([
     ("human", "Report:\n\n{report_text}\n\nReturn only JSON, no backticks.")
 ])
 
-#llm_parser= ChatOpenAI(model="gpt-4o", temperature=0)
-llm_parser = ChatDeepSeek(
-    model="deepseek-chat",
-    temperature=0,   # keep it deterministic for JSON-style parsing
-)
+llm_parser= ChatOpenAI(model="gpt-4o", temperature=0)
+#llm_parser = ChatDeepSeek(
+#    model="deepseek-chat",
+#    temperature=0,   # keep it deterministic for JSON-style parsing
+#)
 stats_parser_chain = stats_parser_prompt | llm_parser | StrOutputParser()
 
 # ===== Player Meta Parser =====
@@ -147,7 +145,7 @@ def answer_question(
 ) -> Dict[str, Any]:
 
     # 0) Get/Create Chain
-    qa_chain = create_qa_chain(session_id)
+    qa_chain = create_qa_chain(session_id, strategy=strategy)
     memory: ConversationBufferMemory = qa_chain.memory
 
     # 1) Freeze PRIOR history (before any LLM call can mutate memory)
