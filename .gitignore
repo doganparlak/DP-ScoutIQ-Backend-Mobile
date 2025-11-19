@@ -7,7 +7,7 @@ data_module/player_level_stats.csv
 
 # Virtual environment
 .env
-venv
+venv/
 
 # Local DB
 user_db/*
@@ -16,5 +16,6 @@ sqlite_schema.sql
 # Byte-compiled / optimized / DLL files
 __pycache__/
 *.py[cod]
+*.pyc
 *$py.class
 .DS_Store
