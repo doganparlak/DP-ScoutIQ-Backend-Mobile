@@ -315,7 +315,7 @@ def send_reachout_email(user_email: str, note: str) -> None:
     host = settings['email']['smtp_server']
     port = settings['email']['smtp_port']
 
-    subject = f"[ScoutIQ Reach Out] From: {user_email}"
+    subject = f"[ScoutWise Reach Out] From: {user_email}"
     timestamp = datetime.now(timezone.utc).isoformat()
 
     body = (
@@ -351,22 +351,22 @@ def send_email_code(receiver_email: str, code: str, mail_type: str) -> None:
     port = settings['email']['smtp_port']
 
     if mail_type == 'reset':
-        subject = 'Your ScoutIQ password reset code'
+        subject = 'Your ScoutWise password reset code'
         body = (
             "Dear User,\n\n"
             f"Use this 6-digit code to reset your password:\n\n"
             f"{code}\n\n"
             "The code expires in 10 minutes.\n\n"
-            "Best,\nScoutIQ Support"
+            "Best,\nScoutWise Support"
         )
     else:
-        subject = 'Your ScoutIQ sign-up verification code'
+        subject = 'Your ScoutWise sign-up verification code'
         body = (
             "Dear User,\n\n"
             f"Use this 6-digit code to verify your email:\n\n"
             f"{code}\n\n"
             "The code expires in 10 minutes.\n\n"
-            "Best,\nScoutIQ Support"
+            "Best,\nScoutWise Support"
         )
 
     msg = MIMEMultipart()
