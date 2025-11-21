@@ -8,7 +8,6 @@ load_dotenv()
 
 from sqlalchemy.orm import Session
 from sqlalchemy import text
-from sqlalchemy.exc import SQLAlchemyError
 
 from chatbot_module.chatbot import answer_question
 # import our refactored pieces

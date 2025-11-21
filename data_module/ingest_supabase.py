@@ -1,9 +1,7 @@
 from __future__ import annotations
-
-import os, time, math, json
-from typing import List, Tuple, Dict, Any
+import os
+from typing import List
 from dotenv import load_dotenv
-
 import pandas as pd
 from supabase import create_client, Client
 from langchain_openai import OpenAIEmbeddings

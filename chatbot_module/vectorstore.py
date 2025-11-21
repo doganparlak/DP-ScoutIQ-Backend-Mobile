@@ -5,7 +5,6 @@ from dotenv import load_dotenv
 
 load_dotenv()
 from supabase import create_client, Client
-#from langchain.schema import Document
 from langchain_core.documents import Document
 from langchain_core.retrievers import BaseRetriever
 from langchain_openai import OpenAIEmbeddings

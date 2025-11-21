@@ -1,16 +1,11 @@
 from typing import Dict, Any, Optional, List
 from dotenv import load_dotenv
 load_dotenv()
-#from langchain_community.vectorstores import FAISS
-from langchain_openai import ChatOpenAI, OpenAIEmbeddings
+from langchain_openai import ChatOpenAI
 from langchain_deepseek import ChatDeepSeek
-#from langchain.prompts import ChatPromptTemplate
 from langchain_core.prompts import ChatPromptTemplate
-#from langchain.memory import ConversationBufferMemory
-#from langchain.chains import ConversationalRetrievalChain
 from langchain_classic.memory import ConversationBufferMemory
 from langchain_classic.chains import ConversationalRetrievalChain
-#from langchain.schema import AIMessage, HumanMessage
 from langchain_core.messages import AIMessage, HumanMessage
 from langchain_core.output_parsers import StrOutputParser
 import warnings
@@ -37,7 +32,7 @@ from chatbot_module.tools import (
     compose_selection_preamble,
     inject_language
 )
-from chatbot_module.translate_retriever import  TranslateQueryRetriever
+
 # === Load Vectorstore ===
 from chatbot_module.vectorstore import get_retriever
 

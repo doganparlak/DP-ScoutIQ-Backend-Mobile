@@ -3,15 +3,12 @@ from __future__ import annotations
 from typing import Optional, Dict, Any, List, Literal
 from fastapi import Depends, Header, HTTPException
 from fastapi.security import OAuth2PasswordBearer
-from pydantic import EmailStr
-import os, sqlite3, uuid, hashlib, hmac, json, datetime as dt
+import os, uuid, hashlib, json, datetime as dt
 import random, smtplib
 from email.mime.multipart import MIMEMultipart
 from email.mime.text import MIMEText
 from datetime import datetime, timezone
 import re
-from collections.abc import Mapping
-
 from sqlalchemy import text
 from sqlalchemy.orm import Session
 
