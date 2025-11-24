@@ -36,24 +36,21 @@ from chatbot_module.tools import (
 # === Load Vectorstore ===
 from chatbot_module.vectorstore import get_retriever
 
-
-
-"""
-embedding = OpenAIEmbeddings(model = "text-embedding-3-large")
-
-
-try:
-    vectorstore = FAISS.load_local(
-        "data_module/faiss_index", embedding, allow_dangerous_deserialization=True
-    )
-except Exception as e:
-    raise RuntimeError(
-        "Failed to load FAISS index from ./faiss_index. Make sure it exists and "
-        "was built with the same embedding model."
-    ) from e
-"""
 # === QA Chain with RAG & Memory ===
 
+CHAT_LLM = ChatDeepSeek(
+    model="deepseek-chat",
+    temperature=0.3,
+)
+#CHAT_LLM = ChatOpenAI(model="gpt-4o", temperature=0.3)
+
+#llm_parser= ChatOpenAI(model="gpt-4o", temperature=0)
+PARSER_LLM = ChatDeepSeek(
+    model="deepseek-chat",
+    temperature=0,   # keep it deterministic for JSON-style parsing
+)
+
+SHARED_RETRIEVER = get_retriever(k=6, filter=None)
 
 def add_language_strategy_to_prompt(ui_language: Optional[str], strategy: Optional[str]) -> ChatPromptTemplate:
     sys_msg = inject_language(system_message, ui_language)
@@ -93,20 +90,20 @@ def create_qa_chain(session_id: str, strategy: Optional[str] = None) -> Conversa
     
     # 2) LLM for chat
     #llm = ChatOpenAI(model="gpt-4o", temperature=0.3)
-    llm = ChatDeepSeek(
-        model="deepseek-chat",   # non-reasoning mode V3.x
-        temperature=0.3,
-    )
+    #llm = ChatDeepSeek(
+    #    model="deepseek-chat",   # non-reasoning mode V3.x
+    #    temperature=0.3,
+    #)
     
     # 3)retriever
-    retriever = get_retriever(k=6, filter=None)
+    # retriever = get_retriever(k=6, filter=None)
 
     # 4) Prompt
     prompt = add_language_strategy_to_prompt(lang, strategy)
 
     return ConversationalRetrievalChain.from_llm(
-        llm=llm,
-        retriever=retriever,
+        llm=CHAT_LLM,
+        retriever=SHARED_RETRIEVER,
         memory=memory,
         combine_docs_chain_kwargs={"prompt": prompt}
     )
@@ -117,21 +114,15 @@ stats_parser_prompt = ChatPromptTemplate.from_messages([
     ("human", "Report:\n\n{report_text}\n\nReturn only JSON, no backticks.")
 ])
 
-llm_parser= ChatOpenAI(model="gpt-4o", temperature=0)
-#llm_parser = ChatDeepSeek(
-#    model="deepseek-chat",
-#    temperature=0,   # keep it deterministic for JSON-style parsing
-#)
-stats_parser_chain = stats_parser_prompt | llm_parser | StrOutputParser()
 
+stats_parser_chain = stats_parser_prompt | PARSER_LLM | StrOutputParser()
 # ===== Player Meta Parser =====
 
 meta_parser_prompt = ChatPromptTemplate.from_messages([            
     ("system", meta_parser_system_prompt),
     ("human", "Text:\n\n{raw_text}\n\nReturn only JSON, no backticks.")
 ])
-
-meta_parser_chain = meta_parser_prompt | llm_parser | StrOutputParser()
+meta_parser_chain = meta_parser_prompt | PARSER_LLM | StrOutputParser()
 # ===== Q&A Actions =====
 def answer_question(
     question: str, 
@@ -150,7 +141,6 @@ def answer_question(
     # 2) Compute seen players from PRIOR assistant messages ONLY
     seen_players = get_seen_players_from_history(prior_history_frozen)
     seen_list_lower = { (n or "").lower().strip() for n in seen_players }
-    #print(seen_players)
     # 3) Build selection preamble (semantic, no keyword parsing)
     preamble = compose_selection_preamble(seen_players, strategy)
 
@@ -180,34 +170,26 @@ def answer_question(
     augmented_question = preamble + no_nationality_bias + intent_nudge + "Question: " + (question or "")
     # 5) LLM Call
     inputs = {"question": augmented_question}
+    db = get_db()
     try:
         result = qa_chain.invoke(inputs)
         base_answer = (result.get("answer") or "").strip()
 
-        db = get_db()
-        try:
-            append_chat_message(db, session_id, "human", question or "")
-            append_chat_message(db, session_id, "ai", base_answer)
-        finally:
-            db.close()
+        append_chat_message(db, session_id, "human", question or "")
+        append_chat_message(db, session_id, "ai", base_answer)
     except Exception as e:
-        # Persist the user's message even if model fails
-        db = get_db()
-        try:
-            append_chat_message(db, session_id, "human", question or "")
-            append_chat_message(db, session_id, "ai", "Sorry, I couldn’t generate an answer right now.")
-        finally:
-            db.close()
+        append_chat_message(db, session_id, "human", question or "")
+        append_chat_message(db, session_id, "ai", "Sorry, I couldn’t generate an answer right now.")
         return {"answer": "Sorry, I couldn’t generate an answer right now.", "answer_raw": str(e)}
+    finally:
+        db.close()
 
     # 6) Parse current answer into meta/stats
     out = base_answer
     try:
         qa_as_report = f"**Statistical Highlights**\n\n{base_answer}\n\n"
-        print(base_answer)
         parsed_stats = parse_statistical_highlights(stats_parser_chain, qa_as_report)
         meta = parse_player_meta(meta_parser_chain, raw_text=base_answer)
-        print(meta)
         # Keep only NEW players for data payload (so cards/plots are printed once per player)
         meta_new, stats_new, new_names = filter_players_by_seen(meta, parsed_stats, seen_players)
 
@@ -217,7 +199,6 @@ def answer_question(
         # Strip flagged/meta/stats text from the narrative; keep only analysis
         known_names = [p.get("name") for p in (meta.get("players") or []) if p.get("name")]
         cleaned = strip_meta_stats_text(base_answer, known_names=known_names)
-        #print(payload)
         out = cleaned
 
         return {"answer": out, "data": payload}
