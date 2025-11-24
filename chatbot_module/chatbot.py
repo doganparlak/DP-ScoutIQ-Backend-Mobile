@@ -99,7 +99,7 @@ def create_qa_chain(session_id: str, strategy: Optional[str] = None) -> Conversa
     )
     
     # 3)retriever
-    retriever = get_retriever(k=8, filter=None)
+    retriever = get_retriever(k=6, filter=None)
 
     # 4) Prompt
     prompt = add_language_strategy_to_prompt(lang, strategy)
@@ -204,8 +204,10 @@ def answer_question(
     out = base_answer
     try:
         qa_as_report = f"**Statistical Highlights**\n\n{base_answer}\n\n"
+        print(base_answer)
         parsed_stats = parse_statistical_highlights(stats_parser_chain, qa_as_report)
         meta = parse_player_meta(meta_parser_chain, raw_text=base_answer)
+        print(meta)
         # Keep only NEW players for data payload (so cards/plots are printed once per player)
         meta_new, stats_new, new_names = filter_players_by_seen(meta, parsed_stats, seen_players)
 
@@ -221,7 +223,6 @@ def answer_question(
         return {"answer": out, "data": payload}
 
     except Exception as e:
-        print(e)
         # Persist raw base answer if parsing failed (optional)
         db = get_db()
         try:

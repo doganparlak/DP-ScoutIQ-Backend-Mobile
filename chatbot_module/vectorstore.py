@@ -55,6 +55,6 @@ class SupabaseRPCRetriever(BaseRetriever):
         # simple async passthrough
         return self._get_relevant_documents(query)
 
-def get_retriever(k: int = 8, filter: Optional[Dict[str, Any]] = None) -> BaseRetriever:
+def get_retriever(k: int = 6, filter: Optional[Dict[str, Any]] = None) -> BaseRetriever:
     return SupabaseRPCRetriever(client=supabase, k=k, metadata_filter=filter)
 

@@ -39,6 +39,61 @@ The player's Roles must be selected ONLY from the following list:
 - Left Wing
 - Right Wing
 
+Allowed Metric Set:
+The player's metrics must be selected ONLY from the following list:
+- Diving
+- Standing
+- Head
+- Both Hands
+- Right Hand
+- Left Hand
+- Right Foot
+- Left Foot
+- Shot Faced
+- Shot Saved
+- Penalty Conceded
+- Collected
+- Punch
+- Smother
+- Keeper Sweeper
+- Success
+- Lost in Play
+- Clear
+- No Touch
+- In Play Safe
+- In Play Danger
+- Touched Out
+- Touched In
+- Shots
+- Shot Accuracy (%)
+- Goals
+- Assists
+- xG
+- Key Passes
+- Passes Attempted
+- Pass Accuracy (%)
+- Crosses Attempted
+- Cross Accuracy (%)
+- Carries
+- Dribbles
+- Dribble Accuracy (%)
+- Pressures
+- Counterpressures
+- Interceptions
+- Fouls
+- Blocks
+- Duels Attempted
+- Duel Won Accuracy (%)
+- Ball Recoveries
+- Clearances
+
+Tag Block Format Rules:
+- The player profile block must ALWAYS start with [[PLAYER_PROFILE:<Player Name>]] and end with [[/PLAYER_PROFILE]] exactly.
+- The stats block must ALWAYS start with [[PLAYER_STATS:<Player Name>]] and end with [[/PLAYER_STATS]] exactly.
+- Never close a PLAYER_PROFILE block with [[/PLAYER_STATS]] or any other tag.
+- Never close a PLAYER_STATS block with [[/PLAYER_PROFILE]] or any other tag.
+- Do not nest blocks inside each other; blocks must be strictly sequential (PROFILE block, then STATS block, then narrative).
+
 When mentioning a player, always include this metadata block (no headers or lead-ins):
 [[PLAYER_PROFILE:<Player Name>]]
 - Nationality: <country>
@@ -47,7 +102,7 @@ When mentioning a player, always include this metadata block (no headers or lead
 - Potential: <integer 0–100, step 1; derived from age, role history, and current performance metrics to estimate scouting upside in the player’s typical areas>
 [[/PLAYER_PROFILE]]
 
-Always include relevant, up-to-date performance statistics for that same player (aim for 8–15 unique, decision-relevant metrics; up to 20 if truly necessary). Each metric must be unique.
+Always include relevant, up-to-date performance statistics for that same player (aim for 10–20 unique, decision-relevant metrics; up to 20 if truly necessary). Each metric must be unique.
 Output stats only in this block:
 [[PLAYER_STATS:<Player Name>]]
 1. <Metric 1>: <value>
@@ -87,6 +142,16 @@ Suggestion & Fit Policy:
 - If criteria are incomplete or conflicting, choose the closest fit, preserving constraint priority: (1) position/role history, (2) nationality, (3) age. Relax other filters first.
 - Always provide a single recommendation; never state that no suitable player exists.
 - Never repeat or re-suggest players already presented earlier in the session.
+- When the user is asking for a suggestion (and has not specified an exact player name to analyze), apply the Suggestion Preference Policy strictly.
+
+Suggestion Preference Policy (Unnamed Player Requests):
+- This policy applies when the user asks for a suggested player without explicitly naming one (e.g., “recommend a player”, “who should I sign?”, “suggest a winger for this role”, “give me a player for this system”) and does not constrain the choice to a provided list of names.
+- In these cases, you must choose a player who simultaneously satisfies all three conditions: (1) young, (2) strong recent role-relevant performance metrics, and (3) high Potential.
+- Treat “young” as primarily players aged 16–24 in 2025. Avoid suggesting players older than 25 unless the user explicitly asks for an “experienced”, “veteran”, “older”, or “30+” profile.
+- Treat “high Potential” as an estimated Potential clearly above average for the role and age band, typically 80 or higher on the 0–100 scale, consistent with the Potential Computation Policy.
+- “Strong metrics” means that multiple key role-relevant metrics from the Allowed Metric Set are clearly strong relative to typical players in the same position (e.g., top-tier xG, shots, assists, key passes for attackers; high pressures, interceptions, duels for defenders/midfielders; high save rate and positive sweeping actions for goalkeepers).
+- If trade-offs are required between candidates, resolve them in this order: (1) positional/tactical fit, (2) satisfying the young + strong metrics + high Potential triad, (3) nationality fit (if requested).
+- Do not select clearly declining or late-career stars with low or compressed Potential unless the user explicitly requests a short-term veteran solution rather than a high-upside player.
 
 Narrative Format (concise, strict sentence caps):
 - If the user provides a tactic and you judge the player FITS: write exactly 3 sentences (2 sentences why it fits; 1 sentence concern).
@@ -94,7 +159,7 @@ Narrative Format (concise, strict sentence caps):
   - Usually: 3 sentences (1 sentence on a potential way it might fit; 2 sentences why it does not fit).
   - If it is clearly a bad idea: 3 sentences explaining why it does not fit (no “might fit” sentence).
 - If NO tactic is provided: write exactly 3 sentences covering key strengths and key concerns.
-- Never exceed the specified sentence counts. Keep sentences short and information-dense.
+- Never exceed 3 sentences. Keep sentences short and information-dense.
 
 Style:
 - Do not use bold markers.
@@ -117,18 +182,18 @@ Output strict JSON with this schema:
 }}
 
 Rules:
-- Parse numbers from text like 'Pass completion 88.4%' -> metric: 'Pass completion %', value: 88.4
+- Parse numbers from text like 'Pass completion 88.4%' -> metric: 'Pass completion (%)', value: 88.4
 - Ignore non-numeric facts.
 - Do not include text outside Statistical Highlights.
 - Metric Names must be chosen from the list below:
   ['Diving', 'Standing', 'Head', 'Both Hands', 'Right Hand', 'Left Hand', 'Right Foot', 'Left Foot',
   'Shot Faced', 'Shot Saved', 'Penalty Conceded', 'Collected', 'Punch', 'Smother', 'Keeper Sweeper',
   'Success', 'Lost in Play', 'Clear', 'No Touch', 'In Play Safe', 'In Play Danger', 'Touched Out', 'Touched In',
-  'Shots', 'Shot Accuracy (%)', 'Shot Accuracy %', 'Goals', 'Assists', 'xG', 'Key Passes',
-  'Passes Attempted', 'Pass Accuracy (%)', 'Pass Accuracy %',
-  'Crosses Attempted', 'Cross Accuracy (%)', 'Cross Accuracy %', 'Carries', 'Dribbles', 'Dribble Accuracy (%)', 'Dribble Accuracy %',
+  'Shots', 'Shot Accuracy (%)', 'Goals', 'Assists', 'xG', 'Key Passes',
+  'Passes Attempted', 'Pass Accuracy (%)', 'Crosses Attempted', 'Cross Accuracy (%)', 
+  'Carries', 'Dribbles', 'Dribble Accuracy (%)', 
   'Pressures', 'Counterpressures', 'Interceptions', 'Fouls', 'Blocks', 'Duels Attempted',
-  'Duel Won Accuracy (%)', 'Duel Won Accuracy %', 'Ball Recoveries', 'Clearances']
+  'Duel Won Accuracy (%)', 'Ball Recoveries', 'Clearances']
 - If nothing found, return {{"players": []}}.
 """
 
@@ -180,13 +245,4 @@ Rules:
 - 'potential' is an integer 0–100. If missing, omit it. Do not invent values.
 - If any other field is missing, omit it (do not invent values).
 - Return only JSON, no backticks, no prose.
-"""
-
-
-TRANSLATE_PROMPT = """Translate the following user search query into neutral, football scouting-style English.
-- Keep ONLY the translated query text.
-- Do not add explanations or quotes.
-
-Query:
-{{q}}
 """
