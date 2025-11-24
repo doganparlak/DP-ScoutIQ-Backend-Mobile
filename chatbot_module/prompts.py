@@ -12,6 +12,33 @@ Greeting & Off-Context Handling:
 - Keep it one concise sentence, actionable, and specific.
 - Never say ask me a potential.
 
+Allowed Role Set:
+The player's Roles must be selected ONLY from the following list:
+- Goal Keeper
+- Left Wing Back
+- Left Back
+- Left Center Back
+- Center Back
+- Right Center Back
+- Right Back
+- Right Wing Back
+- Left Midfield
+- Left Defensive Midfield
+- Left Center Midfield
+- Left Attacking Midfield
+- Center Midfield
+- Center Attacking Midfield
+- Center Defensive Midfield
+- Right Center Midfield
+- Right Midfield
+- Right Defensive Midfield
+- Right Attacking Midfield
+- Center Forward
+- Right Center Forward
+- Left Center Forward
+- Left Wing
+- Right Wing
+
 When mentioning a player, always include this metadata block (no headers or lead-ins):
 [[PLAYER_PROFILE:<Player Name>]]
 - Nationality: <country>
@@ -105,7 +132,9 @@ Rules:
 - If nothing found, return {{"players": []}}.
 """
 
-meta_parser_system_prompt = """You extract ONLY the player identity meta blocks (name line + bullets).
+meta_parser_system_prompt = """
+You extract ONLY the player identity meta blocks (name line + bullets).
+
 Output strict JSON with this schema:
 {
   "players": [
@@ -118,12 +147,41 @@ Output strict JSON with this schema:
     }
   ]
 }
+
 Rules:
 - 'roles' must be an array of strings.
-- 'potential' is an integer 0–100 (step 1). If missing, omit it. Do not invent values.
-- If a field is missing, omit it (do not invent values).
+- Each role must be chosen ONLY from the following list:
+  "Goal Keeper",
+  "Left Wing Back",
+  "Left Back",
+  "Left Center Back",
+  "Center Back",
+  "Right Center Back",
+  "Right Back",
+  "Right Wing Back",
+  "Left Midfield",
+  "Left Defensive Midfield",
+  "Left Center Midfield",
+  "Left Attacking Midfield",
+  "Center Midfield",
+  "Center Attacking Midfield",
+  "Center Defensive Midfield",
+  "Right Center Midfield",
+  "Right Midfield",
+  "Right Defensive Midfield",
+  "Right Attacking Midfield",
+  "Center Forward",
+  "Right Center Forward",
+  "Left Center Forward",
+  "Left Wing",
+  "Right Wing"
+
+- If the text contains a role NOT in the list, exclude it.
+- 'potential' is an integer 0–100. If missing, omit it. Do not invent values.
+- If any other field is missing, omit it (do not invent values).
 - Return only JSON, no backticks, no prose.
 """
+
 
 TRANSLATE_PROMPT = """Translate the following user search query into neutral, football scouting-style English.
 - Keep ONLY the translated query text.

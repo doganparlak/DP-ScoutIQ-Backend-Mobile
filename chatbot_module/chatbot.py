@@ -192,7 +192,6 @@ def answer_question(
             db.close()
     except Exception as e:
         # Persist the user's message even if model fails
-        print(e)
         db = get_db()
         try:
             append_chat_message(db, session_id, "human", question or "")
@@ -205,10 +204,8 @@ def answer_question(
     out = base_answer
     try:
         qa_as_report = f"**Statistical Highlights**\n\n{base_answer}\n\n"
-        print(base_answer)
         parsed_stats = parse_statistical_highlights(stats_parser_chain, qa_as_report)
         meta = parse_player_meta(meta_parser_chain, raw_text=base_answer)
-        print(meta)
         # Keep only NEW players for data payload (so cards/plots are printed once per player)
         meta_new, stats_new, new_names = filter_players_by_seen(meta, parsed_stats, seen_players)
 
