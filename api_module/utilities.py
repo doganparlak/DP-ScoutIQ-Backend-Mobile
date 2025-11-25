@@ -15,7 +15,7 @@ from collections.abc import Mapping
 # DB session provider
 from api_module.database import SessionLocal
 
-#PlanLiteral = Literal["Free", "Pro"]
+PlanLiteral = Literal["Free", "Pro"]
 
 MESSAGES = {
     "weak_pw": {
