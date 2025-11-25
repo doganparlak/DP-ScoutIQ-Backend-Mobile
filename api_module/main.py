@@ -14,18 +14,27 @@ from chatbot_module.chatbot import answer_question
 from api_module.utilities import (
     hash_pw, new_salt, now_iso, get_user_email_by_id, delete_user_everywhere, get_bearer_token, revoke_session,
     user_row_to_dict, require_auth, create_email_code, verify_email_code, send_email_code, to_long_roles, normalize_lang, get_user_language,
-    session_exists_and_active, delete_chat_messages, split_response_parts, pick, send_reachout_email
+    session_exists_and_active, delete_chat_messages, split_response_parts, pick, send_reachout_email,
+)
+from api_module.payment_utilities import(
+     verify_ios_subscription, verify_android_subscription
 )
 from api_module.database import get_db
 from api_module.models import (
     SignUpIn, LoginIn, LoginOut, ProfileOut, ProfilePatch, SetNewPasswordIn,
     PasswordResetRequestIn, VerifyResetIn, VerifySignupIn, SignupCodeRequestIn, ChatIn,
-    FavoritePlayerIn, FavoritePlayerOut, ReachOutIn, PlanUpdateIn
+    FavoritePlayerIn, FavoritePlayerOut, ReachOutIn, PlanUpdateIn, IAPActivateIn
 )
 
 import hmac, uuid, json, re, os
+import datetime as dt
 
 PASSWORD_RE = re.compile(r'^(?=.*[A-Za-z])(?=.*\d).{8,}$')
+
+ADMIN_SUBSCRIPTION_SYNC_TOKEN = os.getenv("SUBSCRIPTION_SYNC_TOKEN", "")
+IOS_PRO_PRODUCT_ID = os.getenv("IOS_PRO_PRODUCT_ID", "scoutwise_pro_monthly_ios")
+ANDROID_PRO_PRODUCT_ID = os.getenv("ANDROID_PRO_PRODUCT_ID", "scoutwise_pro_monthly_android")
+
 
 app = FastAPI()
 
@@ -236,15 +245,66 @@ def update_plan(
     user_id: int = Depends(require_auth),
     db: Session = Depends(get_db),
 ):
-    # Update the user's plan with a strict, validated payload
+    # Only allow changing to Free from here.
+    if body.plan != "Free":
+        raise HTTPException(status_code=400, detail="Use /me/subscription/iap to upgrade to Pro")
+
+    row = db.execute(
+        text("""
+            SELECT plan, subscription_end_at
+            FROM users
+            WHERE id = :id
+        """),
+        {"id": user_id},
+    ).mappings().first()
+    if not row:
+        raise HTTPException(status_code=404, detail="User not found")
+
+    current_end = row["subscription_end_at"]
+    now = dt.datetime.now(dt.timezone.utc)
+
+    if current_end is not None:
+        # Normalize to datetime if DB gives string
+        if isinstance(current_end, str):
+            try:
+                current_end_dt = dt.datetime.fromisoformat(current_end.replace("Z", "+00:00"))
+            except Exception:
+                current_end_dt = now
+        else:
+            current_end_dt = current_end
+    else:
+        current_end_dt = None
+
+    # If there is a future end date, keep plan Pro but stop auto-renew.
+    if current_end_dt and current_end_dt > now:
+        db.execute(
+            text("""
+                UPDATE users
+                SET subscription_auto_renew = FALSE
+                WHERE id = :id
+            """),
+            {"id": user_id},
+        )
+        db.commit()
+        # Effective entitlement is still Pro until end date
+        return {"ok": True, "plan": "Pro"}
+    
+    # No active subscription left: fully downgrade to Free
     db.execute(
-        text("UPDATE users SET plan = :plan WHERE id = :id"),
-        {"plan": body.plan, "id": user_id}
+        text("""
+            UPDATE users
+            SET plan = 'Free',
+                subscription_auto_renew = FALSE,
+                subscription_end_at = NULL,
+                subscription_platform = NULL,
+                subscription_external_id = NULL,
+                subscription_last_checked_at = NULL
+            WHERE id = :id
+        """),
+        {"id": user_id},
     )
     db.commit()
-
-    # Return a tiny payload that frontend expects to confirm
-    return {"ok": True, "plan": body.plan}
+    return {"ok": True, "plan": "Free"}
 
 @app.post("/logout_all")
 def logout_all(user_id: int = Depends(require_auth), db: Session = Depends(get_db)):
@@ -548,4 +608,137 @@ def delete_favorite(favorite_id: str, user_id: int = Depends(require_auth), db: 
 
     #print(f"[favorites] DELETE OK user={user_id} id={favorite_id}")
     return Response(status_code=status.HTTP_204_NO_CONTENT)
+
+@app.post("/me/subscription/iap")
+def activate_subscription(
+    body: IAPActivateIn,
+    user_id: int = Depends(require_auth),
+    db: Session = Depends(get_db),
+):
+    # Only allow our known subscription SKUs
+    allowed_product_ids = {IOS_PRO_PRODUCT_ID, ANDROID_PRO_PRODUCT_ID}
+    if body.product_id not in allowed_product_ids:
+        raise HTTPException(status_code=400, detail="Unknown product")
+
+    if body.platform == "ios":
+        ok, expires_at, auto_renew = verify_ios_subscription(
+            IOS_PRO_PRODUCT_ID, body.external_id, body.receipt
+        )
+    else:
+        ok, expires_at, auto_renew = verify_android_subscription(
+            ANDROID_PRO_PRODUCT_ID, body.external_id, body.receipt
+        )
+
+    if not ok:
+        raise HTTPException(status_code=400, detail="Could not verify purchase")
+
+    db.execute(
+        text("""
+            UPDATE users
+            SET plan                     = 'Pro',
+                subscription_platform    = :platform,
+                subscription_external_id = :ext_id,
+                subscription_end_at      = :end_at,
+                subscription_auto_renew  = :auto_renew,
+                subscription_last_checked_at = :checked_at,
+                subscription_receipt     = :receipt
+            WHERE id = :id
+        """),
+        {
+            "platform": body.platform,
+            "ext_id": body.external_id,
+            "end_at": expires_at.isoformat(),
+            "auto_renew": auto_renew,
+            "checked_at": now_iso(),
+            "receipt": body.receipt,  # can be None
+            "id": user_id,
+        },
+    )
+    db.commit()
+
+    return {
+        "ok": True,
+        "plan": "Pro",
+        "subscriptionEndAt": expires_at.isoformat(),
+    }
+
+
+@app.post("/internal/subscriptions/sync")
+def sync_subscriptions(
+    x_admin_token: str = Header(..., alias="X-Admin-Token"),
+    db: Session = Depends(get_db),
+):
+    if not ADMIN_SUBSCRIPTION_SYNC_TOKEN or not hmac.compare_digest(
+        x_admin_token,
+        ADMIN_SUBSCRIPTION_SYNC_TOKEN,
+    ):
+        raise HTTPException(status_code=401, detail="Unauthorized")
+
+    rows = db.execute(
+        text("""
+            SELECT
+                id,
+                subscription_platform,
+                subscription_external_id,
+                subscription_end_at,
+                subscription_receipt
+            FROM users
+            WHERE subscription_external_id IS NOT NULL
+        """)
+    ).mappings().all()
+
+    now = dt.datetime.now(dt.timezone.utc)
+
+    for r in rows:
+        uid = r["id"]
+        platform = r["subscription_platform"]
+        ext_id = r["subscription_external_id"]
+        receipt = r["subscription_receipt"]
+
+        if not platform or not ext_id:
+            continue
+
+        if platform == "ios":
+            ok, new_end, auto_renew = verify_ios_subscription(
+                IOS_PRO_PRODUCT_ID, ext_id, receipt
+            )
+        else:
+            ok, new_end, auto_renew = verify_android_subscription(
+                ANDROID_PRO_PRODUCT_ID, ext_id, None
+            )
+
+        # If verification fails or it's no longer active
+        if not ok or new_end <= now:
+            db.execute(
+                text("""
+                    UPDATE users
+                    SET subscription_end_at      = NULL,
+                        subscription_auto_renew  = FALSE,
+                        plan                     = 'Free'
+                    WHERE id = :id
+                """),
+                {"id": uid},
+            )
+            continue
+
+        # Still active, update expiry and keep Pro
+        db.execute(
+            text("""
+                UPDATE users
+                SET subscription_end_at         = :end_at,
+                    subscription_auto_renew     = :auto_renew,
+                    subscription_last_checked_at = :checked_at,
+                    plan                         = 'Pro'
+                WHERE id = :id
+            """),
+            {
+                "end_at": new_end.isoformat(),
+                "auto_renew": auto_renew,
+                "checked_at": now_iso(),
+                "id": uid,
+            },
+        )
+
+    db.commit()
+    return {"ok": True}
 

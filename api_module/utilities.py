@@ -11,11 +11,11 @@ from datetime import datetime, timezone
 import re
 from sqlalchemy import text
 from sqlalchemy.orm import Session
-
+from collections.abc import Mapping
 # DB session provider
 from api_module.database import SessionLocal
 
-PlanLiteral = Literal["Free", "Pro", "Elite"]
+#PlanLiteral = Literal["Free", "Pro"]
 
 MESSAGES = {
     "weak_pw": {
@@ -132,8 +132,8 @@ def user_row_to_dict(row: any) -> dict:
       - dob -> ISO date string or None
       - created_at -> ISO datetime string
       - favorite_players -> list
+      - subscription* -> subscription info
     """
-    from collections.abc import Mapping
     if hasattr(row, "_mapping"):
         m = row._mapping
     elif isinstance(row, Mapping):
@@ -156,7 +156,6 @@ def user_row_to_dict(row: any) -> dict:
     elif isinstance(favs, list):
         fav_list = favs
     else:
-        # None, dict, other -> empty list
         fav_list = []
 
     return {
@@ -168,6 +167,10 @@ def user_row_to_dict(row: any) -> dict:
         "favorite_players": fav_list,
         "created_at": _to_iso_datetime(get("created_at")),
         "uiLanguage": get("language"),
+        # NEW FIELDS FOR SUBSCRIPTION
+        "subscriptionEndAt": _to_iso_datetime(get("subscription_end_at")),
+        "subscriptionPlatform": get("subscription_platform"),
+        "subscriptionAutoRenew": get("subscription_auto_renew"),
     }
 
 # ----- deletion helpers -----
@@ -522,3 +525,6 @@ def split_response_parts(html: str):
                 parts.append({"type": "text", "html": tail})
 
     return parts
+
+
+

@@ -2,6 +2,7 @@
 from typing import Optional, Dict, Any, List, Literal
 from pydantic import BaseModel, Field, EmailStr
 from api_module.utilities import PlanLiteral
+from datetime import datetime
 
 
 
@@ -51,6 +52,10 @@ class ProfileOut(BaseModel):
     favorite_players: List[Any] = []
     uiLanguage: Optional[Literal["en", "tr"]] = None  
 
+    subscriptionEndAt: Optional[datetime] = None
+    subscriptionPlatform: Optional[str] = None
+    subscriptionAutoRenew: Optional[bool] = None
+
 class ProfilePatch(BaseModel):
     dob: Optional[str] = None
     country: Optional[str] = None
@@ -80,6 +85,12 @@ class VerifySignupIn(BaseModel):
 class SetNewPasswordIn(BaseModel):
     email: EmailStr
     new_password: str
+class IAPActivateIn(BaseModel):
+    platform: Literal["ios", "android"]
+    product_id: str
+    external_id: str      # originalTransactionId (iOS) or purchaseToken (Android)
+    # Optional: latest receipt / purchase object if you want server-side validation
+    receipt: Optional[str] = None
 
 # ---- Chat models (existing) ----
 class ChatIn(BaseModel):
