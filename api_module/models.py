@@ -89,7 +89,6 @@ class IAPActivateIn(BaseModel):
     platform: Literal["ios", "android"]
     product_id: str
     external_id: str      # originalTransactionId (iOS) or purchaseToken (Android)
-    # Optional: latest receipt / purchase object if you want server-side validation
     receipt: Optional[str] = None
 
 # ---- Chat models (existing) ----

@@ -46,7 +46,6 @@ def add_month(dt_: dt.datetime) -> dt.datetime:
 
 def verify_ios_subscription(
     product_id: str,
-    external_id: str,
     receipt: Optional[str],
 ) -> tuple[bool, dt.datetime, bool]:
     """
@@ -68,19 +67,23 @@ def verify_ios_subscription(
 
     url = APPLE_VERIFY_RECEIPT_URL
     if APPLE_USE_SANDBOX:
+        print(APPLE_USE_SANDBOX)
         url = APPLE_VERIFY_RECEIPT_SANDBOX_URL
-
+        print(url)
     try:
         resp = requests.post(url, json=payload, timeout=10)
         data = resp.json()
+        print(data)
     except Exception as e:
         print("[subscriptions] verify_ios_subscription request error:", e)
         return False, now, False
 
     # If production endpoint says "sandbox receipt", retry sandbox
     if data.get("status") == 21007 and not APPLE_USE_SANDBOX:
+        print(data.get("status"))
         try:
             resp = requests.post(APPLE_VERIFY_RECEIPT_SANDBOX_URL, json=payload, timeout=10)
+            print(resp)
             data = resp.json()
         except Exception as e:
             print("[subscriptions] sandbox retry error:", e)
@@ -91,11 +94,13 @@ def verify_ios_subscription(
         return False, now, False
 
     latest = data.get("latest_receipt_info") or data.get("receipt", {}).get("in_app", [])
+    print(latest)
     if not latest:
         return False, now, False
 
     # Filter for this product_id
     filtered = [item for item in latest if item.get("product_id") == product_id]
+    print(filtered)
     if not filtered:
         return False, now, False
 
@@ -110,9 +115,9 @@ def verify_ios_subscription(
 
     expires_ms = int(item.get("expires_date_ms", "0") or "0")
     expires_at = dt.datetime.fromtimestamp(expires_ms / 1000.0, tz=dt.timezone.utc)
-
+    print(expires_at)
     is_active = expires_at > now
-
+    print(is_active)
     # auto-renew status
     auto_renew = True
     for r in data.get("pending_renewal_info") or []:

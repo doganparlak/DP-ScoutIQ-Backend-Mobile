@@ -239,6 +239,7 @@ def update_me(patch: ProfilePatch, user_id: int = Depends(require_auth), db: Ses
     row2 = db.execute(text("SELECT * FROM users WHERE id = :id"), {"id": user_id}).mappings().first()
     return user_row_to_dict(row2)
 
+#Downgrade plan to Free
 @app.post("/me/plan")
 def update_plan(
     body: PlanUpdateIn,
@@ -615,14 +616,17 @@ def activate_subscription(
     user_id: int = Depends(require_auth),
     db: Session = Depends(get_db),
 ):
+    print(body)
+    print(user_id)
     # Only allow our known subscription SKUs
     allowed_product_ids = {IOS_PRO_PRODUCT_ID, ANDROID_PRO_PRODUCT_ID}
     if body.product_id not in allowed_product_ids:
         raise HTTPException(status_code=400, detail="Unknown product")
 
     if body.platform == "ios":
+        print("IOS")
         ok, expires_at, auto_renew = verify_ios_subscription(
-            IOS_PRO_PRODUCT_ID, body.external_id, body.receipt
+            IOS_PRO_PRODUCT_ID, body.receipt
         )
     else:
         ok, expires_at, auto_renew = verify_android_subscription(
@@ -700,7 +704,7 @@ def sync_subscriptions(
 
         if platform == "ios":
             ok, new_end, auto_renew = verify_ios_subscription(
-                IOS_PRO_PRODUCT_ID, ext_id, receipt
+                IOS_PRO_PRODUCT_ID, receipt
             )
         else:
             ok, new_end, auto_renew = verify_android_subscription(
