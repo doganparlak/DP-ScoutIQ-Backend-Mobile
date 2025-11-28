@@ -616,8 +616,6 @@ def activate_subscription(
     user_id: int = Depends(require_auth),
     db: Session = Depends(get_db),
 ):
-    print(body)
-    print(user_id)
     # Only allow our known subscription SKUs
     allowed_product_ids = {IOS_PRO_PRODUCT_ID, ANDROID_PRO_PRODUCT_ID}
     if body.product_id not in allowed_product_ids:

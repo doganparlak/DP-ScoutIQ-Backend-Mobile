@@ -54,8 +54,9 @@ def verify_ios_subscription(
     Returns: (is_active, expires_at, auto_renew)
     """
     now = dt.datetime.now(dt.timezone.utc)
-
-    if not APPLE_SHARED_SECRET:
+    print(receipt)
+    print(product_id)
+    if not receipt or not APPLE_SHARED_SECRET:
         # Without shared secret we can't really verify; fail closed.
         return False, now, False
 
