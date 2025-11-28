@@ -55,7 +55,7 @@ def verify_ios_subscription(
     """
     now = dt.datetime.now(dt.timezone.utc)
 
-    if APPLE_SHARED_SECRET:
+    if not APPLE_SHARED_SECRET:
         # Without shared secret we can't really verify; fail closed.
         return False, now, False
 
