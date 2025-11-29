@@ -5,11 +5,30 @@ import os
 from typing import Optional
 import datetime as dt
 import json
+import base64
+from appstoreserverlibrary.api_client import AppStoreServerAPIClient, APIException
+from appstoreserverlibrary.models.Environment import Environment
+from pathlib import Path
 
-APPLE_SHARED_SECRET = os.environ.get("APPLE_IAP_SHARED_SECRET", "")
+
+def _read_private_key(path: str) -> str:
+    return Path(path).read_text()
+
+APPLE_IAP_KEY_ID = os.environ["APPLE_IAP_KEY_ID"]
+APPLE_IAP_ISSUER_ID = os.environ["APPLE_IAP_ISSUER_ID"]
+APPLE_IAP_PRIVATE_KEY = os.environ["APPLE_IAP_PRIVATE_KEY"]
+APPLE_BUNDLE_ID = os.environ["APPLE_BUNDLE_ID"]
 APPLE_USE_SANDBOX = os.environ.get("APPLE_IAP_USE_SANDBOX", "false").lower() == "true"
-APPLE_VERIFY_RECEIPT_URL = "https://buy.itunes.apple.com/verifyReceipt"
-APPLE_VERIFY_RECEIPT_SANDBOX_URL = "https://sandbox.itunes.apple.com/verifyReceipt"
+
+environment = Environment.SANDBOX if APPLE_USE_SANDBOX else Environment.PRODUCTION
+
+app_store_client = AppStoreServerAPIClient(
+    APPLE_IAP_PRIVATE_KEY,
+    APPLE_IAP_KEY_ID,
+    APPLE_IAP_ISSUER_ID,
+    APPLE_BUNDLE_ID,
+    environment,
+)
 
 GOOGLE_PLAY_SERVICE_ACCOUNT_JSON = os.environ.get("GOOGLE_PLAY_SERVICE_ACCOUNT_JSON", "")
 GOOGLE_PLAY_PACKAGE_NAME = os.environ.get("GOOGLE_PLAY_PACKAGE_NAME", "")
@@ -44,9 +63,28 @@ def add_month(dt_: dt.datetime) -> dt.datetime:
     day = min(dt_.day, 28)
     return dt.datetime(year, month, day, tzinfo=dt_.tzinfo or dt.timezone.utc)
 
+def _decode_jws_payload(jws: str) -> dict:
+    """
+    Decode the payload of a JWS string WITHOUT verifying its signature.
+    This is enough to read productId / expiresDate for your own DB logic.
+    """
+    try:
+        parts = jws.split(".")
+        if len(parts) != 3:
+            return {}
+
+        payload_b64 = parts[1]
+        # Add padding if needed
+        padding = "=" * (-len(payload_b64) % 4)
+        payload_bytes = base64.urlsafe_b64decode(payload_b64 + padding)
+        return json.loads(payload_bytes.decode("utf-8"))
+    except Exception as e:
+        print("[subscriptions] Failed to decode JWS payload:", e)
+        return {}
+
 def verify_ios_subscription(
     product_id: str,
-    receipt: Optional[str],
+    original_transaction_id: Optional[str],
 ) -> tuple[bool, dt.datetime, bool]:
     """
     Validate an iOS subscription using Apple's /verifyReceipt endpoint.
@@ -54,80 +92,66 @@ def verify_ios_subscription(
     Returns: (is_active, expires_at, auto_renew)
     """
     now = dt.datetime.now(dt.timezone.utc)
-    print(receipt)
-    print(product_id)
-    if not receipt or not APPLE_SHARED_SECRET:
-        # Without shared secret we can't really verify; fail closed.
+    print("verify_ios_subscription original_transaction_id:", original_transaction_id)
+    print("verify_ios_subscription product_id:", product_id)
+    if not original_transaction_id:
         return False, now, False
 
-    payload = {
-        "receipt-data": receipt,
-        "password": APPLE_SHARED_SECRET,
-        "exclude-old-transactions": True,
-    }
-
-    url = APPLE_VERIFY_RECEIPT_URL
-    if APPLE_USE_SANDBOX:
-        print(APPLE_USE_SANDBOX)
-        url = APPLE_VERIFY_RECEIPT_SANDBOX_URL
-        print(url)
     try:
-        resp = requests.post(url, json=payload, timeout=10)
-        data = resp.json()
-        print(data)
-    except Exception as e:
-        print("[subscriptions] verify_ios_subscription request error:", e)
-        return False, now, False
-
-    # If production endpoint says "sandbox receipt", retry sandbox
-    if data.get("status") == 21007 and not APPLE_USE_SANDBOX:
-        print(data.get("status"))
+        # Ask Apple for all subscription statuses for this original transaction
+        status_response = app_store_client.get_all_subscription_statuses(
+            original_transaction_id
+        )
+        # --- DEBUG LOG ---
         try:
-            resp = requests.post(APPLE_VERIFY_RECEIPT_SANDBOX_URL, json=payload, timeout=10)
-            print(resp)
-            data = resp.json()
+            print("\n=== APPLE SUBSCRIPTION STATUS RESPONSE ===")
+            print(json.dumps(status_response.to_dict(), indent=2))
+            print("=== END APPLE RESPONSE ===\n")
         except Exception as e:
-            print("[subscriptions] sandbox retry error:", e)
-            return False, now, False
+            print("[debug] Could not dump status_response:", e)
+            print(status_response)
 
-    if data.get("status") != 0:
-        print("[subscriptions] Apple verify failed, status:", data.get("status"))
+    except APIException as e:
+        print("[subscriptions] App Store Server API error:", e)
         return False, now, False
 
-    latest = data.get("latest_receipt_info") or data.get("receipt", {}).get("in_app", [])
-    print(latest)
-    if not latest:
+    latest_expires_at = None
+    is_active = False
+    will_auto_renew = False
+
+    for subscription_group in status_response.data.subscriptions or []:
+        for status in subscription_group.status or []:
+            for latest_tx in status.latestTransactions or []:
+                signed_tx = latest_tx.signedTransactionInfo  # JWS string
+                decoded = _decode_jws_payload(signed_tx)
+                if not decoded:
+                    continue
+
+                tx_product_id = decoded.get("productId")
+                if tx_product_id != product_id:
+                    continue
+
+                expires_ms = decoded.get("expiresDate")
+                if not expires_ms:
+                    continue
+
+                expires_at = dt.datetime.fromtimestamp(
+                    expires_ms / 1000.0, tz=dt.timezone.utc
+                )
+
+                if latest_expires_at is None or expires_at > latest_expires_at:
+                    latest_expires_at = expires_at
+
+                    in_ownership = decoded.get("inAppOwnershipType") == "PURCHASED"
+                    not_revoked = decoded.get("revocationReason") is None
+
+                    is_active = in_ownership and not_revoked and expires_at > now
+                    will_auto_renew = not_revoked and not decoded.get("isUpgraded", False)
+
+    if latest_expires_at is None:
         return False, now, False
-
-    # Filter for this product_id
-    filtered = [item for item in latest if item.get("product_id") == product_id]
-    print(filtered)
-    if not filtered:
-        return False, now, False
-
-    # Pick the latest by expires_date_ms
-    try:
-        item = sorted(
-            filtered,
-            key=lambda x: int(x.get("expires_date_ms", "0")),
-        )[-1]
-    except Exception:
-        item = filtered[-1]
-
-    expires_ms = int(item.get("expires_date_ms", "0") or "0")
-    expires_at = dt.datetime.fromtimestamp(expires_ms / 1000.0, tz=dt.timezone.utc)
-    print(expires_at)
-    is_active = expires_at > now
-    print(is_active)
-    # auto-renew status
-    auto_renew = True
-    for r in data.get("pending_renewal_info") or []:
-        if r.get("product_id") == product_id:
-            if str(r.get("auto_renew_status")) == "0":
-                auto_renew = False
-            break
-
-    return is_active, expires_at, auto_renew
+    
+    return is_active, latest_expires_at, will_auto_renew
 
 def verify_android_subscription(
     product_id: str,

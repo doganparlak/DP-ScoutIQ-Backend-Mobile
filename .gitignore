@@ -8,7 +8,7 @@ data_module/player_level_stats.csv
 # Virtual environment
 .env
 venv/
-
+etc/
 # Local DB
 user_db/*
 sqlite_schema.sql

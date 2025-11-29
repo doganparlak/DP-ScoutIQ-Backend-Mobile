@@ -624,11 +624,14 @@ def activate_subscription(
     if body.platform == "ios":
         print("IOS")
         ok, expires_at, auto_renew = verify_ios_subscription(
-            IOS_PRO_PRODUCT_ID, body.receipt
+            IOS_PRO_PRODUCT_ID, 
+            body.external_id
         )
     else:
         ok, expires_at, auto_renew = verify_android_subscription(
-            ANDROID_PRO_PRODUCT_ID, body.external_id, body.receipt
+            ANDROID_PRO_PRODUCT_ID, 
+            body.external_id, 
+            body.receipt
         )
 
     if not ok:
@@ -702,11 +705,14 @@ def sync_subscriptions(
 
         if platform == "ios":
             ok, new_end, auto_renew = verify_ios_subscription(
-                IOS_PRO_PRODUCT_ID, receipt
+                IOS_PRO_PRODUCT_ID, 
+                ext_id
             )
         else:
             ok, new_end, auto_renew = verify_android_subscription(
-                ANDROID_PRO_PRODUCT_ID, ext_id, None
+                ANDROID_PRO_PRODUCT_ID, 
+                ext_id,
+                receipt
             )
 
         # If verification fails or it's no longer active
