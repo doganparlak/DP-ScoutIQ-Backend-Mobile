@@ -89,25 +89,15 @@ def add_month(dt_: dt.datetime) -> dt.datetime:
         year += 1
     day = min(dt_.day, 28)
     return dt.datetime(year, month, day, tzinfo=dt_.tzinfo or dt.timezone.utc)
-
-def _decode_jws_payload(jws: str) -> dict:
-    """
-    Decode the payload of a JWS string WITHOUT verifying its signature.
-    This is enough to read productId / expiresDate for your own DB logic.
-    """
+    
+def _ms_to_datetime_utc(expires_ms: int | str) -> dt.datetime:
+    """Helper: Apple uses milliseconds since epoch."""
     try:
-        parts = jws.split(".")
-        if len(parts) != 3:
-            return {}
-
-        payload_b64 = parts[1]
-        # Add padding if needed
-        padding = "=" * (-len(payload_b64) % 4)
-        payload_bytes = base64.urlsafe_b64decode(payload_b64 + padding)
-        return json.loads(payload_bytes.decode("utf-8"))
-    except Exception as e:
-        print("[subscriptions] Failed to decode JWS payload:", e)
-        return {}
+        ms_int = int(expires_ms)
+    except Exception:
+        # Fallback to "now" if something is really weird
+        return dt.datetime.now(dt.timezone.utc)
+    return dt.datetime.fromtimestamp(ms_int / 1000.0, tz=dt.timezone.utc)
 
 def verify_ios_subscription(
     product_id: str,
@@ -129,51 +119,57 @@ def verify_ios_subscription(
         status_response = app_store_client.get_all_subscription_statuses(
             original_transaction_id
         )
-        # --- DEBUG LOG ---
-        try:
-            print("\n=== APPLE SUBSCRIPTION STATUS RESPONSE ===")
-            print(json.dumps(status_response.to_dict(), indent=2))
-            print("=== END APPLE RESPONSE ===\n")
-        except Exception as e:
-            print("[debug] Could not dump status_response:", e)
-            print(status_response)
-
+       
     except APIException as e:
         print("[subscriptions] App Store Server API error:", e)
         return False, now, False
+    
+    print("=== APPLE SUBSCRIPTION STATUS RESPONSE ===")
+    print(status_response)
 
-    latest_expires_at = None
+    latest_expires_at: Optional[dt.datetime] = None
     is_active = False
     will_auto_renew = False
+    groups = getattr(status_response, "data", []) or []
 
-    for subscription_group in status_response.data.subscriptions or []:
-        for status in subscription_group.status or []:
-            for latest_tx in status.latestTransactions or []:
-                signed_tx = latest_tx.signedTransactionInfo  # JWS string
-                decoded = _decode_jws_payload(signed_tx)
-                if not decoded:
-                    continue
+    for group in groups:
+        # Each group has lastTransactions: list[LastTransactionsItem]
+        last_txs = getattr(group, "lastTransactions", []) or []
+        for last_tx in last_txs:
+            signed_tx = getattr(last_tx, "signedTransactionInfo", None)
+            if not signed_tx:
+                continue
 
-                tx_product_id = decoded.get("productId")
-                if tx_product_id != product_id:
-                    continue
+            try:
+                decoded = app_store_client.decode_signed_transaction(signed_tx)
+            except Exception as e:
+                print("[subscriptions] decode_signed_transaction error:", e)
+                continue
 
-                expires_ms = decoded.get("expiresDate")
-                if not expires_ms:
-                    continue
+            # decoded is a dict (JWS payload)
+            tx_product_id = decoded.get("productId")
+            if tx_product_id != product_id:
+                # Not our subscription SKU, skip
+                continue
 
-                expires_at = dt.datetime.fromtimestamp(
-                    expires_ms / 1000.0, tz=dt.timezone.utc
-                )
+            # Apple docs: expiresDate is milliseconds since epoch
+            expires_ms = decoded.get("expiresDate") or decoded.get("expiresDateMillis")
+            if not expires_ms:
+                continue
 
-                if latest_expires_at is None or expires_at > latest_expires_at:
-                    latest_expires_at = expires_at
+            expires_at = _ms_to_datetime_utc(expires_ms)
 
-                    in_ownership = decoded.get("inAppOwnershipType") == "PURCHASED"
-                    not_revoked = decoded.get("revocationReason") is None
+            if latest_expires_at is None or expires_at > latest_expires_at:
+                latest_expires_at = expires_at
 
-                    is_active = in_ownership and not_revoked and expires_at > now
-                    will_auto_renew = not_revoked and not decoded.get("isUpgraded", False)
+                # active if not expired and ownership is PURCHASED
+                ownership = decoded.get("inAppOwnershipType")
+                is_active = (ownership == "PURCHASED") and (expires_at > now)
+
+                # Rough auto-renew signal: rawStatus == 1 (ACTIVE in enum)
+                raw_status = getattr(last_tx, "rawStatus", None)
+                will_auto_renew = raw_status == 1
+
 
     if latest_expires_at is None:
         return False, now, False
