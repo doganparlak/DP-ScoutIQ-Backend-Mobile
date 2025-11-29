@@ -1,14 +1,12 @@
-import requests
 from google.oauth2 import service_account
 from google.auth.transport.requests import AuthorizedSession
 import os
-from typing import Optional
+from typing import Optional, Any, Dict
 import datetime as dt
 import json
-import base64
+import jwt
 from appstoreserverlibrary.api_client import AppStoreServerAPIClient, APIException
 from appstoreserverlibrary.models.Environment import Environment
-from pathlib import Path
 
 def _load_apple_private_key_from_env() -> bytes:
     """
@@ -98,6 +96,25 @@ def _ms_to_datetime_utc(expires_ms: int | str) -> dt.datetime:
         # Fallback to "now" if something is really weird
         return dt.datetime.now(dt.timezone.utc)
     return dt.datetime.fromtimestamp(ms_int / 1000.0, tz=dt.timezone.utc)
+def _decode_jws_without_verification(jws: str) -> Dict[str, Any]:
+    """
+    Decode an Apple JWS (signedTransactionInfo / signedRenewalInfo)
+    WITHOUT verifying the signature (we just need the payload fields).
+    """
+    try:
+        # options disables signature and exp/aud checks
+        return jwt.decode(
+            jws,
+            options={
+                "verify_signature": False,
+                "verify_exp": False,
+                "verify_aud": False,
+            },
+            algorithms=["ES256"],  # Apple's JWS uses ES256
+        )
+    except Exception as e:
+        print("[subscriptions] jws decode error:", e)
+        return {}
 
 def verify_ios_subscription(
     product_id: str,
@@ -134,42 +151,56 @@ def verify_ios_subscription(
 
     for group in groups:
         # Each group has lastTransactions: list[LastTransactionsItem]
-        last_txs = getattr(group, "lastTransactions", []) or []
-        for last_tx in last_txs:
+        for last_tx in getattr(group, "lastTransactions", []) or []:
             signed_tx = getattr(last_tx, "signedTransactionInfo", None)
             if not signed_tx:
                 continue
 
-            try:
-                decoded = app_store_client.decode_signed_transaction(signed_tx)
-            except Exception as e:
-                print("[subscriptions] decode_signed_transaction error:", e)
+            decoded_tx = _decode_jws_without_verification(signed_tx)
+            if not decoded_tx:
                 continue
-
-            # decoded is a dict (JWS payload)
-            tx_product_id = decoded.get("productId")
+            
+            print("DECODED TX:", decoded_tx)
+            tx_product_id = decoded_tx.get("productId")
             if tx_product_id != product_id:
-                # Not our subscription SKU, skip
                 continue
 
-            # Apple docs: expiresDate is milliseconds since epoch
-            expires_ms = decoded.get("expiresDate") or decoded.get("expiresDateMillis")
+            print("PRODUCT ID TX:", tx_product_id)
+            expires_ms = decoded_tx.get("expiresDate")
             if not expires_ms:
                 continue
-
-            expires_at = _ms_to_datetime_utc(expires_ms)
-
+            
+            print("EXPIRES MS:", expires_ms)
+            try:
+                expires_at = dt.datetime.fromtimestamp(
+                    int(expires_ms) / 1000.0, tz=dt.timezone.utc
+                )
+            except Exception as e:
+                print("[subscriptions] bad expiresDate in tx:", e, decoded_tx)
+                continue
+            
+            print("EXPIRES AT:", expires_at)
             if latest_expires_at is None or expires_at > latest_expires_at:
                 latest_expires_at = expires_at
 
                 # active if not expired and ownership is PURCHASED
-                ownership = decoded.get("inAppOwnershipType")
-                is_active = (ownership == "PURCHASED") and (expires_at > now)
+                ownership = decoded_tx.get("inAppOwnershipType")
+                is_active = expires_at > now and ownership in (
+                    "PURCHASED",
+                    "FAMILY_SHARED",
+                )
 
-                # Rough auto-renew signal: rawStatus == 1 (ACTIVE in enum)
-                raw_status = getattr(last_tx, "rawStatus", None)
-                will_auto_renew = raw_status == 1
+                will_auto_renew = is_active
 
+            # Try to refine auto_renew by looking at signedRenewalInfo
+            signed_renewal = getattr(last_tx, "signedRenewalInfo", None)
+            if signed_renewal:
+                decoded_renewal = _decode_jws_without_verification(signed_renewal)
+                if decoded_renewal:
+                    auto_status = decoded_renewal.get("autoRenewStatus")
+                    # According to Apple docs: 1 = ON, 0 = OFF
+                    if auto_status is not None:
+                        will_auto_renew = auto_status == 1
 
     if latest_expires_at is None:
         return False, now, False
