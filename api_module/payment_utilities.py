@@ -10,9 +10,33 @@ from appstoreserverlibrary.api_client import AppStoreServerAPIClient, APIExcepti
 from appstoreserverlibrary.models.Environment import Environment
 from pathlib import Path
 
+def _load_apple_private_key_from_env() -> bytes:
+    """
+    Load APPLE_IAP_PRIVATE_KEY from env and normalize it so it works in:
+    - local .env with escaped '\n'
+    - Render dashboard with real multi-line PEM
+    """
+    raw = os.environ["APPLE_IAP_PRIVATE_KEY"]
 
-def _read_private_key(path: str) -> str:
-    return Path(path).read_text()
+    # Sometimes dotenv keeps surrounding quotes, just in case:
+    if raw.startswith('"') and raw.endswith('"'):
+        raw = raw[1:-1]
+
+    # Case 1: local .env like "-----BEGIN...-----\nABC\nDEF\n-----END...-----\n"
+    # -> convert literal '\n' substrings to real newlines.
+    if "\\n" in raw and "BEGIN PRIVATE KEY" in raw:
+        raw = raw.replace("\\r\\n", "\\n")  # normalize CRLF escapes just in case
+        raw = raw.replace("\\n", "\n")
+
+    # Optional debug while testing (remove later if you want)
+    first_line = raw.splitlines()[0] if raw.splitlines() else ""
+    last_line = raw.splitlines()[-1] if raw.splitlines() else ""
+    print("APPLE_IAP_PRIVATE_KEY first line:", first_line)
+    print("APPLE_IAP_PRIVATE_KEY last line:", last_line)
+
+    return raw.encode("utf-8")
+
+
 
 APPLE_IAP_KEY_ID = os.environ["APPLE_IAP_KEY_ID"]
 APPLE_IAP_ISSUER_ID = os.environ["APPLE_IAP_ISSUER_ID"]
@@ -21,9 +45,12 @@ APPLE_BUNDLE_ID = os.environ["APPLE_BUNDLE_ID"]
 APPLE_USE_SANDBOX = os.environ.get("APPLE_IAP_USE_SANDBOX", "false").lower() == "true"
 
 environment = Environment.SANDBOX if APPLE_USE_SANDBOX else Environment.PRODUCTION
+signing_key_bytes = _load_apple_private_key_from_env()
+
+print("Len(APPLE_IAP_PRIVATE_KEY):", len(APPLE_IAP_PRIVATE_KEY))
 
 app_store_client = AppStoreServerAPIClient(
-    APPLE_IAP_PRIVATE_KEY,
+    signing_key_bytes,
     APPLE_IAP_KEY_ID,
     APPLE_IAP_ISSUER_ID,
     APPLE_BUNDLE_ID,
