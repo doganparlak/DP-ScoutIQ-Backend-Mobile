@@ -88,14 +88,6 @@ def add_month(dt_: dt.datetime) -> dt.datetime:
     day = min(dt_.day, 28)
     return dt.datetime(year, month, day, tzinfo=dt_.tzinfo or dt.timezone.utc)
     
-def _ms_to_datetime_utc(expires_ms: int | str) -> dt.datetime:
-    """Helper: Apple uses milliseconds since epoch."""
-    try:
-        ms_int = int(expires_ms)
-    except Exception:
-        # Fallback to "now" if something is really weird
-        return dt.datetime.now(dt.timezone.utc)
-    return dt.datetime.fromtimestamp(ms_int / 1000.0, tz=dt.timezone.utc)
 def _decode_jws_without_verification(jws: str) -> Dict[str, Any]:
     """
     Decode an Apple JWS (signedTransactionInfo / signedRenewalInfo)
@@ -142,7 +134,7 @@ def verify_ios_subscription(
         return False, now, False
     
     print("=== APPLE SUBSCRIPTION STATUS RESPONSE ===")
-    print(status_response)
+    #print(status_response)
 
     latest_expires_at: Optional[dt.datetime] = None
     is_active = False
