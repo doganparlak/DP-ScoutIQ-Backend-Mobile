@@ -262,7 +262,7 @@ def run_subscription_sync(db: Session):
             WHERE subscription_external_id IS NOT NULL
         """)
     ).mappings().all()
-
+    print("ROWS FETCHED FOR SUBSCRIPTION SYNC:", len(rows))
     now = dt.datetime.now(dt.timezone.utc)
 
     for r in rows:
