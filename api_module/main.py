@@ -17,7 +17,7 @@ from api_module.utilities import (
     session_exists_and_active, delete_chat_messages, split_response_parts, pick, send_reachout_email,
 )
 from api_module.payment_utilities import(
-     verify_ios_subscription, verify_android_subscription
+     verify_ios_subscription, verify_android_subscription, run_subscription_sync
 )
 from api_module.database import get_db
 from api_module.models import (
@@ -667,7 +667,7 @@ def activate_subscription(
         "subscriptionEndAt": expires_at.isoformat(),
     }
 
-
+# OPTIONAL ENDPOINT: run subscription sync via endpoint
 @app.post("/internal/subscriptions/sync")
 def sync_subscriptions(
     x_admin_token: str = Header(..., alias="X-Admin-Token"),
@@ -679,74 +679,5 @@ def sync_subscriptions(
     ):
         raise HTTPException(status_code=401, detail="Unauthorized")
 
-    rows = db.execute(
-        text("""
-            SELECT
-                id,
-                subscription_platform,
-                subscription_external_id,
-                subscription_end_at,
-                subscription_receipt
-            FROM users
-            WHERE subscription_external_id IS NOT NULL
-        """)
-    ).mappings().all()
-
-    now = dt.datetime.now(dt.timezone.utc)
-
-    for r in rows:
-        uid = r["id"]
-        platform = r["subscription_platform"]
-        ext_id = r["subscription_external_id"]
-        receipt = r["subscription_receipt"]
-
-        if not platform or not ext_id:
-            continue
-
-        if platform == "ios":
-            ok, new_end, auto_renew = verify_ios_subscription(
-                IOS_PRO_PRODUCT_ID, 
-                ext_id
-            )
-        else:
-            ok, new_end, auto_renew = verify_android_subscription(
-                ANDROID_PRO_PRODUCT_ID, 
-                ext_id,
-                receipt
-            )
-
-        # If verification fails or it's no longer active
-        if not ok or new_end <= now:
-            db.execute(
-                text("""
-                    UPDATE users
-                    SET subscription_end_at      = NULL,
-                        subscription_auto_renew  = FALSE,
-                        plan                     = 'Free'
-                    WHERE id = :id
-                """),
-                {"id": uid},
-            )
-            continue
-
-        # Still active, update expiry and keep Pro
-        db.execute(
-            text("""
-                UPDATE users
-                SET subscription_end_at         = :end_at,
-                    subscription_auto_renew     = :auto_renew,
-                    subscription_last_checked_at = :checked_at,
-                    plan                         = 'Pro'
-                WHERE id = :id
-            """),
-            {
-                "end_at": new_end.isoformat(),
-                "auto_renew": auto_renew,
-                "checked_at": now_iso(),
-                "id": uid,
-            },
-        )
-
-    db.commit()
+    run_subscription_sync(db)
     return {"ok": True}
-

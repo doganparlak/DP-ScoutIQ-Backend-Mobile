@@ -5,28 +5,26 @@ from typing import Optional, Any, Dict
 import datetime as dt
 import json
 import jwt
+from api_module.utilities import now_iso
+from sqlalchemy.orm import Session
+from sqlalchemy import text
 from appstoreserverlibrary.api_client import AppStoreServerAPIClient, APIException
 from appstoreserverlibrary.models.Environment import Environment
 
-def _load_apple_private_key_from_env() -> bytes:
+
+def _normalize_apple_private_key(raw: str) -> bytes:
     """
-    Load APPLE_IAP_PRIVATE_KEY from env and normalize it so it works in:
+    Normalize APPLE_IAP_PRIVATE_KEY from env so it works in:
     - local .env with escaped '\n'
     - Render dashboard with real multi-line PEM
     """
-    raw = os.environ["APPLE_IAP_PRIVATE_KEY"]
-
-    # Sometimes dotenv keeps surrounding quotes, just in case:
     if raw.startswith('"') and raw.endswith('"'):
         raw = raw[1:-1]
 
-    # Case 1: local .env like "-----BEGIN...-----\nABC\nDEF\n-----END...-----\n"
-    # -> convert literal '\n' substrings to real newlines.
     if "\\n" in raw and "BEGIN PRIVATE KEY" in raw:
-        raw = raw.replace("\\r\\n", "\\n")  # normalize CRLF escapes just in case
+        raw = raw.replace("\\r\\n", "\\n")
         raw = raw.replace("\\n", "\n")
 
-    # Optional debug while testing (remove later if you want)
     first_line = raw.splitlines()[0] if raw.splitlines() else ""
     last_line = raw.splitlines()[-1] if raw.splitlines() else ""
     print("APPLE_IAP_PRIVATE_KEY first line:", first_line)
@@ -35,7 +33,8 @@ def _load_apple_private_key_from_env() -> bytes:
     return raw.encode("utf-8")
 
 
-
+IOS_PRO_PRODUCT_ID = os.getenv("IOS_PRO_PRODUCT_ID", "scoutwise_pro_monthly_ios")
+ANDROID_PRO_PRODUCT_ID = os.getenv("ANDROID_PRO_PRODUCT_ID", "scoutwise_pro_monthly_android")
 APPLE_IAP_KEY_ID = os.environ["APPLE_IAP_KEY_ID"]
 APPLE_IAP_ISSUER_ID = os.environ["APPLE_IAP_ISSUER_ID"]
 APPLE_IAP_PRIVATE_KEY = os.environ["APPLE_IAP_PRIVATE_KEY"]
@@ -43,7 +42,7 @@ APPLE_BUNDLE_ID = os.environ["APPLE_BUNDLE_ID"]
 APPLE_USE_SANDBOX = os.environ.get("APPLE_IAP_USE_SANDBOX", "false").lower() == "true"
 
 environment = Environment.SANDBOX if APPLE_USE_SANDBOX else Environment.PRODUCTION
-signing_key_bytes = _load_apple_private_key_from_env()
+signing_key_bytes = _normalize_apple_private_key(APPLE_IAP_PRIVATE_KEY)
 
 print("Len(APPLE_IAP_PRIVATE_KEY):", len(APPLE_IAP_PRIVATE_KEY))
 
@@ -78,16 +77,7 @@ def _get_google_play_session() -> Optional[AuthorizedSession]:
     except Exception as e:
         print("[subscriptions] could not create Google Play session:", e)
         return None
-    
-def add_month(dt_: dt.datetime) -> dt.datetime:
-    year = dt_.year
-    month = dt_.month + 1
-    if month > 12:
-        month = 1
-        year += 1
-    day = min(dt_.day, 28)
-    return dt.datetime(year, month, day, tzinfo=dt_.tzinfo or dt.timezone.utc)
-    
+        
 def _decode_jws_without_verification(jws: str) -> Dict[str, Any]:
     """
     Decode an Apple JWS (signedTransactionInfo / signedRenewalInfo)
@@ -258,3 +248,77 @@ def verify_android_subscription(
 
     return is_active, expires_at, auto_renew
 
+# AUTO CHECK FOR SUBSCRIPTION UPDATES FOR ALL USERS
+def run_subscription_sync(db: Session):
+    rows = db.execute(
+        text("""
+            SELECT
+                id,
+                subscription_platform,
+                subscription_external_id,
+                subscription_end_at,
+                subscription_receipt
+            FROM users
+            WHERE subscription_external_id IS NOT NULL
+        """)
+    ).mappings().all()
+
+    now = dt.datetime.now(dt.timezone.utc)
+
+    for r in rows:
+        uid = r["id"]
+        platform = r["subscription_platform"]
+        ext_id = r["subscription_external_id"]
+        receipt = r["subscription_receipt"]
+
+        if not platform or not ext_id:
+            continue
+
+        if platform == "ios":
+            ok, new_end, auto_renew = verify_ios_subscription(
+                IOS_PRO_PRODUCT_ID, 
+                ext_id
+            )
+        else:
+            ok, new_end, auto_renew = verify_android_subscription(
+                ANDROID_PRO_PRODUCT_ID, 
+                ext_id,
+                receipt
+            )
+
+        # If verification fails or it's no longer active
+        if not ok or new_end <= now:
+            db.execute(
+                text("""
+                    UPDATE users
+                    SET subscription_end_at      = NULL,
+                        subscription_auto_renew  = FALSE,
+                        subscription_platform    = NULL,
+                        subscription_external_id = NULL,
+                        subscription_receipt     = NULL,
+                        plan                     = 'Free'
+                    WHERE id = :id
+                """),
+                {"id": uid},
+            )
+            continue
+
+        # Still active, update expiry and keep Pro
+        db.execute(
+            text("""
+                UPDATE users
+                SET subscription_end_at         = :end_at,
+                    subscription_auto_renew     = :auto_renew,
+                    subscription_last_checked_at = :checked_at,
+                    plan                         = 'Pro'
+                WHERE id = :id
+            """),
+            {
+                "end_at": new_end.isoformat(),
+                "auto_renew": auto_renew,
+                "checked_at": now_iso(),
+                "id": uid,
+            },
+        )
+
+    db.commit()
