@@ -239,73 +239,6 @@ def update_me(patch: ProfilePatch, user_id: int = Depends(require_auth), db: Ses
     row2 = db.execute(text("SELECT * FROM users WHERE id = :id"), {"id": user_id}).mappings().first()
     return user_row_to_dict(row2)
 
-#Downgrade plan to Free
-@app.post("/me/plan")
-def update_plan(
-    body: PlanUpdateIn,
-    user_id: int = Depends(require_auth),
-    db: Session = Depends(get_db),
-):
-    # Only allow changing to Free from here.
-    if body.plan != "Free":
-        raise HTTPException(status_code=400, detail="Use /me/subscription/iap to upgrade to Pro")
-
-    row = db.execute(
-        text("""
-            SELECT plan, subscription_end_at
-            FROM users
-            WHERE id = :id
-        """),
-        {"id": user_id},
-    ).mappings().first()
-    if not row:
-        raise HTTPException(status_code=404, detail="User not found")
-
-    current_end = row["subscription_end_at"]
-    now = dt.datetime.now(dt.timezone.utc)
-
-    if current_end is not None:
-        # Normalize to datetime if DB gives string
-        if isinstance(current_end, str):
-            try:
-                current_end_dt = dt.datetime.fromisoformat(current_end.replace("Z", "+00:00"))
-            except Exception:
-                current_end_dt = now
-        else:
-            current_end_dt = current_end
-    else:
-        current_end_dt = None
-
-    # If there is a future end date, keep plan Pro but stop auto-renew.
-    if current_end_dt and current_end_dt > now:
-        db.execute(
-            text("""
-                UPDATE users
-                SET subscription_auto_renew = FALSE
-                WHERE id = :id
-            """),
-            {"id": user_id},
-        )
-        db.commit()
-        # Effective entitlement is still Pro until end date
-        return {"ok": True, "plan": "Pro"}
-    
-    # No active subscription left: fully downgrade to Free
-    db.execute(
-        text("""
-            UPDATE users
-            SET plan = 'Free',
-                subscription_auto_renew = FALSE,
-                subscription_end_at = NULL,
-                subscription_platform = NULL,
-                subscription_external_id = NULL,
-                subscription_last_checked_at = NULL
-            WHERE id = :id
-        """),
-        {"id": user_id},
-    )
-    db.commit()
-    return {"ok": True, "plan": "Free"}
 
 @app.post("/logout_all")
 def logout_all(user_id: int = Depends(require_auth), db: Session = Depends(get_db)):
@@ -673,6 +606,7 @@ def sync_subscriptions(
     x_admin_token: str = Header(..., alias="X-Admin-Token"),
     db: Session = Depends(get_db),
 ):
+
     if not ADMIN_SUBSCRIPTION_SYNC_TOKEN or not hmac.compare_digest(
         x_admin_token,
         ADMIN_SUBSCRIPTION_SYNC_TOKEN,

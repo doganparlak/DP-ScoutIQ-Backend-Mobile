@@ -123,9 +123,6 @@ def verify_ios_subscription(
         print("[subscriptions] App Store Server API error:", e)
         return False, now, False
     
-    print("=== APPLE SUBSCRIPTION STATUS RESPONSE ===")
-    #print(status_response)
-
     latest_expires_at: Optional[dt.datetime] = None
     is_active = False
     will_auto_renew = False
@@ -142,17 +139,14 @@ def verify_ios_subscription(
             if not decoded_tx:
                 continue
             
-            print("DECODED TX:", decoded_tx)
             tx_product_id = decoded_tx.get("productId")
             if tx_product_id != product_id:
                 continue
 
-            print("PRODUCT ID TX:", tx_product_id)
             expires_ms = decoded_tx.get("expiresDate")
             if not expires_ms:
                 continue
             
-            print("EXPIRES MS:", expires_ms)
             try:
                 expires_at = dt.datetime.fromtimestamp(
                     int(expires_ms) / 1000.0, tz=dt.timezone.utc
@@ -161,7 +155,6 @@ def verify_ios_subscription(
                 print("[subscriptions] bad expiresDate in tx:", e, decoded_tx)
                 continue
             
-            print("EXPIRES AT:", expires_at)
             if latest_expires_at is None or expires_at > latest_expires_at:
                 latest_expires_at = expires_at
 
