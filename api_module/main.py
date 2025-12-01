@@ -555,7 +555,6 @@ def activate_subscription(
         raise HTTPException(status_code=400, detail="Unknown product")
 
     if body.platform == "ios":
-        print("IOS")
         ok, expires_at, auto_renew = verify_ios_subscription(
             IOS_PRO_PRODUCT_ID, 
             body.external_id
