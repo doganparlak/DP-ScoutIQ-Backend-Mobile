@@ -25,11 +25,6 @@ def _normalize_apple_private_key(raw: str) -> bytes:
         raw = raw.replace("\\r\\n", "\\n")
         raw = raw.replace("\\n", "\n")
 
-    first_line = raw.splitlines()[0] if raw.splitlines() else ""
-    last_line = raw.splitlines()[-1] if raw.splitlines() else ""
-    print("APPLE_IAP_PRIVATE_KEY first line:", first_line)
-    print("APPLE_IAP_PRIVATE_KEY last line:", last_line)
-
     return raw.encode("utf-8")
 
 
@@ -43,8 +38,6 @@ APPLE_USE_SANDBOX = os.environ.get("APPLE_IAP_USE_SANDBOX", "false").lower() == 
 
 environment = Environment.SANDBOX if APPLE_USE_SANDBOX else Environment.PRODUCTION
 signing_key_bytes = _normalize_apple_private_key(APPLE_IAP_PRIVATE_KEY)
-
-print("Len(APPLE_IAP_PRIVATE_KEY):", len(APPLE_IAP_PRIVATE_KEY))
 
 app_store_client = AppStoreServerAPIClient(
     signing_key_bytes,
@@ -108,8 +101,6 @@ def verify_ios_subscription(
     Returns: (is_active, expires_at, auto_renew)
     """
     now = dt.datetime.now(dt.timezone.utc)
-    print("verify_ios_subscription original_transaction_id:", original_transaction_id)
-    print("verify_ios_subscription product_id:", product_id)
     if not original_transaction_id:
         return False, now, False
 

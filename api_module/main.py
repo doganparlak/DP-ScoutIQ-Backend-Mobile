@@ -457,11 +457,8 @@ def list_favorites(user_id: int = Depends(require_auth), db: Session = Depends(g
 
 @app.post("/me/favorites", response_model=FavoritePlayerOut, status_code=status.HTTP_201_CREATED)
 def add_favorite(payload: FavoritePlayerIn, user_id: int = Depends(require_auth), response: Response = None, db: Session = Depends(get_db)):
-    #print(f"[favorites] ADD request user={user_id} name={payload.name!r} "
-    #      f"nat={payload.nationality!r} age={payload.age} pot={payload.potential} roles_in={payload.roles}")
 
     roles_long = to_long_roles(payload.roles)
-    #print(f"[favorites] ADD normalized roles (to LONG) user={user_id} name={payload.name!r} roles_long={roles_long}")
 
     existing = db.execute(
         text("""
@@ -483,7 +480,6 @@ def add_favorite(payload: FavoritePlayerIn, user_id: int = Depends(require_auth)
             existing_roles = []
         if response is not None:
             response.status_code = status.HTTP_200_OK
-        #print(f"[favorites] ADD SKIP (already exists by name/nat/age) user={user_id} id={existing['id']}")
         return FavoritePlayerOut(
             id=existing["id"],
             name=existing["name"],
@@ -514,8 +510,6 @@ def add_favorite(payload: FavoritePlayerIn, user_id: int = Depends(require_auth)
     )
     db.commit()
 
-    #print(f"[favorites] ADD OK user={user_id} id={fav_id} name={payload.name!r} created_at={created_at}")
-
     return FavoritePlayerOut(
         id=fav_id,
         name=payload.name,
@@ -528,7 +522,6 @@ def add_favorite(payload: FavoritePlayerIn, user_id: int = Depends(require_auth)
 
 @app.delete("/me/favorites/{favorite_id}", status_code=status.HTTP_204_NO_CONTENT)
 def delete_favorite(favorite_id: str, user_id: int = Depends(require_auth), db: Session = Depends(get_db)):
-    #print(f"[favorites] DELETE request user={user_id} id={favorite_id}")
     res = db.execute(
         text("DELETE FROM favorite_players WHERE id = :id AND user_id = :uid"),
         {"id": favorite_id, "uid": user_id}
@@ -537,10 +530,8 @@ def delete_favorite(favorite_id: str, user_id: int = Depends(require_auth), db: 
     db.commit()
 
     if deleted == 0:
-        #print(f"[favorites] DELETE MISS user={user_id} id={favorite_id} -> 404")
         raise HTTPException(status_code=404, detail="Favorite not found")
 
-    #print(f"[favorites] DELETE OK user={user_id} id={favorite_id}")
     return Response(status_code=status.HTTP_204_NO_CONTENT)
 
 @app.post("/me/subscription/iap")

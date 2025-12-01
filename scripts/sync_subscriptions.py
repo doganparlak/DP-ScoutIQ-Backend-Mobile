@@ -8,7 +8,7 @@ def main():
         print("DB FETCH SUCCESSFUL, RUNNING SYNC...")
         run_subscription_sync(db)
     finally:
-        print("DB FETCH UNSUCCESSFUL, CLOSING SESSION...")
+        print("CLOSING SESSION...")
         db.close()
 
 if __name__ == "__main__":
