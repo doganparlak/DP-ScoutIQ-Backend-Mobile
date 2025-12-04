@@ -109,6 +109,10 @@ roles = [
     "Right Wing"
 ]
 
+# Stringified versions for prompt interpolation
+metric_names_str = ",\n  ".join(f"'{m}'" for m in metric_names)
+roles_str = ",\n  ".join(f'"{r}"' for r in roles)
+
 system_message = f"""
 You are an expert football analyst specializing in player performance and scouting insights.
 Always respond as though it is the year 2026 — age calculations, timelines, and context must reflect this current year.
@@ -125,11 +129,11 @@ Greeting & Off-Context Handling:
 
 Allowed Role Set:
 The player's Roles must be selected ONLY from the following list:
-{roles}
+[{roles_str}]
 
 Allowed Metric Set:
 The player's metrics must be selected ONLY from the following list:
-{metric_names}
+[{metric_names_str}]
 
 Tag Block Format Rules:
 - The player profile block must ALWAYS start with [[PLAYER_PROFILE:<Player Name>]] and end with [[/PLAYER_PROFILE]] exactly.
@@ -259,7 +263,7 @@ Rules:
 - Ignore non-numeric facts.
 - Do not include text outside Statistical Highlights.
 - Metric Names must be chosen from the list below:
-  {metric_names}
+  [{metric_names_str}]
 - If nothing found, return {"players": []}.
 """
 
@@ -297,7 +301,7 @@ Rules:
 - "roles" must be an array of strings.
 - There must be exactly ONE role per player, so "roles" must contain exactly one element.
 - Each role must be chosen ONLY from the following list:
-    {roles}
+    [{roles_str}]
 - If the text contains a role NOT in the list, exclude it (do not output it in "roles").
 - "potential" is an integer 0–100. If missing, omit it. Do not invent values.
 - If any other field is missing, omit it (do not invent values).
