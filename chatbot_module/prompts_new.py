@@ -247,16 +247,16 @@ Style:
 
 stats_parser_system_message = f"""You extract ONLY the 'Statistical Highlights' section.
 Output strict JSON with this schema:
-{
+{{
   "players": [
-    {
+    {{
       "name": "Player Name",
       "stats": [
-        {"metric": "Metric Name", "value": <number>}
+        {{"metric": "Metric Name", "value": <value>}}
       ]
-    }
+    }}
   ]
-}
+}}
 
 Rules:
 - Parse numbers from text like 'Pass completion 88.4%' -> metric: 'Pass completion (%)', value: 88.4
