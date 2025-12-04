@@ -109,10 +109,6 @@ roles = [
     "Right Wing"
 ]
 
-# Stringified versions for prompt interpolation
-metric_names_str = ",\n  ".join(f"'{m}'" for m in metric_names)
-roles_str = ",\n  ".join(f'"{r}"' for r in roles)
-
 system_message = f"""
 You are an expert football analyst specializing in player performance and scouting insights.
 Always respond as though it is the year 2026 — age calculations, timelines, and context must reflect this current year.
@@ -129,11 +125,11 @@ Greeting & Off-Context Handling:
 
 Allowed Role Set:
 The player's Roles must be selected ONLY from the following list:
-[{roles_str}]
+["Goalkeeper", "Goal Keeper", "Left Wing Back", "Left Back", "Left Center Back", "Centre Back", "Center Back", "Right Center Back", "Right Back", "Right Wing Back", "Left Midfield", "Left Defensive Midfield", "Left Center Midfield", "Left Attacking Midfield", "Central Midfield", "Center Attacking Midfield", "Center Defensive Midfield", "Defensive Midfield", "Right Center Midfield", "Right Midfield", "Right Defensive Midfield", "Right Attacking Midfield", "Attacking Midfield", "Center Forward", "Centre Forward", "Attacker", "Right Center Forward", "Left Center Forward", "Left Wing", "Right Wing"]
 
 Allowed Metric Set:
 The player's metrics must be selected ONLY from the following list:
-[{metric_names_str}]
+['stat_duels-won', 'stat_clearances', 'stat_chances-created', 'stat_accurate-crosses', 'stat_clearance-offline', 'stat_ball-recovery', 'stat_saves-insidebox', 'stat_man-of-match', 'stat_penalties-committed', 'stat_dispossessed', 'stat_fouls', 'stat_goals-conceded', 'stat_shots-on-target', 'stat_accurate-passes', 'stat_penalties-scored', 'stat_tackles-won', 'stat_aerials-won-percentage', 'stat_through-balls', 'stat_offsides-provoked', 'stat_penalties-missed', 'stat_good-high-claim', 'stat_big-chances-created', 'stat_penalties-won', 'stat_dribbled-past', 'stat_punches', 'stat_yellowcards', 'stat_assists', 'stat_blocked-shots', 'stat_backward-passes', 'stat_hit-woodwork', 'stat_shots-total', 'stat_shots-blocked', 'stat_dribble-attempts', 'stat_penalties-saved', 'stat_long-balls-won-percentage', 'stat_long-balls-won', 'stat_long-balls', 'stat_tackles', 'stat_aerials', 'stat_offsides', 'stat_possession-lost', 'stat_successful-dribbles', 'stat_goalkeeper-goals-conceded', 'stat_total-crosses', 'stat_total-duels', 'stat_error-lead-to-goal', 'stat_saves', 'stat_successful-crosses-percentage', 'stat_big-chances-missed', 'stat_own-goals', 'stat_key-passes', 'stat_yellowred-cards', 'stat_minutes-played', 'stat_accurate-passes-percentage', 'stat_aeriels-won', 'goals_from_events', 'stat_touches', 'stat_passes', 'stat_duels-lost', 'stat_last-man-tackle', 'stat_goals', 'stat_shots-off-target', 'stat_interceptions', 'assists_from_events', 'stat_turn-over', 'stat_tackles-won-percentage', 'stat_aeriels-lost', 'stat_duels-won-percentage', 'stat_redcards', 'stat_captain', 'stat_passes-in-final-third', 'stat_rating', 'stat_fouls-drawn', 'stat_error-lead-to-shot', 'stat_through-balls-won']
 
 Tag Block Format Rules:
 - The player profile block must ALWAYS start with [[PLAYER_PROFILE:<Player Name>]] and end with [[/PLAYER_PROFILE]] exactly.
@@ -245,7 +241,7 @@ Style:
 - If the user ends the conversation, reply with a short polite acknowledgment.
 """
 
-stats_parser_system_message = f"""You extract ONLY the 'Statistical Highlights' section.
+stats_parser_system_message = """You extract ONLY the 'Statistical Highlights' section.
 Output strict JSON with this schema:
 {{
   "players": [
@@ -263,11 +259,11 @@ Rules:
 - Ignore non-numeric facts.
 - Do not include text outside Statistical Highlights.
 - Metric Names must be chosen from the list below:
-  [{metric_names_str}]
+  ['stat_duels-won', 'stat_clearances', 'stat_chances-created', 'stat_accurate-crosses', 'stat_clearance-offline', 'stat_ball-recovery', 'stat_saves-insidebox', 'stat_man-of-match', 'stat_penalties-committed', 'stat_dispossessed', 'stat_fouls', 'stat_goals-conceded', 'stat_shots-on-target', 'stat_accurate-passes', 'stat_penalties-scored', 'stat_tackles-won', 'stat_aerials-won-percentage', 'stat_through-balls', 'stat_offsides-provoked', 'stat_penalties-missed', 'stat_good-high-claim', 'stat_big-chances-created', 'stat_penalties-won', 'stat_dribbled-past', 'stat_punches', 'stat_yellowcards', 'stat_assists', 'stat_blocked-shots', 'stat_backward-passes', 'stat_hit-woodwork', 'stat_shots-total', 'stat_shots-blocked', 'stat_dribble-attempts', 'stat_penalties-saved', 'stat_long-balls-won-percentage', 'stat_long-balls-won', 'stat_long-balls', 'stat_tackles', 'stat_aerials', 'stat_offsides', 'stat_possession-lost', 'stat_successful-dribbles', 'stat_goalkeeper-goals-conceded', 'stat_total-crosses', 'stat_total-duels', 'stat_error-lead-to-goal', 'stat_saves', 'stat_successful-crosses-percentage', 'stat_big-chances-missed', 'stat_own-goals', 'stat_key-passes', 'stat_yellowred-cards', 'stat_minutes-played', 'stat_accurate-passes-percentage', 'stat_aeriels-won', 'goals_from_events', 'stat_touches', 'stat_passes', 'stat_duels-lost', 'stat_last-man-tackle', 'stat_goals', 'stat_shots-off-target', 'stat_interceptions', 'assists_from_events', 'stat_turn-over', 'stat_tackles-won-percentage', 'stat_aeriels-lost', 'stat_duels-won-percentage', 'stat_redcards', 'stat_captain', 'stat_passes-in-final-third', 'stat_rating', 'stat_fouls-drawn', 'stat_error-lead-to-shot', 'stat_through-balls-won']
 - If nothing found, return {{"players": []}}.
 """
 
-meta_parser_system_prompt = f"""
+meta_parser_system_prompt = """
 You extract ONLY the player identity meta blocks (name line + bullets).
 
 Output strict JSON with this schema:
@@ -302,7 +298,7 @@ Rules:
 - "roles" must be an array of strings.
 - There must be exactly ONE role per player, so "roles" must contain exactly one element.
 - Each role must be chosen ONLY from the following list:
-    [{roles_str}]
+  ["Goalkeeper", "Goal Keeper", "Left Wing Back", "Left Back", "Left Center Back", "Centre Back", "Center Back", "Right Center Back", "Right Back", "Right Wing Back", "Left Midfield", "Left Defensive Midfield", "Left Center Midfield", "Left Attacking Midfield", "Central Midfield", "Center Attacking Midfield", "Center Defensive Midfield", "Defensive Midfield", "Right Center Midfield", "Right Midfield", "Right Defensive Midfield", "Right Attacking Midfield", "Attacking Midfield", "Center Forward", "Centre Forward", "Attacker", "Right Center Forward", "Left Center Forward", "Left Wing", "Right Wing"]
 - If the text contains a role NOT in the list, exclude it (do not output it in "roles").
 - "potential" is an integer 0–100. If missing, omit it. Do not invent values.
 - If any other field is missing, omit it (do not invent values).
