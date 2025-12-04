@@ -4,6 +4,7 @@ data_module/lineups
 data_module/faiss_index
 data_module/match_metadata.json
 data_module/player_level_stats.csv
+data_module/player_level_stats_wwa.csv
 
 # Virtual environment
 .env
