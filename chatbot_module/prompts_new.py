@@ -145,6 +145,7 @@ When mentioning a player, always include this metadata block (no headers or lead
 - Weight: <weight>
 - Age (2026): <age>
 - Nationality: <country>
+- Team: <team name>
 - Roles: <position>
 - Potential: <integer 0–100, step 1; derived from age, role history, and current performance metrics to estimate scouting upside in the player’s typical areas>
 [[/PLAYER_PROFILE]]
