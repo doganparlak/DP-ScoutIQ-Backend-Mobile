@@ -264,16 +264,16 @@ Rules:
 - Do not include text outside Statistical Highlights.
 - Metric Names must be chosen from the list below:
   [{metric_names_str}]
-- If nothing found, return {"players": []}.
+- If nothing found, return {{"players": []}}.
 """
 
 meta_parser_system_prompt = f"""
 You extract ONLY the player identity meta blocks (name line + bullets).
 
 Output strict JSON with this schema:
-{
+{{
   "players": [
-    {
+    {{
       "name": "Player Name",
       "gender": "male",
       "height": 193.0,
@@ -283,9 +283,10 @@ Output strict JSON with this schema:
       "team": "Team Name",
       "roles": ["Position Name"],
       "potential": 83
-    }
+    }}
   ]
-}
+}}
+
 
 Field mappings (from source / DB naming):
 - "name" comes from "player_name".
