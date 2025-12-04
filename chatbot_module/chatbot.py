@@ -17,7 +17,7 @@ from api_module.utilities import (
     append_chat_message,
     load_chat_messages
 )
-from chatbot_module.prompts import (
+from chatbot_module.prompts_new import (
     system_message,
     stats_parser_system_message,
     meta_parser_system_prompt
@@ -31,6 +31,10 @@ from chatbot_module.tools import (
     strip_meta_stats_text,
     compose_selection_preamble,
     inject_language
+)
+from chatbot_module.tools_extensions_new import (
+    parse_player_meta_new,
+    build_player_payload_new
 )
 
 # === Load Vectorstore ===
@@ -187,14 +191,17 @@ def answer_question(
     # 6) Parse current answer into meta/stats
     out = base_answer
     try:
+        print(base_answer)
         qa_as_report = f"**Statistical Highlights**\n\n{base_answer}\n\n"
         parsed_stats = parse_statistical_highlights(stats_parser_chain, qa_as_report)
-        meta = parse_player_meta(meta_parser_chain, raw_text=base_answer)
+        #meta = parse_player_meta(meta_parser_chain, raw_text=base_answer)
+        meta = parse_player_meta_new(meta_parser_chain, raw_text=base_answer)
         # Keep only NEW players for data payload (so cards/plots are printed once per player)
         meta_new, stats_new, new_names = filter_players_by_seen(meta, parsed_stats, seen_players)
 
         # Build structured data for NEW players only (no HTML/PNGs)
-        payload = build_player_payload(meta_new, stats_new) if new_names else {"players": []}
+        #payload = build_player_payload(meta_new, stats_new) if new_names else {"players": []}
+        payload = build_player_payload_new(meta_new, stats_new) if new_names else {"players": []}
 
         # Strip flagged/meta/stats text from the narrative; keep only analysis
         known_names = [p.get("name") for p in (meta.get("players") or []) if p.get("name")]

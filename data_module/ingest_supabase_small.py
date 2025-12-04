@@ -26,7 +26,7 @@ OPENAI_API_KEY = os.environ["OPENAI_API_KEY"]  # used implicitly by langchain_op
 
 supabase: Client = create_client(SUPABASE_URL, SUPABASE_KEY)
 
-# Smaller, cheaper embedding model
+# Smaller, cheaper embedding model (must match vector(1536) in documents_v4)
 emb = OpenAIEmbeddings(
     model="text-embedding-3-small",
     dimensions=1536,
@@ -35,17 +35,18 @@ emb = OpenAIEmbeddings(
 # -------------------------------------------------------------------
 # Load CSV
 # -------------------------------------------------------------------
-# New schema CSV, e.g. your "worldwide" player stats
+# New schema CSV (with gender/height/weight/age/nationality_name/position_name)
 CSV_PATH = "player_level_stats_wwa.csv"
 df = pd.read_csv(CSV_PATH)
 
-# Optional: ensure expected core columns exist
+# Ensure expected core columns exist
 REQUIRED_COLS = [
     "player_name",
-    "player_id",
+    "gender",
+    "age",
     "match_count",
-    "nationality_id",
-    "position_id",
+    "nationality_name",
+    "position_name",
     "team_name",
 ]
 missing = [c for c in REQUIRED_COLS if c not in df.columns]
@@ -78,7 +79,7 @@ def row_to_doc(row: pd.Series) -> Tuple[str, Dict[str, Any]]:
 
         # numerics (ints/floats)
         if isinstance(val, (int, float)):
-            # we usually skip zeros to reduce noise, but you can change this
+            # skip zeros to reduce noise in the content text
             if val != 0:
                 non_zero_info.append(f"{col}: {val}")
                 numeric_metadata[col] = val
@@ -97,22 +98,26 @@ def row_to_doc(row: pd.Series) -> Tuple[str, Dict[str, Any]]:
     content = "\n".join(non_zero_info)
 
     # Core metadata (ids + label fields)
+    # We no longer have a numeric player_id in this CSV, so we treat name+team as identity.
     metadata: Dict[str, Any] = {
-        "player_id": int(row["player_id"]),
         "player_name": str(row["player_name"]),
+        "gender": str(row["gender"]) if not pd.isna(row["gender"]) else None,
+        "age": int(row["age"]) if not pd.isna(row["age"]) else None,
         "match_count": int(row["match_count"])
         if not pd.isna(row["match_count"])
         else None,
-        "nationality_id": int(row["nationality_id"])
-        if not pd.isna(row["nationality_id"])
+        "nationality_name": str(row["nationality_name"])
+        if not pd.isna(row["nationality_name"])
         else None,
-        "position_id": int(row["position_id"])
-        if not pd.isna(row["position_id"])
+        "position_name": str(row["position_name"])
+        if not pd.isna(row["position_name"])
         else None,
         "team_name": str(row["team_name"]),
+        # Handy composite key if you ever want to dedupe
+        "player_key": f"{row['player_name']}|{row['team_name']}",
     }
 
-    # Merge in all numeric stats
+    # Merge in all numeric stats (including height, weight, rating, etc.)
     metadata.update(numeric_metadata)
 
     return content, metadata
