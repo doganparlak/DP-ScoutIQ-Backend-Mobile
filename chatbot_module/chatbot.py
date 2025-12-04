@@ -193,28 +193,28 @@ def answer_question(
     try:
         print("================")
         print(base_answer)
-        qa_as_report = f"**Statistical Highlights**\n\n{base_answer}\n\n"
         print("================")
+        qa_as_report = f"**Statistical Highlights**\n\n{base_answer}\n\n"
         print(qa_as_report)
         parsed_stats = parse_statistical_highlights(stats_parser_chain, qa_as_report)
         print("================")
         print(parsed_stats)
+        print("================")
         #meta = parse_player_meta(meta_parser_chain, raw_text=base_answer)
         meta = parse_player_meta_new(meta_parser_chain, raw_text=base_answer)
-        print("================")
         print(meta)
+        print("================")
         # Keep only NEW players for data payload (so cards/plots are printed once per player)
         meta_new, stats_new, new_names = filter_players_by_seen(meta, parsed_stats, seen_players)
-        print("================")
         print(meta_new)
         print("================")
         print(stats_new)
         print("================")
         print(new_names)
+        print("================")
         # Build structured data for NEW players only (no HTML/PNGs)
         #payload = build_player_payload(meta_new, stats_new) if new_names else {"players": []}
         payload = build_player_payload_new(meta_new, stats_new) if new_names else {"players": []}
-        print("================")
         print(payload)
         print("================")
         # Strip flagged/meta/stats text from the narrative; keep only analysis

@@ -127,7 +127,17 @@ def parse_statistical_highlights(stats_parser_chain, report_text: str) -> Dict[s
       - Josko Gvardiol: 2.1 interceptions per game, 3.4 clearances per game, 75% aerial duels won.
     """
     safe = strip_heavy_html(report_text)
-    raw = stats_parser_chain.invoke({"report_text": safe}).strip()
+    try:
+        raw = stats_parser_chain.invoke({"report_text": safe})
+    except Exception as e:
+        # Log and fall back
+        print("[parse_statistical_highlights] LLM invoke error:", repr(e))
+        return {"players": []}
+    
+    if raw is None:
+        print("raw returned none.")
+        return {"players": []}
+    
     def safe_json_load(s: str) -> Dict[str, Any]:
         try:
             return json.loads(s)
