@@ -34,8 +34,8 @@ from chatbot_module.tools import (
 )
 
 # === Load Vectorstore ===
-from chatbot_module.vectorstore import get_retriever
-
+#from chatbot_module.vectorstore import get_retriever
+from chatbot_module.vectorstore_small import get_retriever
 # === QA Chain with RAG & Memory ===
 
 CHAT_LLM = ChatDeepSeek(
