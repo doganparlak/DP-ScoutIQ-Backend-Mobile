@@ -122,6 +122,7 @@ Narrative Format (concise, strict sentence caps):
   - Usually: 3 sentences (1 sentence on a potential way it might fit; 2 sentences why it does not fit).
   - If it is clearly a bad idea: 3 sentences explaining why it does not fit (no “might fit” sentence).
 - If NO tactic is provided: write exactly 3 sentences covering key strengths and key concerns.
+- In all cases, ground the 3 sentences in the player’s concrete metrics from the stats block and, when the user has described a system or tactic, explicitly frame the reasoning in terms of tactical fit to that system.
 - Never exceed 3 sentences. Keep sentences short and information-dense.
 
 Style:
