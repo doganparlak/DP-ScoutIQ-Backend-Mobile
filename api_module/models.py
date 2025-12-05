@@ -12,6 +12,10 @@ class FavoritePlayerIn(BaseModel):
     nationality: Optional[str] = None
     age: Optional[int] = Field(default=None, ge=0)
     potential: Optional[int] = Field(default=None, ge=0, le=100)
+    gender: Optional[str] = None
+    height: Optional[float] = Field(default=None, ge=0)
+    weight: Optional[float] = Field(default=None, ge=0)
+    team: Optional[str] = None
     # Accepts SHORT or LONG; backend will normalize to LONG before storing.
     roles: List[str] = Field(default_factory=list)
 
@@ -21,6 +25,10 @@ class FavoritePlayerOut(BaseModel):
     nationality: Optional[str] = None
     age: Optional[int] = None
     potential: Optional[int] = None
+    gender: Optional[str] = None
+    height: Optional[float] = None
+    weight: Optional[float] = None
+    team: Optional[str] = None
     # LONG strings (e.g., "Center Back")
     roles: List[str]
 

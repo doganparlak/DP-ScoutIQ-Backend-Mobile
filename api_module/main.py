@@ -418,7 +418,16 @@ async def reset(session_id: str, db: Session = Depends(get_db)) -> Dict[str, Any
 def list_favorites(user_id: int = Depends(require_auth), db: Session = Depends(get_db)):
     rows = db.execute(
         text("""
-        SELECT id, name, nationality, age, potential, roles_json
+        SELECT id,
+               name,
+               nationality,
+               age,
+               potential,
+               gender,
+               height,
+               weight,
+               team,
+               roles_json
         FROM favorite_players
         WHERE user_id = :uid
         ORDER BY created_at DESC
@@ -439,7 +448,6 @@ def list_favorites(user_id: int = Depends(require_auth), db: Session = Depends(g
         elif val is None:
             roles = []
         else:
-            # some drivers may return dict/other – be defensive
             try:
                 roles = list(val)  # best effort
             except Exception:
@@ -451,18 +459,26 @@ def list_favorites(user_id: int = Depends(require_auth), db: Session = Depends(g
             nationality=r["nationality"],
             age=r["age"],
             potential=r["potential"],
+            gender=r["gender"],
+            height=r["height"],
+            weight=r["weight"],
+            team=r["team"],
             roles=roles,
         ))
     return out
 
 @app.post("/me/favorites", response_model=FavoritePlayerOut, status_code=status.HTTP_201_CREATED)
-def add_favorite(payload: FavoritePlayerIn, user_id: int = Depends(require_auth), response: Response = None, db: Session = Depends(get_db)):
-
+def add_favorite(
+    payload: FavoritePlayerIn,
+    user_id: int = Depends(require_auth),
+    response: Response = None,
+    db: Session = Depends(get_db),
+):
     roles_long = to_long_roles(payload.roles)
 
     existing = db.execute(
         text("""
-        SELECT id, name, nationality, age, potential, roles_json
+        SELECT id, name, nationality, age, potential, gender, height, weight, team, roles_json
         FROM favorite_players
         WHERE user_id = :uid
           AND lower(name) = lower(:name)
@@ -470,7 +486,12 @@ def add_favorite(payload: FavoritePlayerIn, user_id: int = Depends(require_auth)
           AND COALESCE(age, -1) = COALESCE(:age, -1)
         LIMIT 1
         """),
-        {"uid": user_id, "name": payload.name, "nat": payload.nationality, "age": payload.age}
+        {
+            "uid": user_id,
+            "name": payload.name,
+            "nat": payload.nationality,
+            "age": payload.age,
+        }
     ).mappings().first()
 
     if existing:
@@ -486,6 +507,10 @@ def add_favorite(payload: FavoritePlayerIn, user_id: int = Depends(require_auth)
             nationality=existing["nationality"],
             age=existing["age"],
             potential=existing["potential"],
+            gender=existing["gender"],
+            height=existing["height"],
+            weight=existing["weight"],
+            team=existing["team"],
             roles=existing_roles,
         )
 
@@ -494,8 +519,34 @@ def add_favorite(payload: FavoritePlayerIn, user_id: int = Depends(require_auth)
 
     db.execute(
         text("""
-        INSERT INTO favorite_players (id, user_id, name, nationality, age, potential, roles_json, created_at)
-        VALUES (:id, :uid, :name, :nat, :age, :pot, :roles, :ts)
+        INSERT INTO favorite_players (
+            id,
+            user_id,
+            name,
+            nationality,
+            age,
+            potential,
+            gender,
+            height,
+            weight,
+            team,
+            roles_json,
+            created_at
+        )
+        VALUES (
+            :id,
+            :uid,
+            :name,
+            :nat,
+            :age,
+            :pot,
+            :gender,
+            :height,
+            :weight,
+            :team,
+            :roles,
+            :ts
+        )
         """),
         {
             "id": fav_id,
@@ -504,8 +555,12 @@ def add_favorite(payload: FavoritePlayerIn, user_id: int = Depends(require_auth)
             "nat": payload.nationality,
             "age": payload.age,
             "pot": payload.potential,
+            "gender": payload.gender,
+            "height": payload.height,
+            "weight": payload.weight,
+            "team": payload.team,
             "roles": json.dumps(roles_long, ensure_ascii=False),
-            "ts": created_at
+            "ts": created_at,
         }
     )
     db.commit()
@@ -516,8 +571,13 @@ def add_favorite(payload: FavoritePlayerIn, user_id: int = Depends(require_auth)
         nationality=payload.nationality,
         age=payload.age,
         potential=payload.potential,
+        gender=payload.gender,
+        height=payload.height,
+        weight=payload.weight,
+        team=payload.team,
         roles=roles_long,
     )
+
 
 
 @app.delete("/me/favorites/{favorite_id}", status_code=status.HTTP_204_NO_CONTENT)
