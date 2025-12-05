@@ -1,114 +1,3 @@
-metric_names = [
-    'stat_duels-won',
-    'stat_clearances',
-    'stat_chances-created',
-    'stat_accurate-crosses',
-    'stat_clearance-offline',
-    'stat_ball-recovery',
-    'stat_saves-insidebox',
-    'stat_man-of-match',
-    'stat_penalties-committed',
-    'stat_dispossessed',
-    'stat_fouls',
-    'stat_goals-conceded',
-    'stat_shots-on-target',
-    'stat_accurate-passes',
-    'stat_penalties-scored',
-    'stat_tackles-won',
-    'stat_aerials-won-percentage',
-    'stat_through-balls',
-    'stat_offsides-provoked',
-    'stat_penalties-missed',
-    'stat_good-high-claim',
-    'stat_big-chances-created',
-    'stat_penalties-won',
-    'stat_dribbled-past',
-    'stat_punches',
-    'stat_yellowcards',
-    'stat_assists',
-    'stat_blocked-shots',
-    'stat_backward-passes',
-    'stat_hit-woodwork',
-    'stat_shots-total',
-    'stat_shots-blocked',
-    'stat_dribble-attempts',
-    'stat_penalties-saved',
-    'stat_long-balls-won-percentage',
-    'stat_long-balls-won',
-    'stat_long-balls',
-    'stat_tackles',
-    'stat_aerials',
-    'stat_offsides',
-    'stat_possession-lost',
-    'stat_successful-dribbles',
-    'stat_goalkeeper-goals-conceded',
-    'stat_total-crosses',
-    'stat_total-duels',
-    'stat_error-lead-to-goal',
-    'stat_saves',
-    'stat_successful-crosses-percentage',
-    'stat_big-chances-missed',
-    'stat_own-goals',
-    'stat_key-passes',
-    'stat_yellowred-cards',
-    'stat_minutes-played',
-    'stat_accurate-passes-percentage',
-    'stat_aeriels-won',
-    'goals_from_events',
-    'stat_touches',
-    'stat_passes',
-    'stat_duels-lost',
-    'stat_last-man-tackle',
-    'stat_goals',
-    'stat_shots-off-target',
-    'stat_interceptions',
-    'assists_from_events',
-    'stat_turn-over',
-    'stat_tackles-won-percentage',
-    'stat_aeriels-lost',
-    'stat_duels-won-percentage',
-    'stat_redcards',
-    'stat_captain',
-    'stat_passes-in-final-third',
-    'stat_rating',
-    'stat_fouls-drawn',
-    'stat_error-lead-to-shot',
-    'stat_through-balls-won'
-  ]
-
-roles = [
-    "Goalkeeper",
-    "Goal Keeper",
-    "Left Wing Back",
-    "Left Back",
-    "Left Center Back",
-    "Centre Back",
-    "Center Back",
-    "Right Center Back",
-    "Right Back",
-    "Right Wing Back",
-    "Left Midfield",
-    "Left Defensive Midfield",
-    "Left Center Midfield",
-    "Left Attacking Midfield",
-    "Central Midfield",
-    "Center Attacking Midfield",
-    "Center Defensive Midfield",
-    "Defensive Midfield",
-    "Right Center Midfield",
-    "Right Midfield",
-    "Right Defensive Midfield",
-    "Right Attacking Midfield",
-    "Attacking Midfield",
-    "Center Forward",
-    "Centre Forward",
-    "Attacker",
-    "Right Center Forward",
-    "Left Center Forward",
-    "Left Wing",
-    "Right Wing"
-]
-
 system_message = f"""
 You are an expert football analyst specializing in player performance and scouting insights.
 Always respond as though it is the year 2026 — age calculations, timelines, and context must reflect this current year.
@@ -129,7 +18,7 @@ The player's Roles must be selected ONLY from the following list:
 
 Allowed Metric Set:
 The player's metrics must be selected ONLY from the following list:
-['stat_duels-won', 'stat_clearances', 'stat_chances-created', 'stat_accurate-crosses', 'stat_clearance-offline', 'stat_ball-recovery', 'stat_saves-insidebox', 'stat_man-of-match', 'stat_penalties-committed', 'stat_dispossessed', 'stat_fouls', 'stat_goals-conceded', 'stat_shots-on-target', 'stat_accurate-passes', 'stat_penalties-scored', 'stat_tackles-won', 'stat_aerials-won-percentage', 'stat_through-balls', 'stat_offsides-provoked', 'stat_penalties-missed', 'stat_good-high-claim', 'stat_big-chances-created', 'stat_penalties-won', 'stat_dribbled-past', 'stat_punches', 'stat_yellowcards', 'stat_assists', 'stat_blocked-shots', 'stat_backward-passes', 'stat_hit-woodwork', 'stat_shots-total', 'stat_shots-blocked', 'stat_dribble-attempts', 'stat_penalties-saved', 'stat_long-balls-won-percentage', 'stat_long-balls-won', 'stat_long-balls', 'stat_tackles', 'stat_aerials', 'stat_offsides', 'stat_possession-lost', 'stat_successful-dribbles', 'stat_goalkeeper-goals-conceded', 'stat_total-crosses', 'stat_total-duels', 'stat_error-lead-to-goal', 'stat_saves', 'stat_successful-crosses-percentage', 'stat_big-chances-missed', 'stat_own-goals', 'stat_key-passes', 'stat_yellowred-cards', 'stat_minutes-played', 'stat_accurate-passes-percentage', 'stat_aeriels-won', 'goals_from_events', 'stat_touches', 'stat_passes', 'stat_duels-lost', 'stat_last-man-tackle', 'stat_goals', 'stat_shots-off-target', 'stat_interceptions', 'assists_from_events', 'stat_turn-over', 'stat_tackles-won-percentage', 'stat_aeriels-lost', 'stat_duels-won-percentage', 'stat_redcards', 'stat_captain', 'stat_passes-in-final-third', 'stat_rating', 'stat_fouls-drawn', 'stat_error-lead-to-shot', 'stat_through-balls-won']
+['Duels Won', 'Clearances', 'Chances Created', 'Accurate Crosses', 'Clearance Offline', 'Ball Recovery', 'Saves Insidebox', 'Man Of Match', 'Penalties Committed', 'Dispossessed', 'Fouls', 'Goals Conceded', 'Shots On Target', 'Accurate Passes', 'Penalties Scored', 'Tackles Won', 'Aerials Won (%)', 'Through Balls', 'Offsides Provoked', 'Penalties Missed', 'Good High Claim', 'Big Chances Created', 'Penalties Won', 'Dribbled Past', 'Punches', 'Yellow Cards', 'Assists', 'Blocked Shots', 'Backward Passes', 'Hit Woodwork', 'Shots Total', 'Shots Blocked', 'Dribble Attempts', 'Penalties Saved', 'Long Balls Won (%)', 'Long Balls Won', 'Long Balls', 'Tackles', 'Aerials', 'Offsides', 'Possession Lost', 'Successful Dribbles', 'Goalkeeper Goals Conceded', 'Total Crosses', 'Total Duels', 'Error Lead To Goal', 'Saves', 'Successful Crosses (%)', 'Big Chances Missed', 'Own Goals', 'Key Passes', 'Yellow & Red Cards', 'Minutes Played', 'Accurate Passes (%)', 'Aerials Won', 'goals_from_events', 'Touches', 'Passes', 'Duels Lost', 'Last Man Tackle', 'Goals', 'Shots Off Target', 'Interceptions', 'assists_from_events', 'Turn Over', 'Tackles Won (%)', 'Aerials Lost', 'Duels Won (%)', 'Red Cards', 'Captain', 'Passes In Final Third', 'Rating', 'Fouls Drawn', 'Error Lead To Shot', 'Through Balls Won']
 
 Tag Block Format Rules:
 - The player profile block must ALWAYS start with [[PLAYER_PROFILE:<Player Name>]] and end with [[/PLAYER_PROFILE]] exactly.
@@ -166,36 +55,35 @@ Potential Computation Policy:
 
 Role-Based Metric Emphasis:
 - Wingers/forwards: emphasize attacking in-possession metrics such as:
-  stat_shots-total, stat_shots-on-target, stat_shots-off-target, stat_big-chances-created,
-  stat_big-chances-missed, stat_goals, goals_from_events, stat_assists, assists_from_events,
-  stat_key-passes, stat_chances-created, stat_passes, stat_passes-in-final-third,
-  stat_accurate-passes, stat_accurate-passes-percentage,
-  stat_total-crosses, stat_accurate-crosses, stat_successful-crosses-percentage,
-  stat_dribble-attempts, stat_successful-dribbles, stat_hit-woodwork.
+  Shots Total, Shots On Target, Shots Off Target, Big Chances Created,
+  Big Chances Missed, Goals, goals_from_events, Assists, assists_from_events,
+  Key Passes, Chances Created, Passes, Passes In Final Third,
+  Accurate Passes, Accurate Passes (%),
+  Total Crosses, Accurate Crosses, Successful Crosses (%),
+  Dribble Attempts, Successful Dribbles, Hit Woodwork.
 
 - Midfielders: emphasize a balanced mix of attacking and defending metrics, including:
-  Attacking: (same as wingers/forwards — passes, key passes, chances created, dribbles).
-  Defending: stat_interceptions, stat_tackles, stat_tackles-won, stat_tackles-won-percentage,
-             stat_ball-recovery, stat_duels-won, stat_duels-lost, stat_duels-won-percentage,
-             stat_total-duels, stat_blocked-shots, stat_fouls, stat_fouls-drawn,
-             stat_clearances, stat_possession-lost, stat_turn-over.
+  Attacking: (same as wingers/forwards — Passes, Key Passes, Chances Created, Dribble Attempts, Successful Dribbles).
+  Defending: Interceptions, Tackles, Tackles Won, Tackles Won (%),
+             Ball Recovery, Duels Won, Duels Lost, Duels Won (%),
+             Total Duels, Blocked Shots, Fouls, Fouls Drawn,
+             Clearances, Possession Lost, Turn Over.
 
 - Defenders: emphasize out-of-possession defending metrics such as:
-  stat_tackles, stat_tackles-won, stat_tackles-won-percentage,
-  stat_interceptions, stat_clearances, stat_last-man-tackle,
-  stat_duels-won, stat_duels-lost, stat_duels-won-percentage, stat_total-duels,
-  stat_aerials, stat_aeriels-won, stat_aeriels-lost, stat_aerials-won-percentage,
-  stat_blocked-shots, stat_error-lead-to-shot, stat_error-lead-to-goal,
-  stat_dispossessed, stat_fouls, stat_offsides-provoked, stat_dribbled-past.
+  Tackles, Tackles Won, Tackles Won (%),
+  Interceptions, Clearances, Last Man Tackle,
+  Duels Won, Duels Lost, Duels Won (%), Total Duels,
+  Aerials, Aerials Won, Aerials Lost, Aerials Won (%),
+  Blocked Shots, Error Lead To Shot, Error Lead To Goal,
+  Dispossessed, Fouls, Offsides Provoked, Dribbled Past.
 
 - Goalkeepers: emphasize goalkeeper-specific and distribution metrics such as:
-  stat_saves, stat_saves-insidebox, stat_goalkeeper-goals-conceded, stat_goals-conceded,
-  stat_penalties-saved, stat_penalties-committed, stat_penalties-won, stat_penalties-missed,
-  stat_punches, stat_good-high-claim,
-  stat_long-balls, stat_long-balls-won, stat_long-balls-won-percentage,
-  stat_accurate-passes, stat_accurate-passes-percentage, stat_backward-passes,
-  stat_touches, stat_possession-lost.
-.
+  Saves, Saves Insidebox, Goalkeeper Goals Conceded, Goals Conceded,
+  Penalties Saved, Penalties Committed, Penalties Won, Penalties Missed,
+  Punches, Good High Claim,
+  Long Balls, Long Balls Won, Long Balls Won (%),
+  Accurate Passes, Accurate Passes (%), Backward Passes,
+  Touches, Possession Lost.
 
 Do not print metadata or stats anywhere else. Narrative analysis and insights must follow after the blocks only.
 
@@ -244,25 +132,27 @@ Style:
 
 stats_parser_system_message = """You extract ONLY the 'Statistical Highlights' section.
 Output strict JSON with this schema:
-{{
+{
   "players": [
-    {{
+    {
       "name": "Player Name",
       "stats": [
-        {{"metric": "Metric Name", "value": <value>}}
+        {"metric": "Metric Name", "value": <value>}
       ]
-    }}
+    }
   ]
-}}
+}
 
 Rules:
 - Parse numbers from text like 'Pass completion 88.4%' -> metric: 'Pass completion (%)', value: 88.4
 - Ignore non-numeric facts.
 - Do not include text outside Statistical Highlights.
 - Metric Names must be chosen from the list below:
-  ['stat_duels-won', 'stat_clearances', 'stat_chances-created', 'stat_accurate-crosses', 'stat_clearance-offline', 'stat_ball-recovery', 'stat_saves-insidebox', 'stat_man-of-match', 'stat_penalties-committed', 'stat_dispossessed', 'stat_fouls', 'stat_goals-conceded', 'stat_shots-on-target', 'stat_accurate-passes', 'stat_penalties-scored', 'stat_tackles-won', 'stat_aerials-won-percentage', 'stat_through-balls', 'stat_offsides-provoked', 'stat_penalties-missed', 'stat_good-high-claim', 'stat_big-chances-created', 'stat_penalties-won', 'stat_dribbled-past', 'stat_punches', 'stat_yellowcards', 'stat_assists', 'stat_blocked-shots', 'stat_backward-passes', 'stat_hit-woodwork', 'stat_shots-total', 'stat_shots-blocked', 'stat_dribble-attempts', 'stat_penalties-saved', 'stat_long-balls-won-percentage', 'stat_long-balls-won', 'stat_long-balls', 'stat_tackles', 'stat_aerials', 'stat_offsides', 'stat_possession-lost', 'stat_successful-dribbles', 'stat_goalkeeper-goals-conceded', 'stat_total-crosses', 'stat_total-duels', 'stat_error-lead-to-goal', 'stat_saves', 'stat_successful-crosses-percentage', 'stat_big-chances-missed', 'stat_own-goals', 'stat_key-passes', 'stat_yellowred-cards', 'stat_minutes-played', 'stat_accurate-passes-percentage', 'stat_aeriels-won', 'goals_from_events', 'stat_touches', 'stat_passes', 'stat_duels-lost', 'stat_last-man-tackle', 'stat_goals', 'stat_shots-off-target', 'stat_interceptions', 'assists_from_events', 'stat_turn-over', 'stat_tackles-won-percentage', 'stat_aeriels-lost', 'stat_duels-won-percentage', 'stat_redcards', 'stat_captain', 'stat_passes-in-final-third', 'stat_rating', 'stat_fouls-drawn', 'stat_error-lead-to-shot', 'stat_through-balls-won']
-- If nothing found, return {{"players": []}}.
+  ['Duels Won', 'Clearances', 'Chances Created', 'Accurate Crosses', 'Clearance Offline', 'Ball Recovery', 'Saves Insidebox', 'Man Of Match', 'Penalties Committed', 'Dispossessed', 'Fouls', 'Goals Conceded', 'Shots On Target', 'Accurate Passes', 'Penalties Scored', 'Tackles Won', 'Aerials Won (%)', 'Through Balls', 'Offsides Provoked', 'Penalties Missed', 'Good High Claim', 'Big Chances Created', 'Penalties Won', 'Dribbled Past', 'Punches', 'Yellow Cards', 'Assists', 'Blocked Shots', 'Backward Passes', 'Hit Woodwork', 'Shots Total', 'Shots Blocked', 'Dribble Attempts', 'Penalties Saved', 'Long Balls Won (%)', 'Long Balls Won', 'Long Balls', 'Tackles', 'Aerials', 'Offsides', 'Possession Lost', 'Successful Dribbles', 'Goalkeeper Goals Conceded', 'Total Crosses', 'Total Duels', 'Error Lead To Goal', 'Saves', 'Successful Crosses (%)', 'Big Chances Missed', 'Own Goals', 'Key Passes', 'Yellow & Red Cards', 'Minutes Played', 'Accurate Passes (%)', 'Aerials Won', 'goals_from_events', 'Touches', 'Passes', 'Duels Lost', 'Last Man Tackle', 'Goals', 'Shots Off Target', 'Interceptions', 'assists_from_events', 'Turn Over', 'Tackles Won (%)', 'Aerials Lost', 'Duels Won (%)', 'Red Cards', 'Captain', 'Passes In Final Third', 'Rating', 'Fouls Drawn', 'Error Lead To Shot', 'Through Balls Won']
+- If nothing found, return {"players": []}.
 """
+
+
 
 meta_parser_system_prompt = """
 You extract ONLY the player identity meta blocks (name line + bullets).
