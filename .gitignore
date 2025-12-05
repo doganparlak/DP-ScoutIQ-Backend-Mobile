@@ -7,6 +7,9 @@ data_module/player_level_stats.csv
 data_module/player_level_stats_wwa.csv
 data_module/explore.py
 
+# Chatbot module
+chatbot_module/cost_approximation.py
+
 # Virtual environment
 .env
 venv/
