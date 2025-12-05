@@ -133,16 +133,16 @@ Style:
 
 stats_parser_system_message = """You extract ONLY the 'Statistical Highlights' section.
 Output strict JSON with this schema:
-{
+{{
   "players": [
-    {
+    {{
       "name": "Player Name",
       "stats": [
-        {"metric": "Metric Name", "value": <value>}
+        {{"metric": "Metric Name", "value": <number>}}
       ]
-    }
+    }}
   ]
-}
+}}
 
 Rules:
 - Parse numbers from text like 'Pass completion 88.4%' -> metric: 'Pass completion (%)', value: 88.4
@@ -150,10 +150,8 @@ Rules:
 - Do not include text outside Statistical Highlights.
 - Metric Names must be chosen from the list below:
   ['Duels Won', 'Clearances', 'Chances Created', 'Accurate Crosses', 'Clearance Offline', 'Ball Recovery', 'Saves Insidebox', 'Man Of Match', 'Penalties Committed', 'Dispossessed', 'Fouls', 'Goals Conceded', 'Shots On Target', 'Accurate Passes', 'Penalties Scored', 'Tackles Won', 'Aerials Won (%)', 'Through Balls', 'Offsides Provoked', 'Penalties Missed', 'Good High Claim', 'Big Chances Created', 'Penalties Won', 'Dribbled Past', 'Punches', 'Yellow Cards', 'Assists', 'Blocked Shots', 'Backward Passes', 'Hit Woodwork', 'Shots Total', 'Shots Blocked', 'Dribble Attempts', 'Penalties Saved', 'Long Balls Won (%)', 'Long Balls Won', 'Long Balls', 'Tackles', 'Aerials', 'Offsides', 'Possession Lost', 'Successful Dribbles', 'Goalkeeper Goals Conceded', 'Total Crosses', 'Total Duels', 'Error Lead To Goal', 'Saves', 'Successful Crosses (%)', 'Big Chances Missed', 'Own Goals', 'Key Passes', 'Yellow & Red Cards', 'Minutes Played', 'Accurate Passes (%)', 'Aerials Won', 'goals_from_events', 'Touches', 'Passes', 'Duels Lost', 'Last Man Tackle', 'Goals', 'Shots Off Target', 'Interceptions', 'assists_from_events', 'Turn Over', 'Tackles Won (%)', 'Aerials Lost', 'Duels Won (%)', 'Red Cards', 'Captain', 'Passes In Final Third', 'Rating', 'Fouls Drawn', 'Error Lead To Shot', 'Through Balls Won']
-- If nothing found, return {"players": []}.
+- If nothing found, return {{"players": []}}.
 """
-
-
 
 meta_parser_system_prompt = """
 You extract ONLY the player identity meta blocks (name line + bullets).
