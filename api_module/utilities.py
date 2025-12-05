@@ -419,6 +419,16 @@ ROLE_SHORT_TO_LONG = {
 }
 
 ROLE_LONG_TO_SHORT = {v: k for k, v in ROLE_SHORT_TO_LONG.items()}
+# Add extra accepted long-form variants
+ROLE_LONG_TO_SHORT.update({
+    "Goalkeeper": "GK",
+    "Goal Keeper": "GK",
+    "Centre Back": "CB",
+    "Attacking Midfield": "CAM",
+    "Defensive Midfield": "CDM",
+    "Centre Forward": "CF",
+    "Attacker": "CF",
+})
 
 def to_long_roles(maybe_short_or_long_list):
     out = []
