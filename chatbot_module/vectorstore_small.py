@@ -23,6 +23,14 @@ OPENAI_API_KEY = os.environ["OPENAI_API_KEY"]   # used implicitly by langchain_o
 
 supabase: Client = create_client(SUPABASE_URL, SUPABASE_KEY)
 
+# --- Cost helpers for embeddings ---
+EMBEDDING_PRICE_PER_TOKEN = 0.02 / 1_000_000.0  # $0.02 / 1M tokens
+
+def _estimate_tokens(text: str) -> int:
+    if not text:
+        return 0
+    return max(1, len(text) // 4)
+
 # Smaller, cheaper embedding model – must match documents_v4 + SQL function
 emb = OpenAIEmbeddings(
     model="text-embedding-3-small",
@@ -46,6 +54,13 @@ class SupabaseRPCRetriever(BaseRetriever):
             return []
 
         try:
+            # --- Approximate embedding cost for search query ---
+            q_tokens = _estimate_tokens(q)
+            q_cost = q_tokens * EMBEDDING_PRICE_PER_TOKEN
+            print(
+                "[COST] Search embeddings (text-embedding-3-small) approx: "
+                f"tokens={q_tokens}, cost≈${q_cost:.8f}, query={q[:80]!r}"
+            )
             # 1) embed query
             q_vec = emb.embed_query(q)
 
