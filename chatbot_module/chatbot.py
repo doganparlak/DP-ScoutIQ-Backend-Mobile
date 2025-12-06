@@ -221,7 +221,6 @@ def answer_question(
         #    meta_in_tokens * DEEPSEEK_INPUT_PRICE_PER_TOKEN +
         #    meta_out_tokens * DEEPSEEK_OUTPUT_PRICE_PER_TOKEN
         #)
-        print(meta)
         #print(
         #    "[COST] Meta parser (DeepSeek) approx: "
         #    f"input_tokens={meta_in_tokens}, output_tokens={meta_out_tokens}, "
@@ -230,11 +229,7 @@ def answer_question(
         print("================")
         # Keep only NEW players for data payload (so cards/plots are printed once per player)
         meta_new, stats_new, new_names = filter_players_by_seen(meta, parsed_stats, seen_players)
-        print(meta_new)
-        print("================")
         print(stats_new)
-        print("================")
-        print(new_names)
         print("================")
         # Build structured data for NEW players only (no HTML/PNGs)
         #payload = build_player_payload(meta_new, stats_new) if new_names else {"players": []}
@@ -244,8 +239,6 @@ def answer_question(
         # Strip flagged/meta/stats text from the narrative; keep only analysis
         known_names = [p.get("name") for p in (meta.get("players") or []) if p.get("name")]
         cleaned = strip_meta_stats_text(base_answer, known_names=known_names)
-        print(known_names)
-        print("================")
         print(cleaned)
         print("================")
         out = cleaned

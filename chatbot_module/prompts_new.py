@@ -18,7 +18,7 @@ The player's Roles must be selected ONLY from the following list:
 
 Allowed Metric Set:
 The player's metrics must be selected ONLY from the following list:
-['Duels Won', 'Clearances', 'Chances Created', 'Accurate Crosses', 'Clearance Offline', 'Ball Recovery', 'Saves Insidebox', 'Man Of Match', 'Penalties Committed', 'Dispossessed', 'Fouls', 'Goals Conceded', 'Shots On Target', 'Accurate Passes', 'Penalties Scored', 'Tackles Won', 'Aerials Won (%)', 'Through Balls', 'Offsides Provoked', 'Penalties Missed', 'Good High Claim', 'Big Chances Created', 'Penalties Won', 'Dribbled Past', 'Punches', 'Yellow Cards', 'Assists', 'Blocked Shots', 'Backward Passes', 'Hit Woodwork', 'Shots Total', 'Shots Blocked', 'Dribble Attempts', 'Penalties Saved', 'Long Balls Won (%)', 'Long Balls Won', 'Long Balls', 'Tackles', 'Aerials', 'Offsides', 'Possession Lost', 'Successful Dribbles', 'Goalkeeper Goals Conceded', 'Total Crosses', 'Total Duels', 'Error Lead To Goal', 'Saves', 'Successful Crosses (%)', 'Big Chances Missed', 'Own Goals', 'Key Passes', 'Yellow & Red Cards', 'Minutes Played', 'Accurate Passes (%)', 'Aerials Won', 'goals_from_events', 'Touches', 'Passes', 'Duels Lost', 'Last Man Tackle', 'Goals', 'Shots Off Target', 'Interceptions', 'assists_from_events', 'Turn Over', 'Tackles Won (%)', 'Aerials Lost', 'Duels Won (%)', 'Red Cards', 'Captain', 'Passes In Final Third', 'Rating', 'Fouls Drawn', 'Error Lead To Shot', 'Through Balls Won']
+['Duels Won', 'Clearances', 'Chances Created', 'Accurate Crosses', 'Clearance Offline', 'Ball Recovery', 'Saves Insidebox', 'Man Of Match', 'Penalties Committed', 'Dispossessed', 'Fouls', 'Goals Conceded', 'Shots On Target', 'Accurate Passes', 'Penalties Scored', 'Tackles Won', 'Aerials Won (%)', 'Through Balls', 'Offsides Provoked', 'Penalties Missed', 'Good High Claim', 'Big Chances Created', 'Penalties Won', 'Dribbled Past', 'Punches', 'Yellow Cards', 'Assists', 'Blocked Shots', 'Backward Passes', 'Hit Woodwork', 'Shots Total', 'Shots Blocked', 'Dribble Attempts', 'Penalties Saved', 'Long Balls Won (%)', 'Long Balls Won', 'Long Balls', 'Tackles', 'Aerials', 'Offsides', 'Possession Lost', 'Successful Dribbles', 'Goalkeeper Goals Conceded', 'Total Crosses', 'Total Duels', 'Error Lead To Goal', 'Saves', 'Successful Crosses (%)', 'Big Chances Missed', 'Own Goals', 'Key Passes', 'Yellow & Red Cards', 'Minutes Played', 'Accurate Passes (%)', 'Aerials Won', 'Goals', 'Touches', 'Passes', 'Duels Lost', 'Last Man Tackle', 'Goals', 'Shots Off Target', 'Interceptions', 'Turn Over', 'Tackles Won (%)', 'Aerials Lost', 'Duels Won (%)', 'Red Cards', 'Captain', 'Passes In Final Third', 'Rating', 'Fouls Drawn', 'Error Lead To Shot', 'Through Balls Won']
 
 Tag Block Format Rules:
 - The player profile block must ALWAYS start with [[PLAYER_PROFILE:<Player Name>]] and end with [[/PLAYER_PROFILE]] exactly.
@@ -39,7 +39,7 @@ When mentioning a player, always include this metadata block (no headers or lead
 - Potential: <integer 0–100, step 1; derived from age, role history, and current performance metrics to estimate scouting upside in the player’s typical areas>
 [[/PLAYER_PROFILE]]
 
-Always include relevant, up-to-date performance statistics for that same player (aim for 10–20 unique, decision-relevant metrics; up to 20 if truly necessary). Each metric must be unique.
+Always include relevant, up-to-date performance statistics for that same player (aim for all metrics). Each metric must be unique.
 Output stats only in this block:
 [[PLAYER_STATS:<Player Name>]]
 1. <Metric 1>: <value>
@@ -56,9 +56,9 @@ Potential Computation Policy:
 Role-Based Metric Emphasis:
 - Wingers/forwards: emphasize attacking in-possession metrics such as:
   Shots Total, Shots On Target, Shots Off Target, Big Chances Created,
-  Big Chances Missed, Goals, goals_from_events, Assists, assists_from_events,
+  Big Chances Missed, Goals, Assists,
   Key Passes, Chances Created, Passes, Passes In Final Third,
-  Accurate Passes, Accurate Passes (%),
+  Accurate Passes, Accurate Passes (%), 
   Total Crosses, Accurate Crosses, Successful Crosses (%),
   Dribble Attempts, Successful Dribbles, Hit Woodwork.
 
@@ -66,23 +66,23 @@ Role-Based Metric Emphasis:
   Attacking: (same as wingers/forwards — Passes, Key Passes, Chances Created, Dribble Attempts, Successful Dribbles).
   Defending: Interceptions, Tackles, Tackles Won, Tackles Won (%),
              Ball Recovery, Duels Won, Duels Lost, Duels Won (%),
-             Total Duels, Blocked Shots, Fouls, Fouls Drawn,
+             Total Duels, Blocked Shots, Shots Blocked, Fouls, Fouls Drawn,
              Clearances, Possession Lost, Turn Over.
 
 - Defenders: emphasize out-of-possession defending metrics such as:
-  Tackles, Tackles Won, Tackles Won (%),
+  Tackles, Tackles Won, Tackles Won (%), Goals Conceded,
   Interceptions, Clearances, Last Man Tackle,
   Duels Won, Duels Lost, Duels Won (%), Total Duels,
   Aerials, Aerials Won, Aerials Lost, Aerials Won (%),
-  Blocked Shots, Error Lead To Shot, Error Lead To Goal,
+  Blocked Shots, Shots Blocked, Error Lead To Shot, Error Lead To Goal,
   Dispossessed, Fouls, Offsides Provoked, Dribbled Past.
 
 - Goalkeepers: emphasize goalkeeper-specific and distribution metrics such as:
-  Saves, Saves Insidebox, Goalkeeper Goals Conceded, Goals Conceded,
+  Saves, Saves Insidebox, Goalkeeper Goals Conceded, 
   Penalties Saved, Penalties Committed, Penalties Won, Penalties Missed,
   Punches, Good High Claim,
   Long Balls, Long Balls Won, Long Balls Won (%),
-  Accurate Passes, Accurate Passes (%), Backward Passes,
+  Accurate Passes, Accurate Passes (%), Backward Passes, Passes.
   Touches, Possession Lost.
 
 Do not print metadata or stats anywhere else. Narrative analysis and insights must follow after the blocks only.
@@ -149,7 +149,7 @@ Rules:
 - Ignore non-numeric facts.
 - Do not include text outside Statistical Highlights.
 - Metric Names must be chosen from the list below:
-  ['Duels Won', 'Clearances', 'Chances Created', 'Accurate Crosses', 'Clearance Offline', 'Ball Recovery', 'Saves Insidebox', 'Man Of Match', 'Penalties Committed', 'Dispossessed', 'Fouls', 'Goals Conceded', 'Shots On Target', 'Accurate Passes', 'Penalties Scored', 'Tackles Won', 'Aerials Won (%)', 'Through Balls', 'Offsides Provoked', 'Penalties Missed', 'Good High Claim', 'Big Chances Created', 'Penalties Won', 'Dribbled Past', 'Punches', 'Yellow Cards', 'Assists', 'Blocked Shots', 'Backward Passes', 'Hit Woodwork', 'Shots Total', 'Shots Blocked', 'Dribble Attempts', 'Penalties Saved', 'Long Balls Won (%)', 'Long Balls Won', 'Long Balls', 'Tackles', 'Aerials', 'Offsides', 'Possession Lost', 'Successful Dribbles', 'Goalkeeper Goals Conceded', 'Total Crosses', 'Total Duels', 'Error Lead To Goal', 'Saves', 'Successful Crosses (%)', 'Big Chances Missed', 'Own Goals', 'Key Passes', 'Yellow & Red Cards', 'Minutes Played', 'Accurate Passes (%)', 'Aerials Won', 'goals_from_events', 'Touches', 'Passes', 'Duels Lost', 'Last Man Tackle', 'Goals', 'Shots Off Target', 'Interceptions', 'assists_from_events', 'Turn Over', 'Tackles Won (%)', 'Aerials Lost', 'Duels Won (%)', 'Red Cards', 'Captain', 'Passes In Final Third', 'Rating', 'Fouls Drawn', 'Error Lead To Shot', 'Through Balls Won']
+  ['Duels Won', 'Clearances', 'Chances Created', 'Accurate Crosses', 'Clearance Offline', 'Ball Recovery', 'Saves Insidebox', 'Man Of Match', 'Penalties Committed', 'Dispossessed', 'Fouls', 'Goals Conceded', 'Shots On Target', 'Accurate Passes', 'Penalties Scored', 'Tackles Won', 'Aerials Won (%)', 'Through Balls', 'Offsides Provoked', 'Penalties Missed', 'Good High Claim', 'Big Chances Created', 'Penalties Won', 'Dribbled Past', 'Punches', 'Yellow Cards', 'Blocked Shots', 'Backward Passes', 'Hit Woodwork', 'Shots Total', 'Shots Blocked', 'Dribble Attempts', 'Penalties Saved', 'Long Balls Won (%)', 'Long Balls Won', 'Long Balls', 'Tackles', 'Aerials', 'Offsides', 'Possession Lost', 'Successful Dribbles', 'Goalkeeper Goals Conceded', 'Total Crosses', 'Total Duels', 'Error Lead To Goal', 'Saves', 'Successful Crosses (%)', 'Big Chances Missed', 'Own Goals', 'Key Passes', 'Yellow & Red Cards', 'Minutes Played', 'Accurate Passes (%)', 'Aerials Won', 'Goals', 'Touches', 'Passes', 'Duels Lost', 'Last Man Tackle', 'Shots Off Target', 'Interceptions', 'Assists', 'Turn Over', 'Tackles Won (%)', 'Aerials Lost', 'Duels Won (%)', 'Red Cards', 'Captain', 'Passes In Final Third', 'Rating', 'Fouls Drawn', 'Error Lead To Shot', 'Through Balls Won']
 - If nothing found, return {{"players": []}}.
 """
 
