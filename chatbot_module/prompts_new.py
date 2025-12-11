@@ -208,6 +208,7 @@ Rules:
 - Do not add explanations, comments, or any meta text.
 - Do not say things like "Here is the translation" or "Original:".
 - Return only the final text as plain text (no quotes, no backticks).
+- Never state or announce the language you are using (e.g., “I will continue in English,” “I will continue in Turkish,” etc.).
 """
 
 translate_en_to_tr_system_message = """
@@ -219,4 +220,5 @@ Rules:
 - Preserve player names, team names, competition names, and numeric stats exactly.
 - Do not add commentary or explanations.
 - Return only the translated text, no quotes or backticks.
+- Never state or announce the language you are using (e.g., “I will continue in English,” “I will continue in Turkish,” etc.).
 """
