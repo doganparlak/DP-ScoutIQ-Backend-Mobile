@@ -24,7 +24,6 @@ def fallback_parse_profile_block_new(raw_text: str) -> Dict[str, Any]:
     """
     Extended fallback parser capturing gender, height, weight, team.
     """
-    print("FALLBACK OF THE PLAYER PROFILE")
     m = PROFILE_BLOCK_RE.search(raw_text or "")
     if not m:
         return {"players": []}

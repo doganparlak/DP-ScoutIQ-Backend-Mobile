@@ -273,11 +273,8 @@ def answer_question(
     # 6) Parse current answer into meta/stats
     out = base_answer
     try:
-        print(base_answer)
-        print("==========")
         qa_as_report = f"**Statistical Highlights**\n\n{base_answer}\n\n"
         parsed_stats = parse_statistical_highlights(stats_parser_chain, qa_as_report)
-        print(parsed_stats)
         #stats_in_tokens = estimate_tokens(qa_as_report)
         #stats_out_tokens = estimate_tokens(str(parsed_stats))
         #stats_cost = (
