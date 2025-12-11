@@ -191,26 +191,28 @@ def answer_question(
 ) -> Dict[str, Any]:
 
     # 0) Get/Create Chain
+    print("ANSWER QUESTION START")
     qa_chain, lang = create_qa_chain(session_id, strategy=strategy)
     memory: ConversationBufferMemory = qa_chain.memory
 
     # 1) Freeze PRIOR history (before any LLM call can mutate memory)
     prior_history = memory.load_memory_variables({})["chat_history"]
     prior_history_frozen = list(prior_history)
-
+    print("1")
     # 2) Compute seen players from PRIOR assistant messages ONLY
     seen_players = get_seen_players_from_history(prior_history_frozen)
     seen_list_lower = { (n or "").lower().strip() for n in seen_players }
+    print("2")
     # 3) Build selection preamble (semantic, no keyword parsing)
     preamble = compose_selection_preamble(seen_players, strategy)
-
+    print("3")
     # 4) Translate user question to English if needed (TR -> EN, EN passthrough)
     translated_question = translate_to_english_if_needed(question or "")
-
+    print("4")
     # 5) Intent hint — ONLY entity resolution (seen name), no keyword lists
     q_lower = (question or "").lower()
     mentions_seen_by_name = any(n and n in q_lower for n in seen_list_lower)
-
+    print("5")
     # We do not enumerate any “another/alternative” words.
     # Let the LLM infer intent semantically using the preamble rules.
     if mentions_seen_by_name:
@@ -241,6 +243,7 @@ def answer_question(
     # 6) LLM Call
     inputs = {"question": augmented_question}
     db = get_db()
+    print("6")
     try:
         result = qa_chain.invoke(inputs)
         base_answer = (result.get("answer") or "").strip()

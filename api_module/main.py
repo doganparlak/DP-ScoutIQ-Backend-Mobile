@@ -362,7 +362,7 @@ def delete_me(user_id: int = Depends(require_auth), db: Session = Depends(get_db
 @app.post("/chat")
 async def chat(body: ChatIn, user_id: int = Depends(require_auth), db: Session = Depends(get_db)) -> Dict[str, Any]:
     session_id = body.session_id or "default"
-
+    print("CHAT INVOKED")
     try:
         if not session_exists_and_active(db, session_id):
             lang = normalize_lang(get_user_language(db, user_id)) or "en"
@@ -381,7 +381,7 @@ async def chat(body: ChatIn, user_id: int = Depends(require_auth), db: Session =
             db.commit()
     finally:
         pass
-
+    print("PRE ANSWER QUESTION")
     result = answer_question(
         body.message,
         session_id=session_id,
