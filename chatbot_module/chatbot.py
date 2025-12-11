@@ -174,7 +174,7 @@ def answer_question(
     preamble = compose_selection_preamble(seen_players, strategy)
 
     # 4) Translate user question to English if needed (TR -> EN, EN passthrough)
-    translated_question = translate_to_english_if_needed(question or "")
+    #translated_question = translate_to_english_if_needed(question or "")
 
     # 5) Intent hint — ONLY entity resolution (seen name), no keyword lists
     q_lower = (question or "").lower()
@@ -204,7 +204,7 @@ def answer_question(
         + no_nationality_bias
         + intent_nudge
         + "Question: "
-        + translated_question
+        + question
     )
 
     # 6) LLM Call
