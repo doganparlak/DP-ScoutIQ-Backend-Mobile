@@ -37,7 +37,7 @@ from chatbot_module.tools_extensions import (
     parse_player_meta_new,
     build_player_payload_new
 )
-from cost_approximation import(
+from chatbot_module.cost_approximation import(
     estimate_tokens,
     DEEPSEEK_INPUT_PRICE_PER_TOKEN,
     DEEPSEEK_OUTPUT_PRICE_PER_TOKEN
