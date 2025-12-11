@@ -20,7 +20,8 @@ from api_module.utilities import (
 from chatbot_module.prompts_new import (
     system_message,
     stats_parser_system_message,
-    meta_parser_system_prompt
+    meta_parser_system_prompt,
+    translate_system_message,
 )
 from chatbot_module.tools import (
     get_seen_players_from_history, 
@@ -49,6 +50,11 @@ PARSER_LLM = ChatDeepSeek(
     temperature=0,   # keep it deterministic for JSON-style parsing
 )
 
+TRANSLATE_LLM = ChatDeepSeek(
+    model="deepseek-chat",
+    temperature=0,
+)
+
 SHARED_RETRIEVER = get_retriever(k=6, filter=None)
 
 def add_language_strategy_to_prompt(ui_language: Optional[str], strategy: Optional[str]) -> ChatPromptTemplate:
@@ -65,6 +71,22 @@ def add_language_strategy_to_prompt(ui_language: Optional[str], strategy: Option
          "Question: {question}"
         )
     ])
+
+def translate_to_english_if_needed(text: Optional[str]) -> str:
+    """If text is Turkish, translate to English; if already English, return unchanged.
+
+    Always logs before/after.
+    """
+    original = text or ""
+    try:
+        translated = translate_chain.invoke({"text": original}).strip()
+        print("[TRANSLATE] original:", original)
+        print("[TRANSLATE] translated:", translated)
+        return translated or original
+    except Exception as e:
+        print("[TRANSLATE] error:", e)
+        # Fallback: use original if translation fails
+        return original
 
 def create_qa_chain(session_id: str, strategy: Optional[str] = None) -> ConversationalRetrievalChain:
     # 1) get session language
@@ -111,6 +133,15 @@ meta_parser_prompt = ChatPromptTemplate.from_messages([
     ("human", "Text:\n\n{raw_text}\n\nReturn only JSON, no backticks.")
 ])
 meta_parser_chain = meta_parser_prompt | PARSER_LLM | StrOutputParser()
+
+# ===== Translate (TR -> EN, or passthrough EN) =====
+translate_prompt = ChatPromptTemplate.from_messages([
+    ("system", translate_system_message),
+    ("human", "{text}"),
+])
+
+translate_chain = translate_prompt | TRANSLATE_LLM | StrOutputParser()
+
 # ===== Q&A Actions =====
 def answer_question(
     question: str, 
@@ -132,7 +163,10 @@ def answer_question(
     # 3) Build selection preamble (semantic, no keyword parsing)
     preamble = compose_selection_preamble(seen_players, strategy)
 
-    # 4) Intent hint — ONLY entity resolution (seen name), no keyword lists
+    # 4) Translate user question to English if needed (TR -> EN, EN passthrough)
+    translated_question = translate_to_english_if_needed(question or "")
+
+    # 5) Intent hint — ONLY entity resolution (seen name), no keyword lists
     q_lower = (question or "").lower()
     mentions_seen_by_name = any(n and n in q_lower for n in seen_list_lower)
 
@@ -155,8 +189,15 @@ def answer_question(
         "When nationality is unspecified, treat it as 'unspecified' and select solely on role fit/history and performance.\n\n"
     )
 
-    augmented_question = preamble + no_nationality_bias + intent_nudge + "Question: " + (question or "")
-    # 5) LLM Call
+    augmented_question = (
+        preamble
+        + no_nationality_bias
+        + intent_nudge
+        + "Question: "
+        + translated_question
+    )
+
+    # 6) LLM Call
     inputs = {"question": augmented_question}
     db = get_db()
     try:
