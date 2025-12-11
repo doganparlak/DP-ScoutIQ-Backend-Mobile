@@ -120,9 +120,7 @@ def create_qa_chain(session_id: str, strategy: Optional[str] = None) -> Conversa
         combine_docs_chain_kwargs={"prompt": prompt}
     )
 
-    # attach for later use in answer_question
-    chain.session_language = lang
-    return chain
+    return chain, lang
 
 # ===== Stats Parser =====
 stats_parser_prompt = ChatPromptTemplate.from_messages([
@@ -162,7 +160,7 @@ def answer_question(
 ) -> Dict[str, Any]:
 
     # 0) Get/Create Chain
-    qa_chain = create_qa_chain(session_id, strategy=strategy)
+    qa_chain, lang = create_qa_chain(session_id, strategy=strategy)
     memory: ConversationBufferMemory = qa_chain.memory
 
     # 1) Freeze PRIOR history (before any LLM call can mutate memory)
@@ -295,7 +293,7 @@ def answer_question(
         print(cleaned)
         print("================")
         out = cleaned
-        session_lang = getattr(qa_chain, "session_language", "en")
+        session_lang = lang
         if is_turkish(session_lang):
             try:
                 translated_out = output_tr_translate_chain.invoke({"text": out}).strip()
