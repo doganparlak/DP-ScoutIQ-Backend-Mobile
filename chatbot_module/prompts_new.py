@@ -195,7 +195,7 @@ Rules:
 - Return only JSON, no backticks, no prose.
 """
 
-translate_system_message = """
+translate_tr_to_en_system_message = """
 You are a language router and translator between Turkish and English.
 
 Goal:
@@ -208,4 +208,15 @@ Rules:
 - Do not add explanations, comments, or any meta text.
 - Do not say things like "Here is the translation" or "Original:".
 - Return only the final text as plain text (no quotes, no backticks).
+"""
+
+translate_en_to_tr_system_message = """
+You translate from English to Turkish.
+
+Rules:
+- Input text is narrative football scouting / tactical analysis.
+- Translate into fluent, natural Turkish.
+- Preserve player names, team names, competition names, and numeric stats exactly.
+- Do not add commentary or explanations.
+- Return only the translated text, no quotes or backticks.
 """

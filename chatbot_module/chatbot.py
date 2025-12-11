@@ -21,7 +21,8 @@ from chatbot_module.prompts_new import (
     system_message,
     stats_parser_system_message,
     meta_parser_system_prompt,
-    translate_system_message,
+    translate_tr_to_en_system_message,
+    translate_en_to_tr_system_message
 )
 from chatbot_module.tools import (
     get_seen_players_from_history, 
@@ -29,7 +30,8 @@ from chatbot_module.tools import (
     filter_players_by_seen,
     strip_meta_stats_text,
     compose_selection_preamble,
-    inject_language
+    inject_language,
+    is_turkish
 )
 from chatbot_module.tools_extensions import (
     parse_player_meta_new,
@@ -58,7 +60,7 @@ TRANSLATE_LLM = ChatDeepSeek(
 SHARED_RETRIEVER = get_retriever(k=6, filter=None)
 
 def add_language_strategy_to_prompt(ui_language: Optional[str], strategy: Optional[str]) -> ChatPromptTemplate:
-    sys_msg = inject_language(system_message, ui_language)
+    sys_msg = inject_language(system_message, "en")
     if strategy:
         sys_msg += (
             "\n\nCurrent scouting strategy / philosophy (must be followed):\n"
@@ -111,12 +113,16 @@ def create_qa_chain(session_id: str, strategy: Optional[str] = None) -> Conversa
     # 3) Prompt
     prompt = add_language_strategy_to_prompt(lang, strategy)
 
-    return ConversationalRetrievalChain.from_llm(
+    chain = ConversationalRetrievalChain.from_llm(
         llm=CHAT_LLM,
         retriever=SHARED_RETRIEVER,
         memory=memory,
         combine_docs_chain_kwargs={"prompt": prompt}
     )
+
+    # attach for later use in answer_question
+    chain.session_language = lang
+    return chain
 
 # ===== Stats Parser =====
 stats_parser_prompt = ChatPromptTemplate.from_messages([
@@ -136,11 +142,17 @@ meta_parser_chain = meta_parser_prompt | PARSER_LLM | StrOutputParser()
 
 # ===== Translate (TR -> EN, or passthrough EN) =====
 translate_prompt = ChatPromptTemplate.from_messages([
-    ("system", translate_system_message),
+    ("system", translate_tr_to_en_system_message),
     ("human", "{text}"),
 ])
-
 translate_chain = translate_prompt | TRANSLATE_LLM | StrOutputParser()
+
+output_tr_translate_prompt = ChatPromptTemplate.from_messages([
+    ("system", translate_en_to_tr_system_message),
+    ("human", "{text}"),
+])
+output_tr_translate_chain = output_tr_translate_prompt | TRANSLATE_LLM | StrOutputParser()
+
 
 # ===== Q&A Actions =====
 def answer_question(
@@ -283,6 +295,16 @@ def answer_question(
         print(cleaned)
         print("================")
         out = cleaned
+        session_lang = getattr(qa_chain, "session_language", "en")
+        if is_turkish(session_lang):
+            try:
+                translated_out = output_tr_translate_chain.invoke({"text": out}).strip()
+                print("[OUT-TRANSLATE] EN -> TR:", translated_out)
+                if translated_out:
+                    out = translated_out
+            except Exception as e:
+                print("[OUT-TRANSLATE] error:", e)
+                # Fallback: keep English if translation fails
 
         return {"answer": out, "data": payload}
 

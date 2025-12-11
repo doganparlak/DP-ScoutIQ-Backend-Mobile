@@ -653,3 +653,6 @@ def inject_language(base_system_message: str, lang_code: Optional[str]) -> str:
     directive = LANG_DIRECTIVES.get(lang, LANG_DIRECTIVES["en"])
     core = base_system_message.strip()
     return f"{directive}\n\n{core}\n\n{directive}\n"
+
+def is_turkish(lang: Optional[str]) -> bool:
+    return (lang or "").lower().startswith("tr")
