@@ -3,9 +3,18 @@ import re
 import json
 
 PROFILE_BLOCK_RE = re.compile(
-    r"\[\[\s*PLAYER_PROFILE\s*:\s*(?P<name>[^\]]+)\s*\]\](?P<body>[\s\S]*?)\[\[\/PLAYER_PROFILE\]\]",
-    re.IGNORECASE
+    r"""
+    \[\[\s*PLAYER_PROFILE\s*:\s*(?P<name>[^\]]+)\s*\]\]
+    (?P<body>[\s\S]*?)
+    (?:
+        \[\[\/PLAYER_PROFILE\]\]                             # correct close
+        |
+        \[\[\s*\/?PLAYER_STATS\s*:\s*[^\]]+\]\]              # handles [[PLAYER_STATS:..]] AND [[/PLAYER_STATS:..]]
+    )
+    """,
+    re.IGNORECASE | re.VERBOSE
 )
+
 HEAVY_TAGS_RE = re.compile(r"(<img[^>]*>|<table[\s\S]*?</table>)", re.IGNORECASE)
 def strip_heavy_html(text: str) -> str:
     """Remove <img> (esp. base64) and <table> blocks before sending to LLMs."""
@@ -15,6 +24,7 @@ def fallback_parse_profile_block_new(raw_text: str) -> Dict[str, Any]:
     """
     Extended fallback parser capturing gender, height, weight, team.
     """
+    print("FALLBACK OF THE PLAYER PROFILE")
     m = PROFILE_BLOCK_RE.search(raw_text or "")
     if not m:
         return {"players": []}
