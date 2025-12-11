@@ -205,10 +205,10 @@ def answer_question(
         base_answer = (result.get("answer") or "").strip()
 
         # --- Approximate chat LLM cost (DeepSeek) ---
-        source_docs = result.get("source_documents") or []
-        context_text = "\n\n".join(
-            getattr(doc, "page_content", "") or "" for doc in source_docs
-        )
+        #source_docs = result.get("source_documents") or []
+        #context_text = "\n\n".join(
+        #    getattr(doc, "page_content", "") or "" for doc in source_docs
+        #)
         #chat_input_text = augmented_question + "\n\n" + context_text
         #chat_in_tokens = estimate_tokens(chat_input_text)
         #chat_out_tokens = estimate_tokens(base_answer)
