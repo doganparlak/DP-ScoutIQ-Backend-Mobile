@@ -37,6 +37,11 @@ from chatbot_module.tools_extensions import (
     parse_player_meta_new,
     build_player_payload_new
 )
+from cost_approximation import(
+    estimate_tokens,
+    DEEPSEEK_INPUT_PRICE_PER_TOKEN,
+    DEEPSEEK_OUTPUT_PRICE_PER_TOKEN
+)
 
 # === Load Vectorstore ===
 from chatbot_module.vectorstore_small import get_retriever
@@ -77,18 +82,37 @@ def add_language_strategy_to_prompt(ui_language: Optional[str], strategy: Option
 def translate_to_english_if_needed(text: Optional[str]) -> str:
     """If text is Turkish, translate to English; if already English, return unchanged.
 
-    Always logs before/after.
+    Always logs before/after and prints an approximate DeepSeek cost.
     """
     original = text or ""
     try:
+        # Approximate token/cost: system prompt + user text as input,
+        # translated text as output.
+        translate_input_text = translate_tr_to_en_system_message + "\n\n" + original
+        tr_in_tokens = estimate_tokens(translate_input_text)
+
         translated = translate_chain.invoke({"text": original}).strip()
+
+        tr_out_tokens = estimate_tokens(translated)
+        tr_cost = (
+            tr_in_tokens * DEEPSEEK_INPUT_PRICE_PER_TOKEN
+            + tr_out_tokens * DEEPSEEK_OUTPUT_PRICE_PER_TOKEN
+        )
+
         print("[TRANSLATE] original:", original)
         print("[TRANSLATE] translated:", translated)
+        print(
+            "[COST] Translate TR->EN approx: "
+            f"input_tokens={tr_in_tokens}, output_tokens={tr_out_tokens}, "
+            f"cost≈${tr_cost:.8f}"
+        )
+
         return translated or original
     except Exception as e:
         print("[TRANSLATE] error:", e)
         # Fallback: use original if translation fails
         return original
+
 
 def create_qa_chain(session_id: str, strategy: Optional[str] = None) -> ConversationalRetrievalChain:
     # 1) get session language
@@ -174,7 +198,7 @@ def answer_question(
     preamble = compose_selection_preamble(seen_players, strategy)
 
     # 4) Translate user question to English if needed (TR -> EN, EN passthrough)
-    #translated_question = translate_to_english_if_needed(question or "")
+    translated_question = translate_to_english_if_needed(question or "")
 
     # 5) Intent hint — ONLY entity resolution (seen name), no keyword lists
     q_lower = (question or "").lower()
@@ -204,7 +228,7 @@ def answer_question(
         + no_nationality_bias
         + intent_nudge
         + "Question: "
-        + question
+        + translated_question
     )
 
     # 6) LLM Call
@@ -293,11 +317,30 @@ def answer_question(
         print(cleaned)
         print("================")
         out = cleaned
+
         session_lang = lang
         if is_turkish(session_lang):
             try:
+                # Approximate token/cost: system prompt + English narrative as input,
+                # Turkish narrative as output.
+                translate_out_input = translate_en_to_tr_system_message + "\n\n" + out
+                out_in_tokens = estimate_tokens(translate_out_input)
+
                 translated_out = output_tr_translate_chain.invoke({"text": out}).strip()
+
+                out_out_tokens = estimate_tokens(translated_out)
+                out_cost = (
+                    out_in_tokens * DEEPSEEK_INPUT_PRICE_PER_TOKEN
+                    + out_out_tokens * DEEPSEEK_OUTPUT_PRICE_PER_TOKEN
+                )
+
                 print("[OUT-TRANSLATE] EN -> TR:", translated_out)
+                print(
+                    "[COST] Translate EN->TR approx: "
+                    f"input_tokens={out_in_tokens}, output_tokens={out_out_tokens}, "
+                    f"cost≈${out_cost:.8f}"
+                )
+
                 if translated_out:
                     out = translated_out
             except Exception as e:
@@ -305,6 +348,7 @@ def answer_question(
                 # Fallback: keep English if translation fails
 
         return {"answer": out, "data": payload}
+
 
     except Exception as e:
         # Persist raw base answer if parsing failed (optional)
