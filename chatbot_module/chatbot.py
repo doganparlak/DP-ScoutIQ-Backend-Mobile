@@ -193,7 +193,6 @@ def answer_question(
 ) -> Dict[str, Any]:
 
     # 0) Get/Create Chain
-    print("ANSWER QUESTION START")
     qa_chain, lang = create_qa_chain(session_id, strategy=strategy)
     memory: ConversationBufferMemory = qa_chain.memory
 
@@ -240,7 +239,6 @@ def answer_question(
     # 6) LLM Call
     inputs = {"question": augmented_question}
     db = get_db()
-    print("6")
     try:
         result = qa_chain.invoke(inputs)
         base_answer = (result.get("answer") or "").strip()
@@ -275,8 +273,11 @@ def answer_question(
     # 6) Parse current answer into meta/stats
     out = base_answer
     try:
+        print(base_answer)
+        print("==========")
         qa_as_report = f"**Statistical Highlights**\n\n{base_answer}\n\n"
         parsed_stats = parse_statistical_highlights(stats_parser_chain, qa_as_report)
+        print(parsed_stats)
         #stats_in_tokens = estimate_tokens(qa_as_report)
         #stats_out_tokens = estimate_tokens(str(parsed_stats))
         #stats_cost = (
