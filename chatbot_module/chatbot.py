@@ -37,11 +37,18 @@ from chatbot_module.tools_extensions import (
     parse_player_meta_new,
     build_player_payload_new
 )
-from chatbot_module.cost_approximation import(
-    estimate_tokens,
-    DEEPSEEK_INPUT_PRICE_PER_TOKEN,
-    DEEPSEEK_OUTPUT_PRICE_PER_TOKEN
-)
+
+DEEPSEEK_INPUT_PRICE_PER_TOKEN = 0.28 / 1_000_000.0   # $0.28 / 1M input
+DEEPSEEK_OUTPUT_PRICE_PER_TOKEN = 0.42 / 1_000_000.0  # $0.42 / 1M output
+
+def estimate_tokens(text: str) -> int:
+    """
+    Very rough token estimator: ~4 characters per token.
+    This is approximate but good enough for ballpark cost logging.
+    """
+    if not text:
+        return 0
+    return max(1, len(text) // 4)
 
 # === Load Vectorstore ===
 from chatbot_module.vectorstore_small import get_retriever
