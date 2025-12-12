@@ -681,26 +681,36 @@ def get_or_create_report(
     print("CHECK USER IS IN PRO PLAN")
     # Check cache
     row = db.execute(text("""
-        SELECT status, content, content_json, language, version
-        FROM scouting_reports
-        WHERE user_id = :uid
-          AND favorite_player_id = :fid
-          AND COALESCE(language, 'en') = :lang
-          AND version = :ver
-        LIMIT 1
+            SELECT id, status, content, content_json, language, version
+            FROM scouting_reports
+            WHERE user_id = :uid
+            AND favorite_player_id = :fid
+            AND COALESCE(language, 'en') = :lang
+            AND version = :ver
+            LIMIT 1
     """), {"uid": user_id, "fid": favorite_id, "lang": lang, "ver": version}).mappings().first()
 
     if row:
-        print("REPORT DATA WAS ALREADY GENERATED FOR THE PLAYER")
-        return {
-            "favorite_player_id": favorite_id,
-            "status": row["status"],
-            "content": row["content"],
-            "content_json": row["content_json"],
-            "language": row["language"],
-            "version": row["version"],
-        }
-    print("REPORT DATA IS NOT PRESENT FOR THE PLAYER")
+        if row["status"] == "failed":
+            print("CACHED REPORT WAS FAILED — DELETING AND REGENERATING")
+            db.execute(
+                text("DELETE FROM scouting_reports WHERE id = :id"),
+                {"id": row["id"]},
+            )
+            db.commit()
+            row = None  # continue into regeneration flow
+        else:
+            print("REPORT DATA WAS ALREADY GENERATED FOR THE PLAYER (CACHE HIT)")
+            return {
+                "favorite_player_id": favorite_id,
+                "status": row["status"],
+                "content": row["content"],
+                "content_json": row["content_json"],
+                "language": row["language"],
+                "version": row["version"],
+            }
+
+    print("REPORT DATA IS NOT PRESENT FOR THE PLAYER (CACHE MISS)")
     # Create processing record
     rid = str(uuid.uuid4())
     db.execute(text("""
