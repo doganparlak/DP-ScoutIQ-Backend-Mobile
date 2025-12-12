@@ -740,7 +740,7 @@ def get_or_create_report(
         print(e)
         db.execute(text("""
             UPDATE scouting_reports
-            SET status = 'error',
+            SET status = 'failed',
                 error = :err,
                 updated_at = NOW()
             WHERE id = :id
