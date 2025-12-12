@@ -4,7 +4,13 @@ from pydantic import BaseModel, Field, EmailStr
 from api_module.utilities import PlanLiteral
 from datetime import datetime
 
-
+class ScoutingReportOut(BaseModel):
+    favorite_player_id: str
+    status: Literal["ready", "processing", "failed"]
+    content: Optional[str] = None
+    content_json: Optional[Dict[str, Any]] = None
+    language: Optional[str] = None
+    version: int = 1
 
 # ---- Favorite Players I/O ----
 class FavoritePlayerIn(BaseModel):

@@ -23,7 +23,7 @@ from api_module.database import get_db
 from api_module.models import (
     SignUpIn, LoginIn, LoginOut, ProfileOut, ProfilePatch, SetNewPasswordIn,
     PasswordResetRequestIn, VerifyResetIn, VerifySignupIn, SignupCodeRequestIn, ChatIn,
-    FavoritePlayerIn, FavoritePlayerOut, ReachOutIn, PlanUpdateIn, IAPActivateIn
+    FavoritePlayerIn, FavoritePlayerOut, ReachOutIn, PlanUpdateIn, IAPActivateIn, ScoutingReportOut
 )
 
 import hmac, uuid, json, re, os
@@ -646,6 +646,62 @@ def activate_subscription(
         "ok": True,
         "plan": "Pro",
         "subscriptionEndAt": expires_at.isoformat(),
+    }
+
+@app.get("/me/favorites/{favorite_id}/report", response_model=ScoutingReportOut)
+def get_or_create_report(
+    favorite_id: str,
+    user_id: int = Depends(require_auth),
+    accept_language: str | None = Header(default=None),
+    db: Session = Depends(get_db),
+):
+    lang = normalize_lang(accept_language) or "en"
+    version = 1
+
+    # Ensure favorite belongs to user
+    owned = db.execute(
+        text("SELECT 1 FROM favorite_players WHERE id = :fid AND user_id = :uid"),
+        {"fid": favorite_id, "uid": user_id},
+    ).first()
+    if not owned:
+        raise HTTPException(status_code=404, detail="Favorite not found")
+
+    # Check cache
+    row = db.execute(text("""
+        SELECT status, content, content_json, language, version
+        FROM scouting_reports
+        WHERE user_id = :uid
+          AND favorite_player_id = :fid
+          AND COALESCE(language, 'en') = :lang
+          AND version = :ver
+        LIMIT 1
+    """), {"uid": user_id, "fid": favorite_id, "lang": lang, "ver": version}).mappings().first()
+
+    if row:
+        return {
+            "favorite_player_id": favorite_id,
+            "status": row["status"],
+            "content": row["content"],
+            "content_json": row["content_json"],
+            "language": row["language"],
+            "version": row["version"],
+        }
+
+    # Create processing record (AI generation will happen later)
+    rid = str(uuid.uuid4())
+    db.execute(text("""
+        INSERT INTO scouting_reports (id, user_id, favorite_player_id, status, language, version, created_at, updated_at)
+        VALUES (:id, :uid, :fid, 'processing', :lang, :ver, NOW(), NOW())
+    """), {"id": rid, "uid": user_id, "fid": favorite_id, "lang": lang, "ver": version})
+    db.commit()
+
+    return {
+        "favorite_player_id": favorite_id,
+        "status": "processing",
+        "content": None,
+        "content_json": None,
+        "language": lang,
+        "version": version,
     }
 
 # OPTIONAL ENDPOINT: run subscription sync via endpoint
