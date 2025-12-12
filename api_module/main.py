@@ -10,11 +10,13 @@ from sqlalchemy.orm import Session
 from sqlalchemy import text
 
 from chatbot_module.chatbot import answer_question
+from report_module.report import generate_report_content
 # import our refactored pieces
 from api_module.utilities import (
     hash_pw, new_salt, now_iso, get_user_email_by_id, delete_user_everywhere, get_bearer_token, revoke_session,
     user_row_to_dict, require_auth, create_email_code, verify_email_code, send_email_code, to_long_roles, normalize_lang, get_user_language,
     session_exists_and_active, delete_chat_messages, split_response_parts, pick, send_reachout_email,
+    is_user_pro
 )
 from api_module.payment_utilities import(
      verify_ios_subscription, verify_android_subscription, run_subscription_sync
@@ -657,6 +659,8 @@ def get_or_create_report(
 ):
     lang = normalize_lang(accept_language) or "en"
     version = 1
+    print("START OF THE REPORT GENEATION")
+    print(f"LANG: {lang}, VERSION: {version}")
 
     # Ensure favorite belongs to user
     owned = db.execute(
@@ -665,7 +669,14 @@ def get_or_create_report(
     ).first()
     if not owned:
         raise HTTPException(status_code=404, detail="Favorite not found")
-
+    print("CHECK FAVORITE_PLAYERS TABLE COMPLETE")
+    # Enforce Pro
+    if not is_user_pro(db, user_id):
+        raise HTTPException(
+            status_code=403,
+            detail="To access the scouting report of the players on your portfolio, upgrade to pro now."
+        )
+    print("CHECK USER IS IN PRO PLAN")
     # Check cache
     row = db.execute(text("""
         SELECT status, content, content_json, language, version
@@ -678,6 +689,7 @@ def get_or_create_report(
     """), {"uid": user_id, "fid": favorite_id, "lang": lang, "ver": version}).mappings().first()
 
     if row:
+        print("REPORT DATA WAS ALREADY GENERATED FOR THE PLAYER")
         return {
             "favorite_player_id": favorite_id,
             "status": row["status"],
@@ -686,8 +698,8 @@ def get_or_create_report(
             "language": row["language"],
             "version": row["version"],
         }
-
-    # Create processing record (AI generation will happen later)
+    print("REPORT DATA IS NOT PRESENT FOR THE PLAYER")
+    # Create processing record
     rid = str(uuid.uuid4())
     db.execute(text("""
         INSERT INTO scouting_reports (id, user_id, favorite_player_id, status, language, version, created_at, updated_at)
@@ -695,14 +707,47 @@ def get_or_create_report(
     """), {"id": rid, "uid": user_id, "fid": favorite_id, "lang": lang, "ver": version})
     db.commit()
 
-    return {
-        "favorite_player_id": favorite_id,
-        "status": "processing",
-        "content": None,
-        "content_json": None,
-        "language": lang,
-        "version": version,
-    }
+    # Generate synchronously (DeepSeek) and update cache
+    try:
+        print("GENERATING REPORT DATA")
+        generated = generate_report_content(db, favorite_id=favorite_id, lang=lang, version=version)
+        print("GENERATED REPORT DATA")
+        print(generated)
+        print("INSERTING REPORT DATA TO DB")
+        db.execute(text("""
+            UPDATE scouting_reports
+            SET status = 'ready',
+                content = :content,
+                content_json = :content_json,
+                error = NULL,
+                ready_at = NOW(),
+                updated_at = NOW()
+            WHERE id = :id
+        """), {"id": rid, "content": generated["content"], "content_json": generated["content_json"]})
+        db.commit()
+        print("REPORT DATA INSERTION COMPLETE")
+        return {
+            "favorite_player_id": favorite_id,
+            "status": "ready",
+            "content": generated["content"],
+            "content_json": generated["content_json"],
+            "language": lang,
+            "version": version,
+        }
+
+    except Exception as e:
+        print("REPORT DATA GENERATION FAILED")
+        print(e)
+        db.execute(text("""
+            UPDATE scouting_reports
+            SET status = 'error',
+                error = :err,
+                updated_at = NOW()
+            WHERE id = :id
+        """), {"id": rid, "err": str(e)})
+        db.commit()
+        raise HTTPException(status_code=500, detail="Failed to generate scouting report")
+
 
 # OPTIONAL ENDPOINT: run subscription sync via endpoint
 @app.post("/internal/subscriptions/sync")

@@ -536,5 +536,19 @@ def split_response_parts(html: str):
 
     return parts
 
+# === USER PLAN CHECK ====
+def is_user_pro(db: Session, user_id: int) -> bool:
+    row = db.execute(text("""
+        SELECT subscription_end_at
+        FROM users
+        WHERE id = :uid
+        LIMIT 1
+    """), {"uid": user_id}).mappings().first()
+
+    if not row:
+        return False
+
+    # Pro if subscription_end_at exists and is in the future
+    return row["subscription_end_at"] is not None and row["subscription_end_at"] > db.execute(text("NOW()")).scalar()
 
 

@@ -17,7 +17,7 @@ from api_module.utilities import (
     append_chat_message,
     load_chat_messages
 )
-from chatbot_module.prompts_new import (
+from chatbot_module.prompts import (
     system_message,
     stats_parser_system_message,
     meta_parser_system_prompt,
