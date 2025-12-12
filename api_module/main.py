@@ -671,7 +671,9 @@ def get_or_create_report(
         raise HTTPException(status_code=404, detail="Favorite not found")
     print("CHECK FAVORITE_PLAYERS TABLE COMPLETE")
     # Enforce Pro
-    if not is_user_pro(db, user_id):
+    # is_user_pro_flag = is_user_pro(db, user_id)
+    is_user_pro_flag = True
+    if not is_user_pro_flag:
         raise HTTPException(
             status_code=403,
             detail="To access the scouting report of the players on your portfolio, upgrade to pro now."
