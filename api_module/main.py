@@ -651,7 +651,7 @@ def activate_subscription(
         "subscriptionEndAt": expires_at.isoformat(),
     }
 
-@app.get("/me/favorites/{favorite_id}/report", response_model=ScoutingReportOut)
+@app.post("/me/favorites/{favorite_id}/report", response_model=ScoutingReportOut)
 def get_or_create_report(
     favorite_id: str,
     payload: ScoutingReportIn = Body(default=ScoutingReportIn()),
