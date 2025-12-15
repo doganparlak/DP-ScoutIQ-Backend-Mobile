@@ -4,6 +4,15 @@ from pydantic import BaseModel, Field, EmailStr
 from api_module.utilities import PlanLiteral
 from datetime import datetime
 
+class ScoutingReportIn(BaseModel):
+    name: Optional[str] = None
+    gender: Optional[str] = None
+    nationality: Optional[str] = None
+    team: Optional[str] = None
+    age: Optional[float] = None
+    height: Optional[float] = None
+    weight: Optional[float] = None
+
 class ScoutingReportOut(BaseModel):
     favorite_player_id: str
     status: Literal["ready", "processing", "failed"]
@@ -11,6 +20,8 @@ class ScoutingReportOut(BaseModel):
     content_json: Optional[Dict[str, Any]] = None
     language: Optional[str] = None
     version: int = 1
+    # NEW: echo the identity used for retrieval (helps debugging)
+    player: Optional[ScoutingReportIn] = None
 
 # ---- Favorite Players I/O ----
 class FavoritePlayerIn(BaseModel):

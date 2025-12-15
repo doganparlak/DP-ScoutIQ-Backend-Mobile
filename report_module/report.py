@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from typing import Any, Dict, List, Optional
+from typing import Any, Dict, List, Optional, Tuple
 from dotenv import load_dotenv
 load_dotenv()
 
@@ -10,9 +10,11 @@ from sqlalchemy import text
 from langchain_deepseek import ChatDeepSeek
 from langchain_core.prompts import ChatPromptTemplate
 from langchain_core.output_parsers import StrOutputParser
-
 from report_module.prompts import report_system_prompt
-
+from report_module.utilities import (_score_candidate,
+                                      _extract_player_group_key,
+                                      _first_non_empty, 
+                                      _normalize_roles)
 
 CHAT_LLM = ChatDeepSeek(model="deepseek-chat", temperature=0.3)
 
@@ -28,46 +30,93 @@ report_chain = _report_prompt | CHAT_LLM | StrOutputParser()
 # documents_v4 fetch
 # -----------------------------
 
-def fetch_docs_for_favorite(db, favorite_id: str, limit: int = 30) -> List[Dict[str, Any]]:
+def fetch_docs_for_favorite(
+    db,
+    player_identity: Dict[str, Any],
+    limit: int = 30
+) -> List[Dict[str, Any]]:
     """
-    Fetch documents_v4 rows linked to this favorite player.
+    New behavior:
+    - Use player_identity (from frontend) to locate the correct player in documents_v4
+    - Then fetch that player's docs
+    """
+    name = player_identity.get("name")
+    if not name or not str(name).strip():
+        # No name => cannot reliably search; return empty
+        return []
 
-    This assumes you store favorite linkage in metadata.favorite_player_id.
-    If your key is different, change (metadata->>'favorite_player_id').
-    """
+    name_q = f"%{str(name).strip()}%"
+    team = player_identity.get("team")
+    nat  = player_identity.get("nationality")
+
+    # Broad candidate search (JSONB metadata preferred; fallback to content ILIKE)
     rows = db.execute(text("""
         SELECT id, content, metadata
         FROM documents_v4
-        WHERE (metadata->>'favorite_player_id') = :fid
+        WHERE
+          (
+            (metadata->>'player_name') ILIKE :name_q
+            OR (metadata->>'name') ILIKE :name_q
+            OR (metadata->>'player') ILIKE :name_q
+            OR content ILIKE :name_q
+          )
+          AND (
+            :team_q IS NULL
+            OR (metadata->>'team_name') ILIKE :team_q
+            OR (metadata->>'team') ILIKE :team_q
+            OR content ILIKE :team_q
+          )
+          AND (
+            :nat_q IS NULL
+            OR (metadata->>'nationality_name') ILIKE :nat_q
+            OR (metadata->>'nationality') ILIKE :nat_q
+            OR content ILIKE :nat_q
+          )
+        ORDER BY id DESC
+        LIMIT 250
+    """), {
+        "name_q": name_q,
+        "team_q": (f"%{team.strip()}%" if isinstance(team, str) and team.strip() else None),
+        "nat_q":  (f"%{nat.strip()}%"  if isinstance(nat, str) and nat.strip() else None),
+    }).mappings().all()
+
+    if not rows:
+        return []
+
+    # Score candidates and pick best key
+    best: Tuple[float, Optional[str]] = (-1.0, None)
+    metas: List[Dict[str, Any]] = []
+
+    for r in rows:
+        meta = r.get("metadata") or {}
+        metas.append(meta)
+        sc = _score_candidate(meta, player_identity)
+        key = _extract_player_group_key(meta)
+        if key and sc > best[0]:
+            best = (sc, key)
+
+    best_key = best[1]
+    if not best_key:
+        # fallback: just return top rows as-is
+        return [{"id": r["id"], "content": r.get("content"), "metadata": r.get("metadata")} for r in rows[:limit]]
+
+    # Fetch docs for that player_key (or our fallback key)
+    docs = db.execute(text("""
+        SELECT id, content, metadata
+        FROM documents_v4
+        WHERE
+          (metadata->>'player_key') = :pk
+          OR (
+            :pk LIKE '%|%'
+            AND (metadata->>'player_name') IS NOT NULL
+            AND (metadata->>'team_name') IS NOT NULL
+            AND ((metadata->>'player_name') || '|' || (metadata->>'team_name')) = :pk
+          )
         ORDER BY id DESC
         LIMIT :lim
-    """), {"fid": favorite_id, "lim": limit}).mappings().all()
+    """), {"pk": best_key, "lim": limit}).mappings().all()
 
-    return [{"id": r["id"], "content": r.get("content"), "metadata": r.get("metadata")} for r in rows]
-
-
-def _first_non_empty(*vals):
-    for v in vals:
-        if v is None:
-            continue
-        if isinstance(v, str) and not v.strip():
-            continue
-        return v
-    return None
-
-
-def _normalize_roles(val: Any) -> List[str]:
-    if val is None:
-        return []
-    if isinstance(val, list):
-        return [str(x) for x in val if x]
-    if isinstance(val, str):
-        # allow comma separated roles
-        if "," in val:
-            return [x.strip() for x in val.split(",") if x.strip()]
-        return [val.strip()] if val.strip() else []
-    return []
-
+    return [{"id": r["id"], "content": r.get("content"), "metadata": r.get("metadata")} for r in docs]
 
 def build_player_card_from_docs(metric_docs: List[Dict[str, Any]]) -> Dict[str, Any]:
     """
@@ -140,22 +189,20 @@ def _build_llm_input(player_card: Dict[str, Any], metric_docs: List[Dict[str, An
 
     return "\n".join(parts)
 
-
 def generate_report_content(
     db,
     favorite_id: str,
     lang: str = "en",
     version: int = 1,
+    player_identity: Optional[Dict[str, Any]] = None,
 ) -> Dict[str, Any]:
-    """
-    Generate report using only documents_v4.
-    Returns: {"content": str, "content_json": {...}}
-    """
-    docs = fetch_docs_for_favorite(db, favorite_id=favorite_id, limit=30)
+    docs = fetch_docs_for_favorite(
+        db,
+        player_identity=player_identity or {},
+        limit=30
+    )
     player_card = build_player_card_from_docs(docs)
 
-    # If docs contain no name at all, we still try (LLM will fallback to general),
-    # but the report will be less useful; you can choose to error instead.
     input_text = _build_llm_input(player_card, docs)
     report_text = (report_chain.invoke({"input_text": input_text}) or "").strip()
 
@@ -163,9 +210,10 @@ def generate_report_content(
         "favorite_player_id": favorite_id,
         "language": lang,
         "version": version,
+        "player_identity": player_identity or {},   # NEW (debuggable)
         "player_card": player_card,
         "metrics_docs": docs,
         "report_text": report_text,
     }
-
     return {"content": report_text, "content_json": content_json}
+

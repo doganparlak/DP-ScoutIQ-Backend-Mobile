@@ -1,6 +1,6 @@
 # api_module/main.py
 from typing import Optional, Dict, Any, List
-from fastapi import FastAPI, HTTPException, Depends, Header, status, Response
+from fastapi import FastAPI, HTTPException, Depends, Header, status, Response, Body
 from fastapi.middleware.cors import CORSMiddleware
 from dotenv import load_dotenv
 
@@ -25,7 +25,8 @@ from api_module.database import get_db
 from api_module.models import (
     SignUpIn, LoginIn, LoginOut, ProfileOut, ProfilePatch, SetNewPasswordIn,
     PasswordResetRequestIn, VerifyResetIn, VerifySignupIn, SignupCodeRequestIn, ChatIn,
-    FavoritePlayerIn, FavoritePlayerOut, ReachOutIn, PlanUpdateIn, IAPActivateIn, ScoutingReportOut
+    FavoritePlayerIn, FavoritePlayerOut, ReachOutIn, PlanUpdateIn, IAPActivateIn, 
+    ScoutingReportIn, ScoutingReportOut
 )
 
 import hmac, uuid, json, re, os
@@ -653,6 +654,7 @@ def activate_subscription(
 @app.get("/me/favorites/{favorite_id}/report", response_model=ScoutingReportOut)
 def get_or_create_report(
     favorite_id: str,
+    payload: ScoutingReportIn = Body(default=ScoutingReportIn()),
     user_id: int = Depends(require_auth),
     accept_language: str | None = Header(default=None),
     db: Session = Depends(get_db),
@@ -708,6 +710,7 @@ def get_or_create_report(
                 "content_json": row["content_json"],
                 "language": row["language"],
                 "version": row["version"],
+                "player": payload,  # NEW
             }
 
     print("REPORT DATA IS NOT PRESENT FOR THE PLAYER (CACHE MISS)")
@@ -722,7 +725,13 @@ def get_or_create_report(
     # Generate synchronously (DeepSeek) and update cache
     try:
         print("GENERATING REPORT DATA")
-        generated = generate_report_content(db, favorite_id=favorite_id, lang=lang, version=version)
+        generated = generate_report_content(
+            db,
+            favorite_id=favorite_id,
+            lang=lang,
+            version=version,
+            player_identity=payload.model_dump(exclude_none=True),  # NEW
+        )
         print("GENERATED REPORT DATA")
         print(generated)
         print("INSERTING REPORT DATA TO DB")
@@ -745,6 +754,7 @@ def get_or_create_report(
             "content_json": generated["content_json"],
             "language": lang,
             "version": version,
+            "player": payload,  # NEW
         }
 
     except Exception as e:
