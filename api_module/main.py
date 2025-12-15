@@ -739,12 +739,16 @@ def get_or_create_report(
             UPDATE scouting_reports
             SET status = 'ready',
                 content = :content,
-                content_json = :content_json,
+                content_json = CAST(:content_json AS jsonb),
                 error = NULL,
                 ready_at = NOW(),
                 updated_at = NOW()
             WHERE id = :id
-        """), {"id": rid, "content": generated["content"], "content_json": generated["content_json"]})
+        """), {
+            "id": rid,
+            "content": generated["content"],
+            "content_json": json.dumps(generated["content_json"], ensure_ascii=False, default=str),
+        })
         db.commit()
         print("REPORT DATA INSERTION COMPLETE")
         return {
