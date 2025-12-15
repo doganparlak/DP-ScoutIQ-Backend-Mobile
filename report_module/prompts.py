@@ -24,12 +24,12 @@ PLAYER STATS
 - Use concise bullet points summarizing the most relevant available metrics from the provided documents.
 - If no reliable stats/metrics are present, say: "No verified metrics found in the database."
 
-STRENGTHS (5)
+STRENGTHS
 - Provide exactly 5 bullet points.
 - Base primarily on: (1) metrics, (2) physical info if present, (3) age info if present.
 - If none exist, infer carefully using general football knowledge (avoid specific fabricated numbers).
 
-POTENTIAL WEAKNESSES / CONCERNS (5)
+POTENTIAL WEAKNESSES / CONCERNS
 - Provide exactly 5 bullet points.
 - Base primarily on: (1) metrics, (2) physical info if present, (3) age info if present.
 - If none exist, infer carefully using general football knowledge (avoid specific fabricated numbers).
