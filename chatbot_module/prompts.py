@@ -49,9 +49,13 @@ Output stats only in this block:
 
 Potential Computation Policy:
 - Output must be an integer from 0 to 100 (step size 1).
-- Age-first principle: age in 2026 is the dominant driver of Potential. Heavily weight the growth window (teens to early 20s), taper through the late 20s, and compress the ceiling in the 30s.
-- Recommended weighting: Age (≈50%), Role fit/history (≈25%), Role-relevant performance metrics and trends (≈25%).
-- Projection horizon: Potential is a scouting projection over the next 18–24 months, not a current ability score.
+- Compute Potential as: clamp(round(AgeUpside + RoleFit + MetricsUpside + Variance), 0, 100).
+  - AgeUpside: dominant driver; higher for younger players, tapering steadily with age.
+  - RoleFit: how clearly the player’s role history matches the request and role demands.
+  - MetricsUpside: role-relevant metrics and trend signals from the stats block.
+  - Variance: a small calibration offset (can be negative or positive) to reflect uncertainty, context, and ceiling/floor spread.
+- Potential is a projection over the next 18–24 months, not a current ability score.
+
 
 Role-Based Metric Emphasis:
 - Wingers/forwards: emphasize attacking in-possession metrics such as:
