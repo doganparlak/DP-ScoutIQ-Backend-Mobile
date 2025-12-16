@@ -49,14 +49,50 @@ Output stats only in this block:
 
 Potential Computation Policy:
 - Output must be an integer from 0 to 100 (step size 1).
-- Compute Potential as: clamp(round(AgeUpside + RoleFit + MetricsUpside + Variance), 0, 100).
-  - AgeUpside: dominant driver; higher for younger players, tapering steadily with age.
-  - RoleFit: how clearly the player’s role history matches the request and role demands.
-  - MetricsUpside: role-relevant metrics and trend signals from the stats block.
-  - Variance: a small calibration offset (can be negative or positive) to reflect uncertainty, context, and ceiling/floor spread.
-- Anti-sticking rule (VERY IMPORTANT): do not reuse the same Potential value across different players, and avoid repeating the same 3-point band (e.g., 77–79) unless the evidence strongly forces it.
-- Potential is a projection over the next 18–24 months, not a current ability score.
+- Compute Potential as: clamp(round(AgeUpside + RoleFit + MetricsUpside + Variance + AntiStick), 0, 100).
 
+Component guidance (aim for wider spread; avoid clustering):
+- AgeUpside (dominant driver; 16–24 highest): choose a value from this table (do NOT interpolate):
+  16: 36–40
+  17: 35–39
+  18: 34–38
+  19: 33–37
+  20: 32–36
+  21: 31–35
+  22: 30–34
+  23: 28–33
+  24: 26–32
+  25: 24–30
+  26: 22–28
+  27: 20–26
+  28: 18–24
+  29: 16–22
+  30+: 12–20
+  Pick within the range based on role demand + athletic indicators in the provided info.
+
+- RoleFit (0–22): pick ONE tier only (discrete tiers, no in-betweens):
+  4 = weak fit, 9 = partial fit, 14 = solid fit, 18 = strong fit, 22 = elite/clear fit.
+
+- MetricsUpside (0–30): score using discrete tiers based on how many role-relevant metrics are clearly strong vs. weak:
+  6 = thin/neutral, 12 = some positives, 18 = clearly positive, 24 = standout, 30 = exceptional.
+  Use trend/consistency cues if available, but never mention sample size.
+
+Variance & Anti-stick (forces variation):
+- Variance (-6 to +6): MUST be non-zero for most players; choose based on uncertainty/ceiling:
+  -6, -4, -2, +2, +4, +6 only (no 0).
+- AntiStick: apply a repulsion rule against repeating values:
+  - Maintain a "recent potentials" memory for the last 12 players in the session.
+  - If the computed Potential equals ANY of the last 3 potentials, add +3 or -3 (choose direction consistent with evidence).
+  - If the computed Potential falls inside the band 77–79 AND that band has already appeared in the last 12 players, apply an additional +4 or -4 (choose direction consistent with evidence).
+  - If after adjustment it still matches a recent value, adjust by ±2 until unique.
+
+Final anti-sticking rules (VERY IMPORTANT):
+- Do not reuse the same Potential value across different players in the same session.
+- Avoid repeating the same 3-point band (e.g., 77–79) within the last 12 players unless evidence strongly forces it.
+- Never output 78 unless it is the best-fit integer AFTER applying the AntiStick repulsion steps.
+
+Potential meaning:
+- Potential is a projection over the next 18–24 months, not a current ability score.
 
 Role-Based Metric Emphasis:
 - Wingers/forwards: emphasize attacking in-possession metrics such as:
