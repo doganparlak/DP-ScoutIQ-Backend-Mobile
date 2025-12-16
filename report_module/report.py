@@ -233,17 +233,18 @@ def generate_report_content(
 
     input_text = _build_llm_input(player_card, docs)
 
-    human_msg = f"lang: {lang}\n\n{input_text}"
+    #human_msg = f"lang: {lang}\n\n{input_text}"
 
     report_text = (report_chain.invoke({"input_text": input_text, "lang": lang}) or "").strip()
 
+    '''
     # ---- COST LOGGING (prints total) ----
     cost = estimate_report_cost_usd(
         system_prompt=report_system_prompt,
         human_prompt=human_msg,
         model_output=report_text,
     )
-
+    
     print(
         "[REPORT_COST] "
         f"in_tokens~{cost['input_tokens_est']} "
@@ -251,7 +252,7 @@ def generate_report_content(
         f"total=${cost['total_cost_usd']:.6f} "
         f"(input=${cost['input_cost_usd']:.6f}, output=${cost['output_cost_usd']:.6f})"
     )
-    
+    '''
     content_json = {
         "favorite_player_id": favorite_id,
         "language": lang,
