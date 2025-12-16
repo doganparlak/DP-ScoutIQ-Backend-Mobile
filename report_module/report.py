@@ -26,34 +26,6 @@ _report_prompt = ChatPromptTemplate.from_messages([
 
 report_chain = _report_prompt | CHAT_LLM | StrOutputParser()
 
-DEEPSEEK_INPUT_PRICE_PER_TOKEN = 0.28 / 1_000_000.0   # $0.28 / 1M input
-DEEPSEEK_OUTPUT_PRICE_PER_TOKEN = 0.42 / 1_000_000.0  # $0.42 / 1M output
-
-def estimate_tokens(text: str) -> int:
-    """
-    Very rough token estimator: ~4 characters per token.
-    """
-    if not text:
-        return 0
-    return max(1, len(text) // 4)
-
-def estimate_report_cost_usd(system_prompt: str, human_prompt: str, model_output: str) -> dict:
-    in_tokens = estimate_tokens(system_prompt) + estimate_tokens(human_prompt)
-    out_tokens = estimate_tokens(model_output)
-
-    input_cost = in_tokens * DEEPSEEK_INPUT_PRICE_PER_TOKEN
-    output_cost = out_tokens * DEEPSEEK_OUTPUT_PRICE_PER_TOKEN
-    total = input_cost + output_cost
-
-    return {
-        "input_tokens_est": in_tokens,
-        "output_tokens_est": out_tokens,
-        "input_cost_usd": input_cost,
-        "output_cost_usd": output_cost,
-        "total_cost_usd": total,
-    }
-
-
 # -----------------------------
 # documents_v4 fetch
 # -----------------------------
@@ -233,31 +205,13 @@ def generate_report_content(
 
     input_text = _build_llm_input(player_card, docs)
 
-    #human_msg = f"lang: {lang}\n\n{input_text}"
-
     report_text = (report_chain.invoke({"input_text": input_text, "lang": lang}) or "").strip()
 
-    '''
-    # ---- COST LOGGING (prints total) ----
-    cost = estimate_report_cost_usd(
-        system_prompt=report_system_prompt,
-        human_prompt=human_msg,
-        model_output=report_text,
-    )
-    
-    print(
-        "[REPORT_COST] "
-        f"in_tokens~{cost['input_tokens_est']} "
-        f"out_tokens~{cost['output_tokens_est']} "
-        f"total=${cost['total_cost_usd']:.6f} "
-        f"(input=${cost['input_cost_usd']:.6f}, output=${cost['output_cost_usd']:.6f})"
-    )
-    '''
     content_json = {
         "favorite_player_id": favorite_id,
         "language": lang,
         "version": version,
-        "player_identity": player_identity or {},   # NEW (debuggable)
+        "player_identity": player_identity or {},  
         "player_card": player_card,
         "metrics_docs": docs,
         "report_text": report_text,
