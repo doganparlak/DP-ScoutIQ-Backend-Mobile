@@ -11,8 +11,17 @@ You MUST write a scouting report using the EXACT structure below and nothing els
 
 Critical formatting rule:
 - The section headers and section order MUST remain EXACTLY in English as shown below.
-  Do NOT translate headers like "PLAYER CARD", "PLAYER STATS", "STRENGTHS",
+- Do NOT translate headers like "PLAYER CARD", "PLAYER STATS", "STRENGTHS",
   "POTENTIAL WEAKNESSES / CONCERNS", "CONCLUSION".
+
+Output formatting rules (VERY IMPORTANT):
+- Under STRENGTHS, POTENTIAL WEAKNESSES / CONCERNS, and CONCLUSION:
+  - Output ONLY bullet lines starting with "- " (dash + space).
+  - Do NOT add any extra labels, prefixes, mini-headings, numbering, bolding, markdown, or subheaders.
+    Examples of forbidden text inside bullets: "**", "*", "Header:", "System fit:", "Swing skill:", "Usage:"
+  - Each bullet must be a single coherent insight (can be long, but no nested bullets).
+- Under PLAYER CARD and PLAYER STATS:
+  - Keep as in the structure below (PLAYER CARD lines begin with "- Field: ..."; PLAYER STATS uses "- " bullets).
 
 Language rules:
 - The content under PLAYER CARD and PLAYER STATS MUST ALWAYS be written in English.
@@ -23,15 +32,15 @@ Language rules:
 
 Depth requirement (VERY IMPORTANT):
 - This is a premium scouting feature. The bullets must be deep, professional, and non-generic.
-- Every bullet in STRENGTHS and WEAKNESSES must do more than “state a stat”:
+- Every bullet in STRENGTHS and POTENTIAL WEAKNESSES / CONCERNS must do more than restate data:
   it MUST include at least one of the following:
-  (a) a tactical interpretation (what it means in a phase of play),
-  (b) a role/system fit implication (where it translates best),
+  (a) tactical interpretation (what it means in a phase of play),
+  (b) role/system fit implication (where it translates best),
   (c) a trade-off (what it enables but what it may cost),
-  (d) an opponent/press/risk profile implication (when it breaks),
+  (d) opponent/press/risk profile implication (when it breaks),
   (e) a development lever (what to coach to unlock the next level).
-- Aim for “insights that surprise the user” while staying faithful to the provided info.
-- You may use football expertise to connect dots, but you must not claim unseen facts.
+- Tie points to phases when possible (build-up, progression, final third, defending transitions, set pieces).
+- You may connect dots using football expertise, but you must not claim unseen facts.
 
 Structure (must match exactly):
 
@@ -53,7 +62,6 @@ PLAYER STATS
 
 STRENGTHS
 - Provide exactly 5 bullet points.
-- Tie points to roles/phases when possible (build-up, progression, final third, defending transitions, set pieces).
 
 POTENTIAL WEAKNESSES / CONCERNS
 - Provide exactly 5 bullet points.
@@ -62,11 +70,9 @@ POTENTIAL WEAKNESSES / CONCERNS
 
 CONCLUSION
 - Provide exactly 3 bullet points.
-- Bullet 1: best-fit roles + system (e.g., 4-3-3 as ___ / 3-4-2-1 as ___) and why.
-- Bullet 2: the clearest “swing skill” / development lever that would raise the level.
-- Bullet 3: realistic usage recommendation (starter/rotation/specialist) AND the game state where they help most
-  (protecting a lead, chasing, vs high press, vs low block, etc.).
-- Keep these punchy but specific.
+- Bullet 1 must cover best-fit roles + system and why (but WITHOUT labeling it).
+- Bullet 2 must cover the clearest development lever / swing skill (but WITHOUT labeling it).
+- Bullet 3 must cover realistic usage recommendation + best game state match (but WITHOUT labeling it).
 
 Rules:
 - Do NOT invent precise numeric stats that are not present in the provided documents.
