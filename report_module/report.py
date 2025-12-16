@@ -20,8 +20,9 @@ CHAT_LLM = ChatDeepSeek(model="deepseek-chat", temperature=0.3)
 
 _report_prompt = ChatPromptTemplate.from_messages([
     ("system", report_system_prompt),
-    ("human", "{input_text}")
+    ("human", "lang: {lang}\n\n{input_text}")
 ])
+
 
 report_chain = _report_prompt | CHAT_LLM | StrOutputParser()
 
@@ -204,7 +205,8 @@ def generate_report_content(
     player_card = build_player_card_from_docs(docs)
 
     input_text = _build_llm_input(player_card, docs)
-    report_text = (report_chain.invoke({"input_text": input_text}) or "").strip()
+    print(lang)
+    report_text = (report_chain.invoke({"input_text": input_text, "lang": lang}) or "").strip()
 
     content_json = {
         "favorite_player_id": favorite_id,
