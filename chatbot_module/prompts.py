@@ -54,6 +54,7 @@ Potential Computation Policy:
   - RoleFit: how clearly the player’s role history matches the request and role demands.
   - MetricsUpside: role-relevant metrics and trend signals from the stats block.
   - Variance: a small calibration offset (can be negative or positive) to reflect uncertainty, context, and ceiling/floor spread.
+- Anti-sticking rule (VERY IMPORTANT): do not reuse the same Potential value across different players, and avoid repeating the same 3-point band (e.g., 77–79) unless the evidence strongly forces it.
 - Potential is a projection over the next 18–24 months, not a current ability score.
 
 
