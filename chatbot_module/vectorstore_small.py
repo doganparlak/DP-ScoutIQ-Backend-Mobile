@@ -46,13 +46,6 @@ class SupabaseRPCRetriever(BaseRetriever):
             return []
 
         try:
-            # --- Approximate embedding cost for search query ---
-            #q_tokens = _estimate_tokens(q)
-            #q_cost = q_tokens * EMBEDDING_PRICE_PER_TOKEN
-            #print(
-            #    "[COST] Search embeddings (text-embedding-3-small) approx: "
-            #    f"tokens={q_tokens}, cost≈${q_cost:.8f}, query={q[:80]!r}"
-            #)
             # 1) embed query
             q_vec = emb.embed_query(q)
 
@@ -66,7 +59,6 @@ class SupabaseRPCRetriever(BaseRetriever):
                 },
             ).execute()
         except Exception as e:
-            print(f"[SupabaseRPCRetriever] RPC error: {e}")
             return []
 
         rows = getattr(resp, "data", None) or []

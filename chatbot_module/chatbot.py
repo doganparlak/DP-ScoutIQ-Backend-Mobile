@@ -38,18 +38,6 @@ from chatbot_module.tools_extensions import (
     build_player_payload_new
 )
 
-DEEPSEEK_INPUT_PRICE_PER_TOKEN = 0.28 / 1_000_000.0   # $0.28 / 1M input
-DEEPSEEK_OUTPUT_PRICE_PER_TOKEN = 0.42 / 1_000_000.0  # $0.42 / 1M output
-
-def estimate_tokens(text: str) -> int:
-    """
-    Very rough token estimator: ~4 characters per token.
-    This is approximate but good enough for ballpark cost logging.
-    """
-    if not text:
-        return 0
-    return max(1, len(text) // 4)
-
 # === Load Vectorstore ===
 from chatbot_module.vectorstore_small import get_retriever
 # === QA Chain with RAG & Memory ===
@@ -95,31 +83,9 @@ def translate_to_english_if_needed(text: Optional[str], lang: str) -> str:
     if not is_turkish(lang):  # <--- prevent translation unless TR
         return original
     try:
-        # Approximate token/cost: system prompt + user text as input,
-        # translated text as output.
-        #translate_input_text = translate_tr_to_en_system_message + "\n\n" + original
-        #tr_in_tokens = estimate_tokens(translate_input_text)
-
         translated = translate_chain.invoke({"text": original}).strip()
-
-        #tr_out_tokens = estimate_tokens(translated)
-        #tr_cost = (
-        #    tr_in_tokens * DEEPSEEK_INPUT_PRICE_PER_TOKEN
-        #    + tr_out_tokens * DEEPSEEK_OUTPUT_PRICE_PER_TOKEN
-        #)
-
-        #print("[TRANSLATE] original:", original)
-        #print("[TRANSLATE] translated:", translated)
-        #print(
-        #    "[COST] Translate TR->EN approx: "
-        #    f"input_tokens={tr_in_tokens}, output_tokens={tr_out_tokens}, "
-        #    f"cost≈${tr_cost:.8f}"
-        #)
-
         return translated or original
     except Exception as e:
-        # print("[TRANSLATE] error:", e)
-        # Fallback: use original if translation fails
         return original
 
 
@@ -209,7 +175,6 @@ def answer_question(
     # 5) Intent hint — ONLY entity resolution (seen name), no keyword lists
     q_lower = (question or "").lower()
     mentions_seen_by_name = any(n and n in q_lower for n in seen_list_lower)
-    # We do not enumerate any “another/alternative” words.
     # Let the LLM infer intent semantically using the preamble rules.
     if mentions_seen_by_name:
         intent_nudge = (
@@ -242,25 +207,6 @@ def answer_question(
     try:
         result = qa_chain.invoke(inputs)
         base_answer = (result.get("answer") or "").strip()
-
-        # --- Approximate chat LLM cost (DeepSeek) ---
-        #source_docs = result.get("source_documents") or []
-        #context_text = "\n\n".join(
-        #    getattr(doc, "page_content", "") or "" for doc in source_docs
-        #)
-        #chat_input_text = augmented_question + "\n\n" + context_text
-        #chat_in_tokens = estimate_tokens(chat_input_text)
-        #chat_out_tokens = estimate_tokens(base_answer)
-        #chat_cost = (
-        #    chat_in_tokens * DEEPSEEK_INPUT_PRICE_PER_TOKEN +
-        #    chat_out_tokens * DEEPSEEK_OUTPUT_PRICE_PER_TOKEN
-        #)
-        #print(
-        #    "[COST] Chat (DeepSeek) approx: "
-        #    f"input_tokens={chat_in_tokens}, output_tokens={chat_out_tokens}, "
-        #    f"cost≈${chat_cost:.8f}"
-        #)
-
         append_chat_message(db, session_id, "human", question or "")
         append_chat_message(db, session_id, "ai", base_answer)
     except Exception as e:
@@ -275,34 +221,10 @@ def answer_question(
     try:
         qa_as_report = f"**Statistical Highlights**\n\n{base_answer}\n\n"
         parsed_stats = parse_statistical_highlights(stats_parser_chain, qa_as_report)
-        #stats_in_tokens = estimate_tokens(qa_as_report)
-        #stats_out_tokens = estimate_tokens(str(parsed_stats))
-        #stats_cost = (
-        #    stats_in_tokens * DEEPSEEK_INPUT_PRICE_PER_TOKEN +
-        #    stats_out_tokens * DEEPSEEK_OUTPUT_PRICE_PER_TOKEN
-        #)
-        #print(
-        #    "[COST] Stats parser (DeepSeek) approx: "
-        #    f"input_tokens={stats_in_tokens}, output_tokens={stats_out_tokens}, "
-        #    f"cost≈${stats_cost:.8f}"
-        #)
-        #meta = parse_player_meta(meta_parser_chain, raw_text=base_answer)
         meta = parse_player_meta_new(meta_parser_chain, raw_text=base_answer)
-        #meta_in_tokens = estimate_tokens(base_answer)
-        #meta_out_tokens = estimate_tokens(str(meta))
-        #meta_cost = (
-        #    meta_in_tokens * DEEPSEEK_INPUT_PRICE_PER_TOKEN +
-        #    meta_out_tokens * DEEPSEEK_OUTPUT_PRICE_PER_TOKEN
-        #)
-        #print(
-        #    "[COST] Meta parser (DeepSeek) approx: "
-        #    f"input_tokens={meta_in_tokens}, output_tokens={meta_out_tokens}, "
-        #    f"cost≈${meta_cost:.8f}"
-        #)
         # Keep only NEW players for data payload (so cards/plots are printed once per player)
         meta_new, stats_new, new_names = filter_players_by_seen(meta, parsed_stats, seen_players)
         # Build structured data for NEW players only (no HTML/PNGs)
-        #payload = build_player_payload(meta_new, stats_new) if new_names else {"players": []}
         payload = build_player_payload_new(meta_new, stats_new) if new_names else {"players": []}
         # Strip flagged/meta/stats text from the narrative; keep only analysis
         known_names = [p.get("name") for p in (meta.get("players") or []) if p.get("name")]
@@ -312,31 +234,11 @@ def answer_question(
         session_lang = lang
         if is_turkish(session_lang):
             try:
-                # Approximate token/cost: system prompt + English narrative as input,
-                # Turkish narrative as output.
-                #translate_out_input = translate_en_to_tr_system_message + "\n\n" + out
-                #out_in_tokens = estimate_tokens(translate_out_input)
-
                 translated_out = output_tr_translate_chain.invoke({"text": out}).strip()
-
-                #out_out_tokens = estimate_tokens(translated_out)
-                #out_cost = (
-                #    out_in_tokens * DEEPSEEK_INPUT_PRICE_PER_TOKEN
-                #    + out_out_tokens * DEEPSEEK_OUTPUT_PRICE_PER_TOKEN
-                #)
-
-                #print("[OUT-TRANSLATE] EN -> TR:", translated_out)
-                #print(
-                #    "[COST] Translate EN->TR approx: "
-                #    f"input_tokens={out_in_tokens}, output_tokens={out_out_tokens}, "
-                #    f"cost≈${out_cost:.8f}"
-                #)
-
                 if translated_out:
                     out = translated_out
             except Exception as e:
-                print("[OUT-TRANSLATE] error:", e)
-                # Fallback: keep English if translation fails
+                pass
 
         return {"answer": out, "data": payload}
 

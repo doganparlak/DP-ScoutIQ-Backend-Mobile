@@ -111,7 +111,6 @@ def verify_ios_subscription(
         )
        
     except APIException as e:
-        print("[subscriptions] App Store Server API error:", e)
         return False, now, False
     
     latest_expires_at: Optional[dt.datetime] = None
@@ -143,7 +142,6 @@ def verify_ios_subscription(
                     int(expires_ms) / 1000.0, tz=dt.timezone.utc
                 )
             except Exception as e:
-                print("[subscriptions] bad expiresDate in tx:", e, decoded_tx)
                 continue
             
             if latest_expires_at is None or expires_at > latest_expires_at:
@@ -246,7 +244,6 @@ def run_subscription_sync(db: Session):
             WHERE subscription_external_id IS NOT NULL
         """)
     ).mappings().all()
-    print("ROWS FETCHED FOR SUBSCRIPTION SYNC:", len(rows))
     now = dt.datetime.now(dt.timezone.utc)
 
     for r in rows:

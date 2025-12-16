@@ -340,7 +340,6 @@ def send_reachout_email(user_email: str, note: str) -> None:
         server.starttls()
         server.login(se, spw)
         server.sendmail(se, se, msg.as_string())
-        #print(f"[mail] reachout from {user_email} sent to {se}")
     except Exception as e:
         pass
     finally:
@@ -383,7 +382,6 @@ def send_email_code(receiver_email: str, code: str, mail_type: str) -> None:
         server.starttls()
         server.login(se, spw)
         server.sendmail(se, receiver_email, msg.as_string())
-        #print(f"[mail] sent {mail_type} code to {receiver_email}")
     except Exception as e:
         pass
     finally:

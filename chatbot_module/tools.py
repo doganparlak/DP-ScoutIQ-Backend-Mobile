@@ -1,9 +1,7 @@
 import re
-import io
-import base64
 import json
 import math
-from typing import Dict, List, Any, Tuple, Iterable, Optional
+from typing import Dict, Any, Tuple, Iterable, Optional
 import matplotlib.pyplot as plt
 
 LANG_DIRECTIVES = {
@@ -130,12 +128,9 @@ def parse_statistical_highlights(stats_parser_chain, report_text: str) -> Dict[s
     try:
         raw = stats_parser_chain.invoke({"report_text": safe})
     except Exception as e:
-        # Log and fall back
-        print("[parse_statistical_highlights] LLM invoke error:", repr(e))
         return {"players": []}
     
     if raw is None:
-        print("raw returned none.")
         return {"players": []}
     
     def safe_json_load(s: str) -> Dict[str, Any]:
