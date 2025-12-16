@@ -71,10 +71,10 @@ Component guidance (aim for wider spread; avoid clustering):
   Pick within the range based on role demand + athletic indicators in the provided info.
 
 - RoleFit (0–22): pick ONE tier only (discrete tiers, no in-betweens):
-  4 = weak fit, 9 = partial fit, 14 = solid fit, 18 = strong fit, 22 = elite/clear fit.
+  (0-4) = weak fit, (5-9) = partial fit, (10-14) = solid fit, (15-18) = strong fit, (19-22) = elite/clear fit.
 
 - MetricsUpside (0–30): score using discrete tiers based on how many role-relevant metrics are clearly strong vs. weak:
-  6 = thin/neutral, 12 = some positives, 18 = clearly positive, 24 = standout, 30 = exceptional.
+  (0-6) = thin/neutral, (7-12) = some positives, (13-18) = clearly positive, (19-24) = standout, (25-30) = exceptional.
   Use trend/consistency cues if available, but never mention sample size.
 
 Variance & Anti-stick (forces variation):
