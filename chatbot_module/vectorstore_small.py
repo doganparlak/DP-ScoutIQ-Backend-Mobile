@@ -51,7 +51,7 @@ class SupabaseRPCRetriever(BaseRetriever):
 
             # 2) call Postgres function on documents
             resp = self.client.rpc(
-                "match_documents",
+                "match_document",
                 {
                     "query_embedding": q_vec,
                     "match_count": self.k,
@@ -104,7 +104,7 @@ def get_retriever(
     """
     Public factory to get a retriever instance.
     `filter` is a JSON-like dict that will be passed as the `filter` argument
-    to the match_documents SQL function, applied on metadata.
+    to the match_document SQL function, applied on metadata.
     """
     return SupabaseRPCRetriever(
         client=supabase,
