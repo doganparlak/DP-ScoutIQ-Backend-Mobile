@@ -23,7 +23,7 @@ OPENAI_API_KEY = os.environ["OPENAI_API_KEY"]   # used implicitly by langchain_o
 
 supabase: Client = create_client(SUPABASE_URL, SUPABASE_KEY)
 
-# Smaller, cheaper embedding model – must match documents_v5 + SQL function
+# Smaller, cheaper embedding model – must match documents + SQL function
 emb = OpenAIEmbeddings(
     model="text-embedding-3-small",
     dimensions=1536,
@@ -49,9 +49,9 @@ class SupabaseRPCRetriever(BaseRetriever):
             # 1) embed query
             q_vec = emb.embed_query(q)
 
-            # 2) call Postgres function on documents_v5
+            # 2) call Postgres function on documents
             resp = self.client.rpc(
-                "match_documents_v5",
+                "match_documents",
                 {
                     "query_embedding": q_vec,
                     "match_count": self.k,
@@ -104,7 +104,7 @@ def get_retriever(
     """
     Public factory to get a retriever instance.
     `filter` is a JSON-like dict that will be passed as the `filter` argument
-    to the match_documents_v5 SQL function, applied on metadata.
+    to the match_documents SQL function, applied on metadata.
     """
     return SupabaseRPCRetriever(
         client=supabase,
