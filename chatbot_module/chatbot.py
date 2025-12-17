@@ -218,6 +218,7 @@ def answer_question(
 
     # 6) Parse current answer into meta/stats
     out = base_answer
+    print(out)
     try:
         qa_as_report = f"**Statistical Highlights**\n\n{base_answer}\n\n"
         parsed_stats = parse_statistical_highlights(stats_parser_chain, qa_as_report)

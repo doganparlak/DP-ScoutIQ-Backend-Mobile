@@ -55,7 +55,7 @@ class SupabaseRPCRetriever(BaseRetriever):
                 {
                     "query_embedding": q_vec,
                     "match_count": self.k,
-                    "filter": self.metadata_filter or {},
+                    "filter": self.metadata_filter,
                 },
             ).execute()
         except Exception as e:
