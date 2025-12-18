@@ -186,7 +186,7 @@ def fetch_player_nonzero_stats(
     limit_docs: int = 250
 ) -> List[Dict[str, Any]]:
     """
-    1) Broad candidate search in `document`
+    1) Broad candidate search in `player_data`
     2) Score candidates to select best player_key
     3) Fetch docs for player_key and collect metadata stats
     4) Filter out stats that are zero
@@ -201,7 +201,7 @@ def fetch_player_nonzero_stats(
     print(name_q, team, nat)
     rows = db.execute(text("""
         SELECT id, metadata
-        FROM document
+        FROM player_data
         WHERE
           (
             (metadata->>'player_name') ILIKE :name_q
@@ -229,6 +229,7 @@ def fetch_player_nonzero_stats(
         "nat_q":  (f"%{nat.strip()}%"  if isinstance(nat, str) and nat.strip() else None),
         "lim": int(limit_docs),
     }).mappings().all()
+    print("ROWS")
     print(rows)
     if not rows:
         return []
@@ -254,7 +255,7 @@ def fetch_player_nonzero_stats(
     # fetch all docs for that player_key
     docs = db.execute(text("""
         SELECT id, metadata
-        FROM document
+        FROM player_data
         WHERE
           (metadata->>'player_key') = :pk
           OR (
