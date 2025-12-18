@@ -26,7 +26,6 @@ from chatbot_module.prompts import (
 )
 from chatbot_module.tools import (
     get_seen_players_from_history, 
-    parse_statistical_highlights,
     filter_players_by_seen,
     strip_meta_stats_text,
     compose_selection_preamble,
@@ -198,7 +197,7 @@ def answer_question(
     if mentions_seen_by_name:
         intent_nudge = (
             "Intent: the user referenced a previously seen player by name. "
-            "Do NOT print any PLAYER_PROFILE/PLAYER_STATS blocks. "
+            "Do NOT print any PLAYER_PROFILE blocks. "
             "Refer back to earlier blocks and provide narrative only.\n\n"
         )
     else:
@@ -212,10 +211,6 @@ def answer_question(
         "When nationality is unspecified, treat it as 'unspecified' and select solely on role fit/history and performance.\n\n"
     )
     preamble_text = preamble + no_nationality_bias + intent_nudge
-    docs = SHARED_RETRIEVER._get_relevant_documents(translated_question)
-    #print("RETRIEVED DOCS:", [(d.metadata.get("player_name"), d.metadata.get("team_name"), d.metadata.get("distance")) for d in docs[:3]])
-    #print("TOP DOC CONTENT:\n", docs[0].page_content[:500] if docs else "NONE")
-
     qa_chain = create_qa_chain(
         lang=lang,
         history_rows=history_rows,
@@ -245,19 +240,23 @@ def answer_question(
     out = base_answer
     print(out)
     try:
-        qa_as_report = f"**Statistical Highlights**\n\n{base_answer}\n\n"
-        parsed_stats = parse_statistical_highlights(stats_parser_chain, qa_as_report)
-        print(parsed_stats)
         meta = parse_player_meta_new(meta_parser_chain, raw_text=base_answer)
+        print("META")
+        print(meta)
         # Keep only NEW players for data payload (so cards/plots are printed once per player)
-        meta_new, stats_new, new_names = filter_players_by_seen(meta, parsed_stats, seen_players)
+        meta_new, new_names = filter_players_by_seen(meta, seen_players)
+        print("META NEW")
+        print(meta_new)
         # Build structured data for NEW players only (no HTML/PNGs)
-        payload = build_player_payload_new(meta_new, stats_new) if new_names else {"players": []}
+        payload = build_player_payload_new(meta_new) if new_names else {"players": []}
+        print("PAYLOAD")
+        print(payload)
         # Strip flagged/meta/stats text from the narrative; keep only analysis
         known_names = [p.get("name") for p in (meta.get("players") or []) if p.get("name")]
         cleaned = strip_meta_stats_text(base_answer, known_names=known_names)
         out = cleaned
-
+        print("OUT")
+        print(out)
         session_lang = lang
         if is_turkish(session_lang):
             try:

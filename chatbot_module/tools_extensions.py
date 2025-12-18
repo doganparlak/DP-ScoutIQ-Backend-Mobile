@@ -149,16 +149,13 @@ def build_player_payload_new(meta: Dict[str, Any], stats: Dict[str, Any]) -> Dic
     gender, height, weight, nationality, team, match_count, roles, potential.
     """
     meta_by = { (p["name"]).strip(): p for p in meta.get("players", []) if p.get("name") }
-    stats_by = { (p["name"]).strip(): p for p in stats.get("players", []) if p.get("name") }
 
-    names = sorted(set(meta_by.keys()) | set(stats_by.keys()))
+    names = sorted(set(meta_by.keys()))
 
     output = {"players": []}
 
     for name in names:
         m = meta_by.get(name, {})
-        s = stats_by.get(name, {})
-
         output["players"].append({
             "name": name,
             "meta": {
@@ -172,7 +169,6 @@ def build_player_payload_new(meta: Dict[str, Any], stats: Dict[str, Any]) -> Dic
                 "roles": m.get("roles") or [],
                 "potential": m.get("potential"),
             },
-            "stats": s.get("stats") or []
         })
 
     return output

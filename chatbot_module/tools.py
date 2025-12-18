@@ -169,7 +169,7 @@ def parse_statistical_highlights(stats_parser_chain, report_text: str) -> Dict[s
 
 # === FILTER SEEN PLAYERS TOOL ===
 
-def filter_players_by_seen(meta: Dict[str, Any], stats: Dict[str, Any], seen_names: set[str]):
+def filter_players_by_seen(meta: Dict[str, Any], seen_names: set[str]):
     """
     Keep only players NOT already in 'seen_names'.
     Returns (filtered_meta, filtered_stats, new_player_names_set).
@@ -180,18 +180,15 @@ def filter_players_by_seen(meta: Dict[str, Any], stats: Dict[str, Any], seen_nam
     seen_norm = {norm(n) for n in (seen_names or set())}
 
     meta_players = meta.get("players") or []
-    stats_players = stats.get("players") or []
 
     # All names in current answer
     current_names = {norm(p.get("name") or "") for p in meta_players if p.get("name")}
-    current_names.update({norm(p.get("name") or "") for p in stats_players if p.get("name")})
 
     new_names = {n for n in current_names if n and n not in seen_norm}
 
     filt_meta = {"players": [p for p in meta_players if norm(p.get("name") or "") in new_names]}
-    filt_stats = {"players": [p for p in stats_players if norm(p.get("name") or "") in new_names]}
 
-    return filt_meta, filt_stats, new_names
+    return filt_meta, new_names
 
 # === STRIP META STATS TEXT TOOL ===
 
@@ -251,33 +248,13 @@ def strip_meta_stats_text(text: str, known_names: list[str] | None = None) -> st
                 if META_LINE_RE.match(lines[j]):
                     saw_meta = True
                 j += 1
-            saw_stats = False
-            k = i + 1
-            while k < n and lines[k].strip() == "":
-                k += 1
-            if k < n and STATS_HEADER_RE.match(lines[k]):
-                saw_stats = True
-            if saw_meta or saw_stats:
+            if saw_meta:
                 i += 1
                 continue  # skip the header line itself
 
         # Remove meta bullet lines
         if META_LINE_RE.match(line):
             i += 1
-            continue
-
-        # Remove standalone Performance Statistics block
-        if STATS_HEADER_RE.match(line):
-            i += 1
-            while i < n:
-                nxt = lines[i]
-                if not nxt.strip():
-                    i += 1
-                    continue
-                if STATS_ITEM_RE.match(nxt):
-                    i += 1
-                    continue
-                break
             continue
 
         out.append(line)
