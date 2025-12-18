@@ -223,6 +223,10 @@ def answer_question(
         + translated_question
     )
     preamble_text = preamble + no_nationality_bias + intent_nudge
+    docs = SHARED_RETRIEVER.get_relevant_documents(translated_question)
+    print("RETRIEVED DOCS:", [(d.metadata.get("player_name"), d.metadata.get("team_name"), d.metadata.get("distance")) for d in docs[:3]])
+    print("TOP DOC CONTENT:\n", docs[0].page_content[:500] if docs else "NONE")
+
     qa_chain = create_qa_chain(
         lang=lang,
         history_rows=history_rows,
