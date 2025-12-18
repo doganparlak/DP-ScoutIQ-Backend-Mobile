@@ -139,8 +139,9 @@ def parse_statistical_highlights(stats_parser_chain, report_text: str) -> Dict[s
         except Exception:
             return {}
 
+    print(safe)
     data = safe_json_load(raw)
-
+    print(data)
     # If LLM JSON is good, normalize and return
     if isinstance(data, dict) and isinstance(data.get("players"), list):
         # Normalize numeric values if they come as strings

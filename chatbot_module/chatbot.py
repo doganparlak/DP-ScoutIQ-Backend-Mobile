@@ -176,9 +176,6 @@ def answer_question(
 
     # A) get lang + history first
     lang, history_rows = get_session_state(session_id)
-    print("SESSION STATE FETCHED")
-    print(lang)
-    print(history_rows)
     # B) build a temporary memory for “seen players” from history_rows
     ai_msgs: List[AIMessage] = []
     for row in history_rows:
@@ -192,10 +189,8 @@ def answer_question(
     print(seen_list_lower)
     # 3) Build selection preamble (semantic, no keyword parsing)
     preamble = compose_selection_preamble(seen_players, strategy)
-    print("PREAMBLE OBTAINED")
     # 4) Translate user question to English if needed (TR -> EN, EN passthrough)
     translated_question = translate_to_english_if_needed(question or "", lang)
-    print("TRANSLATED")
     # 5) Intent hint — ONLY entity resolution (seen name), no keyword lists
     q_lower = (question or "").lower()
     mentions_seen_by_name = any(n and n in q_lower for n in seen_list_lower)
@@ -216,14 +211,6 @@ def answer_question(
         "Do NOT infer or prefer a player's nationality from the interface or query language.\n"
         "When nationality is unspecified, treat it as 'unspecified' and select solely on role fit/history and performance.\n\n"
     )
-    print("PREPATE INPUT STARTS")
-    augmented_question = (
-        preamble
-        + no_nationality_bias
-        + intent_nudge
-        + "Question: "
-        + translated_question
-    )
     preamble_text = preamble + no_nationality_bias + intent_nudge
     docs = SHARED_RETRIEVER._get_relevant_documents(translated_question)
     print("RETRIEVED DOCS:", [(d.metadata.get("player_name"), d.metadata.get("team_name"), d.metadata.get("distance")) for d in docs[:3]])
@@ -235,7 +222,6 @@ def answer_question(
         strategy=strategy,
         preamble_text=preamble_text
     )
-    print("CHAIN CREATED")
     retrieval_query = translated_question    
     # 6) LLM Call
     inputs = {
@@ -245,7 +231,6 @@ def answer_question(
     try:
         result = qa_chain.invoke(inputs)
         base_answer = (result.get("answer") or "").strip()
-        print("ANSWER OBTAINED")
         append_chat_message(db, session_id, "human", question or "")
         append_chat_message(db, session_id, "ai", base_answer)
     except Exception as e:
@@ -262,6 +247,7 @@ def answer_question(
     try:
         qa_as_report = f"**Statistical Highlights**\n\n{base_answer}\n\n"
         parsed_stats = parse_statistical_highlights(stats_parser_chain, qa_as_report)
+        print(parsed_stats)
         meta = parse_player_meta_new(meta_parser_chain, raw_text=base_answer)
         # Keep only NEW players for data payload (so cards/plots are printed once per player)
         meta_new, stats_new, new_names = filter_players_by_seen(meta, parsed_stats, seen_players)
