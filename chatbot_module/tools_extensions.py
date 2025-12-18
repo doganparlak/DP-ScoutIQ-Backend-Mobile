@@ -1,6 +1,9 @@
-from typing import Dict, Any
+from typing import Any, Dict, List, Optional, Tuple
+from sqlalchemy import text
 import re
 import json
+from report_module.utilities import _score_candidate, _extract_player_group_key, _num, _norm
+from api_module.utilities import get_db 
 
 PROFILE_BLOCK_RE = re.compile(
     r"""
@@ -142,33 +145,194 @@ def parse_player_meta_new(meta_parser_chain, raw_text: str) -> Dict[str, Any]:
 
     return {"players": players_out}
 
+def _extract_stats_from_doc_meta(doc_meta: Dict[str, Any]) -> List[Dict[str, Any]]:
+    """
+    Assumption: stats are stored in metadata under key 'stats' as a list[dict].
+    If your schema differs, adapt this function.
+    """
+    stats = doc_meta.get("stats")
+    if isinstance(stats, list):
+        return [s for s in stats if isinstance(s, dict)]
+    return []
+
+
+def _is_non_zero_stat(stat: Dict[str, Any]) -> bool:
+    """
+    Keeps stat entries that have at least one numeric field that is non-zero.
+    Common shapes:
+      {"name": "...", "value": 0.12}
+      {"stat": "...", "per90": 0.3, "percentile": 0}
+    """
+    # if there's an explicit 'value'
+    if "value" in stat:
+        v = _num(stat.get("value"))
+        return (v is not None) and (abs(v) > 0.0)
+
+    # otherwise scan numeric-ish fields
+    for k, v in stat.items():
+        if k in ("name", "stat", "label", "group", "unit", "season", "competition"):
+            continue
+        nv = _num(v)
+        if nv is not None and abs(nv) > 0.0:
+            return True
+
+    return False
+
+
+def fetch_player_nonzero_stats(
+    db,
+    player_identity: Dict[str, Any],
+    limit_docs: int = 250
+) -> List[Dict[str, Any]]:
+    """
+    1) Broad candidate search in `document`
+    2) Score candidates to select best player_key
+    3) Fetch docs for player_key and collect metadata stats
+    4) Filter out stats that are zero
+    """
+    name = player_identity.get("name")
+    if not name or not str(name).strip():
+        return []
+
+    name_q = f"%{str(name).strip()}%"
+    team = player_identity.get("team")
+    nat  = player_identity.get("nationality")
+
+    rows = db.execute(text("""
+        SELECT id, metadata
+        FROM document
+        WHERE
+          (
+            (metadata->>'player_name') ILIKE :name_q
+            OR (metadata->>'name') ILIKE :name_q
+            OR (metadata->>'player') ILIKE :name_q
+            OR (content ILIKE :name_q)
+          )
+          AND (
+            :team_q IS NULL
+            OR (metadata->>'team_name') ILIKE :team_q
+            OR (metadata->>'team') ILIKE :team_q
+            OR (content ILIKE :team_q)
+          )
+          AND (
+            :nat_q IS NULL
+            OR (metadata->>'nationality_name') ILIKE :nat_q
+            OR (metadata->>'nationality') ILIKE :nat_q
+            OR (content ILIKE :nat_q)
+          )
+        ORDER BY id DESC
+        LIMIT :lim
+    """), {
+        "name_q": name_q,
+        "team_q": (f"%{team.strip()}%" if isinstance(team, str) and team.strip() else None),
+        "nat_q":  (f"%{nat.strip()}%"  if isinstance(nat, str) and nat.strip() else None),
+        "lim": int(limit_docs),
+    }).mappings().all()
+
+    if not rows:
+        return []
+
+    # pick best player_key
+    best: Tuple[float, Optional[str]] = (-1.0, None)
+    for r in rows:
+        meta = r.get("metadata") or {}
+        sc = _score_candidate(meta, player_identity)
+        key = _extract_player_group_key(meta)
+        if key and sc > best[0]:
+            best = (sc, key)
+
+    best_key = best[1]
+    if not best_key:
+        # fallback: try extracting stats directly from the broad rows
+        raw_stats: List[Dict[str, Any]] = []
+        for r in rows:
+            doc_meta = r.get("metadata") or {}
+            raw_stats.extend(_extract_stats_from_doc_meta(doc_meta))
+        return [s for s in raw_stats if _is_non_zero_stat(s)]
+
+    # fetch all docs for that player_key
+    docs = db.execute(text("""
+        SELECT id, metadata
+        FROM document
+        WHERE
+          (metadata->>'player_key') = :pk
+          OR (
+            :pk LIKE '%|%'
+            AND (metadata->>'player_name') IS NOT NULL
+            AND (metadata->>'team_name') IS NOT NULL
+            AND ((metadata->>'player_name') || '|' || (metadata->>'team_name')) = :pk
+          )
+        ORDER BY id DESC
+        LIMIT :lim
+    """), {"pk": best_key, "lim": int(limit_docs)}).mappings().all()
+
+    raw_stats: List[Dict[str, Any]] = []
+    for d in docs:
+        doc_meta = d.get("metadata") or {}
+        raw_stats.extend(_extract_stats_from_doc_meta(doc_meta))
+
+    # non-zero filter
+    nonzero = [s for s in raw_stats if _is_non_zero_stat(s)]
+
+    # optional: de-dupe by stat name/label if present
+    seen = set()
+    deduped: List[Dict[str, Any]] = []
+    for s in nonzero:
+        key = _norm(str(s.get("name") or s.get("stat") or s.get("label") or "")) or None
+        if key and key in seen:
+            continue
+        if key:
+            seen.add(key)
+        deduped.append(s)
+
+    return deduped
 
 def build_player_payload_new(meta: Dict[str, Any]) -> Dict[str, Any]:
     """
     Extended payload builder that exposes the new meta fields:
     gender, height, weight, nationality, team, match_count, roles, potential.
+    PLUS: fetch non-zero stats from DB and attach as `stats`.
     """
-    meta_by = { (p["name"]).strip(): p for p in meta.get("players", []) if p.get("name") }
-
+    meta_by = {(p["name"]).strip(): p for p in meta.get("players", []) if p.get("name")}
     names = sorted(set(meta_by.keys()))
-
     output = {"players": []}
 
-    for name in names:
-        m = meta_by.get(name, {})
-        output["players"].append({
-            "name": name,
-            "meta": {
+    db = get_db()
+    try:
+        for name in names:
+            m = meta_by.get(name, {}) or {}
+
+            # identity used for matching docs
+            player_identity = {
+                "name": name,
+                "team": m.get("team"),
+                "nationality": m.get("nationality"),
                 "gender": m.get("gender"),
+                "age": m.get("age"),
                 "height": m.get("height"),
                 "weight": m.get("weight"),
-                "nationality": m.get("nationality"),
-                "team": m.get("team"),
-                "match_count": m.get("match_count"),
-                "age": m.get("age"),
-                "roles": m.get("roles") or [],
-                "potential": m.get("potential"),
-            },
-        })
+            }
 
-    return output
+            # DB step: fetch player's non-zero stats
+            stats = fetch_player_nonzero_stats(db, player_identity)  # <- new step
+            print("STATS")
+            print(stats)
+            output["players"].append({
+                "name": name,
+                "meta": {
+                    "gender": m.get("gender"),
+                    "height": m.get("height"),
+                    "weight": m.get("weight"),
+                    "nationality": m.get("nationality"),
+                    "team": m.get("team"),
+                    "match_count": m.get("match_count"),
+                    "age": m.get("age"),
+                    "roles": m.get("roles") or [],
+                    "potential": m.get("potential"),
+                },
+                "stats": stats or []   # <- bring back old section
+            })
+
+        return output
+    finally:
+        db.close()
