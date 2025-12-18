@@ -42,6 +42,8 @@ from chatbot_module.tools_extensions import (
 from chatbot_module.vectorstore_small import get_retriever
 # === QA Chain with RAG & Memory ===
 
+
+
 CHAT_LLM = ChatDeepSeek(
     model="deepseek-chat",
     temperature=0.3,

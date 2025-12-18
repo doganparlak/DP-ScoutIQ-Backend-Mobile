@@ -27,7 +27,7 @@ _report_prompt = ChatPromptTemplate.from_messages([
 report_chain = _report_prompt | CHAT_LLM | StrOutputParser()
 
 # -----------------------------
-# documents_v4 fetch
+# document fetch
 # -----------------------------
 
 def fetch_docs_for_favorite(
@@ -52,7 +52,7 @@ def fetch_docs_for_favorite(
     # Broad candidate search (JSONB metadata preferred; fallback to content ILIKE)
     rows = db.execute(text("""
         SELECT id, content, metadata
-        FROM documents_v4
+        FROM document
         WHERE
           (
             (metadata->>'player_name') ILIKE :name_q
@@ -103,7 +103,7 @@ def fetch_docs_for_favorite(
     # Fetch docs for that player_key (or our fallback key)
     docs = db.execute(text("""
         SELECT id, content, metadata
-        FROM documents_v4
+        FROM document
         WHERE
           (metadata->>'player_key') = :pk
           OR (
