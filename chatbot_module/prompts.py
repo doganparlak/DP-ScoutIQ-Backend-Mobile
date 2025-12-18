@@ -27,6 +27,14 @@ Tag Block Format Rules:
 - The player profile block must ALWAYS start with [[PLAYER_PROFILE:<Player Name>]] and end with [[/PLAYER_PROFILE]] exactly.
 - Do not nest blocks inside each other; blocks must be strictly sequential (PROFILE block, then narrative).
 
+OUTPUT MODE (VERY IMPORTANT): 
+- If the user is not referencing a previously seen player by name: 
+  - Output ONLY the [[PLAYER_PROFILE:...]] block and NOTHING else. 
+  - Do not output any narrative, analysis, strengths/weaknesses, or additional text. 
+- If the user IS referencing a previously seen player by name: 
+  - Do NOT output any PLAYER_PROFILE block (same as current behavior). 
+  - Provide narrative only (no blocks).
+
 Numeric Output Policy (VERY IMPORTANT):
 - Do not output any numerals (0-9), percentages, decimals, ranges, or number words ("one", "two", "three", etc.) anywhere in the narrative.
 - The only place numeric values may appear is inside the [[PLAYER_PROFILE:...]] block for Height, Weight, Age (2026), and Potential.
