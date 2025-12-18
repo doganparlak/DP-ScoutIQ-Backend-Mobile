@@ -8,6 +8,7 @@ from langchain_classic.chains import ConversationalRetrievalChain
 from langchain_core.messages import AIMessage, HumanMessage
 from langchain_core.output_parsers import StrOutputParser
 import warnings
+import json
 warnings.filterwarnings("ignore", category=DeprecationWarning, module="langchain")
 
 
@@ -21,7 +22,8 @@ from chatbot_module.prompts import (
     system_message,
     meta_parser_system_prompt,
     translate_tr_to_en_system_message,
-    translate_en_to_tr_system_message
+    translate_en_to_tr_system_message,
+    interpretation_system_prompt
 )
 from chatbot_module.tools import (
     get_seen_players_from_history, 
@@ -155,6 +157,19 @@ output_tr_translate_prompt = ChatPromptTemplate.from_messages([
 ])
 output_tr_translate_chain = output_tr_translate_prompt | TRANSLATE_LLM | StrOutputParser()
 
+# ==== Interpratation =====
+interpretation_prompt = ChatPromptTemplate.from_messages([
+    ("system", interpretation_system_prompt),
+    ("human",
+     "Question:\n{question}\n\n"
+     "Player profile:\n{profile_json}\n\n"
+     "Stats (metric/value pairs):\n{stats_json}\n\n"
+     "Write exactly 3 sentences."
+    )
+])
+
+interpretation_chain = interpretation_prompt | CHAT_LLM | StrOutputParser()
+
 
 # ===== Q&A Actions =====
 def answer_question(
@@ -241,14 +256,34 @@ def answer_question(
         payload = build_player_payload_new(meta_new) if new_names else {"players": []}
         print("PAYLOAD")
         print(payload)
-        # Strip flagged/meta/stats text from the narrative; keep only analysis
-        known_names = [p.get("name") for p in (meta.get("players") or []) if p.get("name")]
-        cleaned = strip_meta_stats_text(base_answer, known_names=known_names)
-        out = cleaned
-        print("OUT")
-        print(out)
-        session_lang = lang
-        if is_turkish(session_lang):
+        # If QA stage was narrative-only (seen player by name), keep old behavior:
+        if not new_names:
+            known_names = [p.get("name") for p in (meta.get("players") or []) if p.get("name")]
+            out = strip_meta_stats_text(base_answer, known_names=known_names)
+        else:
+            # QA stage is block-only -> generate narrative from payload + meta
+            p0 = (payload.get("players") or [None])[0] or {}
+            print(p0)
+            profile_meta = p0.get("meta") or {}
+            print(profile_meta)
+            stats = p0.get("stats") or []
+            print(stats)
+            # Build compact inputs for the interpretation LLM
+            profile_json = json.dumps({
+                "name": p0.get("name"),
+                **profile_meta
+            }, ensure_ascii=False)
+
+            stats_json = json.dumps(stats, ensure_ascii=False)
+
+            out = interpretation_chain.invoke({
+                "question": translated_question,
+                "profile_json": profile_json,
+                "stats_json": stats_json,
+            }).strip()
+            print("OUT")
+            print(out)
+        if is_turkish(lang):
             try:
                 translated_out = output_tr_translate_chain.invoke({"text": out}).strip()
                 if translated_out:
