@@ -143,7 +143,7 @@ def parse_player_meta_new(meta_parser_chain, raw_text: str) -> Dict[str, Any]:
     return {"players": players_out}
 
 
-def build_player_payload_new(meta: Dict[str, Any], stats: Dict[str, Any]) -> Dict[str, Any]:
+def build_player_payload_new(meta: Dict[str, Any]) -> Dict[str, Any]:
     """
     Extended payload builder that exposes the new meta fields:
     gender, height, weight, nationality, team, match_count, roles, potential.
