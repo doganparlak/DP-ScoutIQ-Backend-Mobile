@@ -19,7 +19,6 @@ from api_module.utilities import (
 )
 from chatbot_module.prompts import (
     system_message,
-    stats_parser_system_message,
     meta_parser_system_prompt,
     translate_tr_to_en_system_message,
     translate_en_to_tr_system_message
@@ -135,15 +134,6 @@ def create_qa_chain(
     )
     return chain
 
-
-# ===== Stats Parser =====
-stats_parser_prompt = ChatPromptTemplate.from_messages([
-    ("system", stats_parser_system_message),
-    ("human", "Report:\n\n{report_text}\n\nReturn only JSON, no backticks.")
-])
-
-
-stats_parser_chain = stats_parser_prompt | PARSER_LLM | StrOutputParser()
 # ===== Player Meta Parser =====
 
 meta_parser_prompt = ChatPromptTemplate.from_messages([            
