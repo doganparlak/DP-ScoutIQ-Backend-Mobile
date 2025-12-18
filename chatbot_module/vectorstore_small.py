@@ -55,7 +55,7 @@ class SupabaseRPCRetriever(BaseRetriever):
                 {
                     "query_embedding": q_vec,
                     "match_count": self.k,
-                    "filter": self.metadata_filter,
+                    "metadata_filter": self.metadata_filter,
                 },
             ).execute()
         except Exception as e:
@@ -73,7 +73,7 @@ class SupabaseRPCRetriever(BaseRetriever):
             similarity = None
             if isinstance(distance, (int, float)):
                 try:
-                    similarity = 1.0 - float(distance)
+                    similarity = 1.0 / (1.0 + float(distance))
                 except Exception:
                     similarity = None
 

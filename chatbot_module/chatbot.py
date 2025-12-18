@@ -62,17 +62,17 @@ SHARED_RETRIEVER = get_retriever(k=6, filter=None)
 def add_language_strategy_to_prompt(ui_language: Optional[str], strategy: Optional[str]) -> ChatPromptTemplate:
     sys_msg = inject_language(system_message, "en")
     if strategy:
-        sys_msg += (
-            "\n\nCurrent scouting strategy / philosophy (must be followed):\n"
-            f"{strategy}\n"
-        )
+        sys_msg += "\n\nCurrent scouting strategy / philosophy (must be followed):\n" + strategy + "\n"
+
     return ChatPromptTemplate.from_messages([
         ("system", sys_msg),
         ("human",
+         "{preamble}\n\n"
          "{context}\n\n"
          "Question: {question}"
         )
     ])
+
 
 def translate_to_english_if_needed(text: Optional[str], lang: str) -> str:
     """If text is Turkish, translate to English; if already English, return unchanged.
@@ -200,9 +200,13 @@ def answer_question(
         + "Question: "
         + translated_question
     )
-
+    retrieval_query = translated_question 
+    preamble_text = preamble + no_nationality_bias + intent_nudge
     # 6) LLM Call
-    inputs = {"question": augmented_question}
+    inputs = {
+        "question": retrieval_query,
+        "preamble": preamble_text,
+    }
     db = get_db()
     try:
         result = qa_chain.invoke(inputs)
