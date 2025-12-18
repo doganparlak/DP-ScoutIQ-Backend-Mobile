@@ -177,7 +177,7 @@ def _extract_stats_from_doc_meta(doc_meta: Dict[str, Any]) -> List[Dict[str, Any
 
 def _is_non_zero_stat(stat: Dict[str, Any]) -> bool:
     v = _num(stat.get("value"))
-    return (v is not None) and (abs(v) > 0.0)
+    return (v is not None) and (abs(v) > 0.05)
 
 
 def fetch_player_nonzero_stats(
