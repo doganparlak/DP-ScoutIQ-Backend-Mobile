@@ -210,12 +210,7 @@ def answer_question(
             "Intent: the user may be asking for a different option or for collective reasoning about previously discussed players. "
             "Infer intention semantically (not by keywords) using the selection rules above.\n\n"
         )
-    no_nationality_bias = (
-        "Nationality constraint: none unless the user explicitly specifies one.\n"
-        "Do NOT infer or prefer a player's nationality from the interface or query language.\n"
-        "When nationality is unspecified, treat it as 'unspecified' and select solely on role fit/history and performance.\n\n"
-    )
-    preamble_text = preamble + no_nationality_bias + intent_nudge
+    preamble_text = preamble + intent_nudge
     qa_chain = create_qa_chain(
         lang=lang,
         history_rows=history_rows,
