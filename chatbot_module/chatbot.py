@@ -59,19 +59,36 @@ TRANSLATE_LLM = ChatDeepSeek(
 
 SHARED_RETRIEVER = get_retriever(k=6, filter=None)
 
-def add_language_strategy_to_prompt(ui_language: Optional[str], strategy: Optional[str]) -> ChatPromptTemplate:
+def add_language_strategy_to_prompt(
+    ui_language: Optional[str],
+    strategy: Optional[str],
+    preamble_text: Optional[str] = None
+) -> ChatPromptTemplate:
     sys_msg = inject_language(system_message, "en")
+
     if strategy:
         sys_msg += "\n\nCurrent scouting strategy / philosophy (must be followed):\n" + strategy + "\n"
 
+    if preamble_text:
+        sys_msg += "\n\nSession selection rules / intent hints (must be followed):\n" + preamble_text + "\n"
+
+    # IMPORTANT: no {preamble} variable anymore
     return ChatPromptTemplate.from_messages([
         ("system", sys_msg),
         ("human",
-         "{preamble}\n\n"
          "{context}\n\n"
          "Question: {question}"
         )
     ])
+
+def get_session_state(session_id: str) -> tuple[str, list]:
+    db = get_db()
+    try:
+        lang = get_session_language(db, session_id) or "en"
+        history_rows = load_chat_messages(db, session_id)
+        return lang, history_rows
+    finally:
+        db.close()
 
 
 def translate_to_english_if_needed(text: Optional[str], lang: str) -> str:
@@ -89,16 +106,14 @@ def translate_to_english_if_needed(text: Optional[str], lang: str) -> str:
         return original
 
 
-def create_qa_chain(session_id: str, strategy: Optional[str] = None) -> ConversationalRetrievalChain:
-    # 1) get session language
-    db = get_db()
-    try:
-        lang = get_session_language(db, session_id) or "en"
-        history_rows = load_chat_messages(db, session_id)
-    finally:
-        db.close()
+def create_qa_chain(
+    lang: str,
+    history_rows: list,
+    strategy: Optional[str] = None,
+    preamble_text: Optional[str] = None
+) -> ConversationalRetrievalChain:
 
-    # 2) hydrate memory from persisted history
+    # hydrate memory from persisted history
     memory = ConversationBufferMemory(memory_key="chat_history", return_messages=True)
     msgs: List = []
     for row in history_rows:
@@ -106,11 +121,10 @@ def create_qa_chain(session_id: str, strategy: Optional[str] = None) -> Conversa
             msgs.append(HumanMessage(content=row["content"]))
         elif row["role"] == "ai":
             msgs.append(AIMessage(content=row["content"]))
-        # ignore any 'system' rows for chat_history
     memory.chat_memory.messages = msgs
 
-    # 3) Prompt
-    prompt = add_language_strategy_to_prompt(lang, strategy)
+    # build prompt with baked-in preamble_text (no extra input keys)
+    prompt = add_language_strategy_to_prompt(lang, strategy, preamble_text=preamble_text)
 
     chain = ConversationalRetrievalChain.from_llm(
         llm=CHAT_LLM,
@@ -118,8 +132,8 @@ def create_qa_chain(session_id: str, strategy: Optional[str] = None) -> Conversa
         memory=memory,
         combine_docs_chain_kwargs={"prompt": prompt}
     )
+    return chain
 
-    return chain, lang
 
 # ===== Stats Parser =====
 stats_parser_prompt = ChatPromptTemplate.from_messages([
@@ -158,19 +172,22 @@ def answer_question(
     strategy: Optional[str] = None
 ) -> Dict[str, Any]:
 
-    # 0) Get/Create Chain
-    qa_chain, lang = create_qa_chain(session_id, strategy=strategy)
-    print("CHAIN FETCHED")
-    memory: ConversationBufferMemory = qa_chain.memory
+    # A) get lang + history first
+    lang, history_rows = get_session_state(session_id)
+    print("SESSION STATE FETCHED")
+    print(lang)
+    print(history_rows)
+    # B) build a temporary memory for “seen players” from history_rows
+    ai_msgs: List[AIMessage] = []
+    for row in history_rows:
+        if row["role"] == "ai":
+            ai_msgs.append(AIMessage(content=row["content"]))
 
-    # 1) Freeze PRIOR history (before any LLM call can mutate memory)
-    prior_history = memory.load_memory_variables({})["chat_history"]
-    prior_history_frozen = list(prior_history)
-    print("HISTORY TAKEN")
     # 2) Compute seen players from PRIOR assistant messages ONLY
-    seen_players = get_seen_players_from_history(prior_history_frozen)
+    seen_players = get_seen_players_from_history(ai_msgs)
     seen_list_lower = { (n or "").lower().strip() for n in seen_players }
     print("SEEN PLAYERS FETCHED")
+    print(seen_list_lower)
     # 3) Build selection preamble (semantic, no keyword parsing)
     preamble = compose_selection_preamble(seen_players, strategy)
     print("PREAMBLE OBTAINED")
@@ -205,12 +222,18 @@ def answer_question(
         + "Question: "
         + translated_question
     )
-    retrieval_query = translated_question 
     preamble_text = preamble + no_nationality_bias + intent_nudge
+    qa_chain = create_qa_chain(
+        lang=lang,
+        history_rows=history_rows,
+        strategy=strategy,
+        preamble_text=preamble_text
+    )
+    print("CHAIN CREATED")
+    retrieval_query = translated_question    
     # 6) LLM Call
     inputs = {
         "question": retrieval_query,
-        "preamble": preamble_text,
     }
     db = get_db()
     try:
