@@ -5,6 +5,20 @@ import json
 from report_module.utilities import _score_candidate, _extract_player_group_key, _num, _norm
 from api_module.utilities import get_db 
 
+META_ID_KEYS = {
+    # identity / grouping
+    "player_key", "player_name", "name", "player",
+    "team_name", "team", "club",
+    "nationality_name", "nationality", "country",
+    "gender", "position_name",
+
+    # demographics
+    "age", "height", "weight", "match_count",
+
+    # storage/other (if present)
+    "id", "content", "metadata", "vector",
+}
+
 PROFILE_BLOCK_RE = re.compile(
     r"""
     \[\[\s*PLAYER_PROFILE\s*:\s*(?P<name>[^\]]+)\s*\]\]
@@ -147,36 +161,23 @@ def parse_player_meta_new(meta_parser_chain, raw_text: str) -> Dict[str, Any]:
 
 def _extract_stats_from_doc_meta(doc_meta: Dict[str, Any]) -> List[Dict[str, Any]]:
     """
-    Assumption: stats are stored in metadata under key 'stats' as a list[dict].
-    If your schema differs, adapt this function.
+    Your schema: stats are numeric fields directly in metadata.
+    Convert them into list-of-dicts: [{"name": k, "value": v}, ...]
     """
-    stats = doc_meta.get("stats")
-    if isinstance(stats, list):
-        return [s for s in stats if isinstance(s, dict)]
-    return []
+    out: List[Dict[str, Any]] = []
+    for k, v in (doc_meta or {}).items():
+        if k in META_ID_KEYS:
+            continue
+        nv = _num(v)
+        if nv is None:
+            continue
+        out.append({"name": str(k), "value": nv})
+    return out
 
 
 def _is_non_zero_stat(stat: Dict[str, Any]) -> bool:
-    """
-    Keeps stat entries that have at least one numeric field that is non-zero.
-    Common shapes:
-      {"name": "...", "value": 0.12}
-      {"stat": "...", "per90": 0.3, "percentile": 0}
-    """
-    # if there's an explicit 'value'
-    if "value" in stat:
-        v = _num(stat.get("value"))
-        return (v is not None) and (abs(v) > 0.0)
-
-    # otherwise scan numeric-ish fields
-    for k, v in stat.items():
-        if k in ("name", "stat", "label", "group", "unit", "season", "competition"):
-            continue
-        nv = _num(v)
-        if nv is not None and abs(nv) > 0.0:
-            return True
-
-    return False
+    v = _num(stat.get("value"))
+    return (v is not None) and (abs(v) > 0.0)
 
 
 def fetch_player_nonzero_stats(
@@ -197,7 +198,7 @@ def fetch_player_nonzero_stats(
     name_q = f"%{str(name).strip()}%"
     team = player_identity.get("team")
     nat  = player_identity.get("nationality")
-
+    print(name_q, team, nat)
     rows = db.execute(text("""
         SELECT id, metadata
         FROM document
@@ -228,7 +229,7 @@ def fetch_player_nonzero_stats(
         "nat_q":  (f"%{nat.strip()}%"  if isinstance(nat, str) and nat.strip() else None),
         "lim": int(limit_docs),
     }).mappings().all()
-
+    print(rows)
     if not rows:
         return []
 
@@ -312,7 +313,8 @@ def build_player_payload_new(meta: Dict[str, Any]) -> Dict[str, Any]:
                 "height": m.get("height"),
                 "weight": m.get("weight"),
             }
-
+            print("PLAYER IDENTITIY READY")
+            print(player_identity)
             # DB step: fetch player's non-zero stats
             stats = fetch_player_nonzero_stats(db, player_identity)  # <- new step
             print("STATS")
