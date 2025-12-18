@@ -326,18 +326,3 @@ def inject_language(base_system_message: str, lang_code: Optional[str]) -> str:
 
 def is_turkish(lang: Optional[str]) -> bool:
     return (lang or "").lower().startswith("tr")
-
-def build_recent_context(history_rows: list, max_chars: int = 3000) -> str:
-    # last N messages is usually better than last N chars, but this works
-    parts = []
-    for row in reversed(history_rows):
-        role = row.get("role")
-        txt = (row.get("content") or "").strip()
-        if not txt:
-            continue
-        # include both human+ai for disambiguation
-        parts.append(f"{role.upper()}: {txt}")
-        if sum(len(p) for p in parts) > max_chars:
-            break
-    return "\n".join(reversed(parts))
-
