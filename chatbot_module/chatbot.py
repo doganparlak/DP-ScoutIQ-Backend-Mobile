@@ -160,18 +160,23 @@ def answer_question(
 
     # 0) Get/Create Chain
     qa_chain, lang = create_qa_chain(session_id, strategy=strategy)
+    print("CHAIN FETCHED")
     memory: ConversationBufferMemory = qa_chain.memory
 
     # 1) Freeze PRIOR history (before any LLM call can mutate memory)
     prior_history = memory.load_memory_variables({})["chat_history"]
     prior_history_frozen = list(prior_history)
+    print("HISTORY TAKEN")
     # 2) Compute seen players from PRIOR assistant messages ONLY
     seen_players = get_seen_players_from_history(prior_history_frozen)
     seen_list_lower = { (n or "").lower().strip() for n in seen_players }
+    print("SEEN PLAYERS FETCHED")
     # 3) Build selection preamble (semantic, no keyword parsing)
     preamble = compose_selection_preamble(seen_players, strategy)
+    print("PREAMBLE OBTAINED")
     # 4) Translate user question to English if needed (TR -> EN, EN passthrough)
     translated_question = translate_to_english_if_needed(question or "", lang)
+    print("TRANSLATED")
     # 5) Intent hint — ONLY entity resolution (seen name), no keyword lists
     q_lower = (question or "").lower()
     mentions_seen_by_name = any(n and n in q_lower for n in seen_list_lower)
@@ -192,7 +197,7 @@ def answer_question(
         "Do NOT infer or prefer a player's nationality from the interface or query language.\n"
         "When nationality is unspecified, treat it as 'unspecified' and select solely on role fit/history and performance.\n\n"
     )
-
+    print("PREPATE INPUT STARTS")
     augmented_question = (
         preamble
         + no_nationality_bias
@@ -211,9 +216,11 @@ def answer_question(
     try:
         result = qa_chain.invoke(inputs)
         base_answer = (result.get("answer") or "").strip()
+        print("ANSWER OBTAINED")
         append_chat_message(db, session_id, "human", question or "")
         append_chat_message(db, session_id, "ai", base_answer)
     except Exception as e:
+        print(e)
         append_chat_message(db, session_id, "human", question or "")
         append_chat_message(db, session_id, "ai", "Sorry, I couldn’t generate an answer right now.")
         return {"answer": "Sorry, I couldn’t generate an answer right now.", "answer_raw": str(e)}
