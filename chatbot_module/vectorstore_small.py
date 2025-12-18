@@ -29,6 +29,12 @@ emb = OpenAIEmbeddings(
     dimensions=1536,
 )
 
+import logging
+log = logging.getLogger(__name__)
+
+
+
+
 # -------------------------------------------------------------------
 # Retriever implementation
 # -------------------------------------------------------------------
@@ -59,6 +65,8 @@ class SupabaseRPCRetriever(BaseRetriever):
                 },
             ).execute()
         except Exception as e:
+            print(e)
+            log.exception("Retriever failed: %s", e)
             return []
 
         rows = getattr(resp, "data", None) or []
