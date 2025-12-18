@@ -162,7 +162,7 @@ def parse_player_meta_new(meta_parser_chain, raw_text: str) -> Dict[str, Any]:
 def _extract_stats_from_doc_meta(doc_meta: Dict[str, Any]) -> List[Dict[str, Any]]:
     """
     Your schema: stats are numeric fields directly in metadata.
-    Convert them into list-of-dicts: [{"name": k, "value": v}, ...]
+    Convert them into list-of-dicts: [{"metric": k, "value": v}, ...]
     """
     out: List[Dict[str, Any]] = []
     for k, v in (doc_meta or {}).items():
@@ -171,7 +171,7 @@ def _extract_stats_from_doc_meta(doc_meta: Dict[str, Any]) -> List[Dict[str, Any
         nv = _num(v)
         if nv is None:
             continue
-        out.append({"name": str(k), "value": nv})
+        out.append({"metric": str(k), "value": nv})
     return out
 
 
@@ -280,7 +280,7 @@ def fetch_player_nonzero_stats(
     seen = set()
     deduped: List[Dict[str, Any]] = []
     for s in nonzero:
-        key = _norm(str(s.get("name") or s.get("stat") or s.get("label") or "")) or None
+        key = _norm(str(s.get("metric") or s.get("stat") or s.get("label") or "")) or None
         if key and key in seen:
             continue
         if key:

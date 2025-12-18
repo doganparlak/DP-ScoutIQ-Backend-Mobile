@@ -52,7 +52,7 @@ def fetch_docs_for_favorite(
     # Broad candidate search (JSONB metadata preferred; fallback to content ILIKE)
     rows = db.execute(text("""
         SELECT id, content, metadata
-        FROM document
+        FROM player_data
         WHERE
           (
             (metadata->>'player_name') ILIKE :name_q
@@ -103,7 +103,7 @@ def fetch_docs_for_favorite(
     # Fetch docs for that player_key (or our fallback key)
     docs = db.execute(text("""
         SELECT id, content, metadata
-        FROM document
+        FROM player_data
         WHERE
           (metadata->>'player_key') = :pk
           OR (
