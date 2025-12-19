@@ -2,7 +2,7 @@ from typing import Any, Dict, List, Optional, Tuple
 from sqlalchemy import text
 import re
 import json
-from report_module.utilities import _score_candidate, _extract_player_group_key, _num, _norm
+from report_module.utilities import _num, _norm
 from api_module.utilities import get_db 
 
 META_ID_KEYS = {
@@ -179,6 +179,43 @@ def _is_non_zero_stat(stat: Dict[str, Any]) -> bool:
     v = _num(stat.get("value"))
     return (v is not None) and (abs(v) > 0.05)
 
+def _score_candidate(meta: Dict[str, Any], ident: Dict[str, Any]) -> float:
+    score = 0.0
+
+    name_i = _norm(ident.get("name"))
+    nat_i  = _norm(ident.get("nationality"))
+    gen_i  = _norm(ident.get("gender"))
+
+    name_m = _norm(meta.get("player_name") or meta.get("name") or meta.get("player"))
+    nat_m  = _norm(meta.get("nationality_name") or meta.get("nationality") or meta.get("country"))
+    gen_m  = _norm(meta.get("gender"))
+
+    # name is most important
+    if name_i and name_m:
+        if name_i == name_m: score += 10
+        elif name_i in name_m or name_m in name_i: score += 7
+
+    if nat_i and nat_m:
+        if nat_i == nat_m: score += 4
+        elif nat_i in nat_m or nat_m in nat_i: score += 2
+
+    if gen_i and gen_m and gen_i == gen_m:
+        score += 2
+
+    # numeric closeness (don’t punish missing)
+    for k, w, tol in [("age", 2.5, 2.0), ("height", 2.0, 4.0), ("weight", 2.0, 5.0)]:
+        iv = _num(ident.get(k))
+        mv = _num(meta.get(k) or meta.get(f"{k}_cm") or meta.get(f"{k}_kg"))
+        if iv is None or mv is None:
+            continue
+        diff = abs(iv - mv)
+        if diff <= tol:
+            score += w
+        elif diff <= tol * 2:
+            score += w * 0.5
+
+    return score
+
 
 def fetch_player_nonzero_stats(
     db,
@@ -187,7 +224,7 @@ def fetch_player_nonzero_stats(
 ) -> List[Dict[str, Any]]:
     """
     1) Broad candidate search in `player_data`
-    2) Score candidates to select best player_key
+    2) Score candidates to select best_id
     3) Fetch docs for player_key and collect metadata stats
     4) Filter out stats that are zero
     """
@@ -196,9 +233,8 @@ def fetch_player_nonzero_stats(
         return []
 
     name_q = f"%{str(name).strip()}%"
-    team = player_identity.get("team")
     nat  = player_identity.get("nationality")
-    print(name_q, team, nat)
+    print(name_q, nat)
     rows = db.execute(text("""
         SELECT id, metadata
         FROM player_data
@@ -210,12 +246,6 @@ def fetch_player_nonzero_stats(
             OR (content ILIKE :name_q)
           )
           AND (
-            :team_q IS NULL
-            OR (metadata->>'team_name') ILIKE :team_q
-            OR (metadata->>'team') ILIKE :team_q
-            OR (content ILIKE :team_q)
-          )
-          AND (
             :nat_q IS NULL
             OR (metadata->>'nationality_name') ILIKE :nat_q
             OR (metadata->>'nationality') ILIKE :nat_q
@@ -225,7 +255,6 @@ def fetch_player_nonzero_stats(
         LIMIT :lim
     """), {
         "name_q": name_q,
-        "team_q": (f"%{team.strip()}%" if isinstance(team, str) and team.strip() else None),
         "nat_q":  (f"%{nat.strip()}%"  if isinstance(nat, str) and nat.strip() else None),
         "lim": int(limit_docs),
     }).mappings().all()
@@ -239,12 +268,13 @@ def fetch_player_nonzero_stats(
     for r in rows:
         meta = r.get("metadata") or {}
         sc = _score_candidate(meta, player_identity)
-        key = _extract_player_group_key(meta)
-        if key and sc > best[0]:
-            best = (sc, key)
-
-    best_key = best[1]
-    if not best_key:
+        rid = r.get("id")
+        if rid is not None and sc > best[0]:
+            best = (sc, int(rid))
+    print("BEST")
+    print(best)
+    best_id = best[1]
+    if best_id is None:
         # fallback: try extracting stats directly from the broad rows
         raw_stats: List[Dict[str, Any]] = []
         for r in rows:
@@ -253,27 +283,19 @@ def fetch_player_nonzero_stats(
         return [s for s in raw_stats if _is_non_zero_stat(s)]
 
     # fetch all docs for that player_key
-    docs = db.execute(text("""
+    doc = db.execute(text("""
         SELECT id, metadata
         FROM player_data
-        WHERE
-          (metadata->>'player_key') = :pk
-          OR (
-            :pk LIKE '%|%'
-            AND (metadata->>'player_name') IS NOT NULL
-            AND (metadata->>'team_name') IS NOT NULL
-            AND ((metadata->>'player_name') || '|' || (metadata->>'team_name')) = :pk
-          )
-        ORDER BY id DESC
-        LIMIT :lim
-    """), {"pk": best_key, "lim": int(limit_docs)}).mappings().all()
+        WHERE id = :id
+        LIMIT 1
+    """), {"id": best_id}).mappings().first()
 
-    raw_stats: List[Dict[str, Any]] = []
-    for d in docs:
-        doc_meta = d.get("metadata") or {}
-        raw_stats.extend(_extract_stats_from_doc_meta(doc_meta))
+    if not doc:
+       return []
 
     # non-zero filter
+    doc_meta = doc.get("metadata") or {}
+    raw_stats = _extract_stats_from_doc_meta(doc_meta)
     nonzero = [s for s in raw_stats if _is_non_zero_stat(s)]
 
     # optional: de-dupe by stat name/label if present
@@ -317,7 +339,7 @@ def build_player_payload_new(meta: Dict[str, Any]) -> Dict[str, Any]:
             print("PLAYER IDENTITIY READY")
             print(player_identity)
             # DB step: fetch player's non-zero stats
-            stats = fetch_player_nonzero_stats(db, player_identity)  # <- new step
+            stats = fetch_player_nonzero_stats(db, player_identity) 
             print("STATS")
             print(stats)
             output["players"].append({
@@ -333,7 +355,7 @@ def build_player_payload_new(meta: Dict[str, Any]) -> Dict[str, Any]:
                     "roles": m.get("roles") or [],
                     "potential": m.get("potential"),
                 },
-                "stats": stats or []   # <- bring back old section
+                "stats": stats or []  
             })
 
         return output
