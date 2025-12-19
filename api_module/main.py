@@ -107,96 +107,67 @@ def signup(payload: SignUpIn, db: Session = Depends(get_db)):
     return {"ok": True}
 
 @app.post("/auth/login", response_model=LoginOut)
-def login(
-    payload: LoginIn,
-    accept_language: str | None = Header(default=None),
-    db: Session = Depends(get_db),
-):
-    # 1) Fetch user
-    row = db.execute(
-        text("SELECT * FROM users WHERE email = :e"),
-        {"e": payload.email},
-    ).mappings().first()
-
+def login(payload: LoginIn, accept_language: str | None = Header(default=None), db: Session = Depends(get_db)):
+    row = db.execute(text("SELECT * FROM users WHERE email = :e"), {"e": payload.email}).mappings().first()
     if not row:
         raise HTTPException(status_code=400, detail="Invalid credentials")
 
-    # 2) Verify password
     salt = row["salt"]
     if not hmac.compare_digest(hash_pw(payload.password, salt), row["password_hash"]):
         raise HTTPException(status_code=400, detail="Invalid credentials")
 
-    user_id = int(row["id"])
-    email = row["email"]
-
-    # 3) Determine preferred language (optional)
+    # Determine preferred language
     preferred = normalize_lang(payload.uiLanguage) or normalize_lang(accept_language)
     if preferred:
-        db.execute(
-            text("UPDATE users SET language = :l WHERE id = :id"),
-            {"l": preferred, "id": user_id},
-        )
-        # don't commit yet; we will commit once at the end
+        db.execute(text("UPDATE users SET language = :l WHERE id = :id"), {"l": preferred, "id": row["id"]})
+        db.commit()
 
-    # 4) Restore Pro from entitlements (email-based best effort)
-    now_db = db.execute(text("NOW()")).scalar()
+    # ---- restore entitlement (Option A) ----
+    row_ent = db.execute(text("""
+        SELECT platform, external_id, expires_at, auto_renew
+        FROM subscription_entitlements
+        WHERE lower(last_seen_email) = lower(:email)
+          AND expires_at IS NOT NULL
+        ORDER BY expires_at DESC
+        LIMIT 1
+    """), {"email": payload.email}).mappings().first()
 
-    row_ent = db.execute(
-        text("""
-            SELECT platform, external_id, expires_at, auto_renew
-            FROM subscription_entitlements
-            WHERE lower(last_seen_email) = lower(:email)
-              AND expires_at IS NOT NULL
-            ORDER BY expires_at DESC
-            LIMIT 1
-        """),
-        {"email": email},
-    ).mappings().first()
+    # IMPORTANT: use SELECT NOW() if you want DB time
+    now_db = dt.datetime.now(dt.timezone.utc)
 
-    if row_ent and row_ent.get("expires_at") and row_ent["expires_at"] > now_db:
-        db.execute(
-            text("""
-                UPDATE users
-                SET plan = 'Pro',
-                    subscription_end_at = :end_at,
-                    subscription_auto_renew = :auto_renew,
-                    subscription_platform = :platform,
-                    subscription_external_id = :ext_id
-                WHERE id = :id
-            """),
-            {
-                "end_at": row_ent["expires_at"],          # timestamptz from DB
-                "auto_renew": bool(row_ent["auto_renew"]),
-                "platform": row_ent["platform"],
-                "ext_id": row_ent["external_id"],
-                "id": user_id,
-            },
-        )
+    if row_ent and row_ent["expires_at"] and row_ent["expires_at"] > now_db:
+        db.execute(text("""
+            UPDATE users
+            SET plan = 'Pro',
+                subscription_end_at = :end_at,
+                subscription_auto_renew = :auto_renew,
+                subscription_platform = :platform,
+                subscription_external_id = :ext_id
+            WHERE id = :id
+        """), {
+            "end_at": row_ent["expires_at"],
+            "auto_renew": row_ent["auto_renew"],
+            "platform": row_ent["platform"],
+            "ext_id": row_ent["external_id"],
+            "id": row["id"],
+        })
+        db.commit()
 
-    # 5) Commit all user updates (language + possible Pro restore)
-    db.commit()
+    # re-fetch user row AFTER possible updates
+    row = db.execute(text("SELECT * FROM users WHERE id = :id"), {"id": row["id"]}).mappings().first()
 
-    # 6) Re-fetch the updated user row for correct response payload
-    row = db.execute(
-        text("SELECT * FROM users WHERE id = :id"),
-        {"id": user_id},
-    ).mappings().first()
-
-    # 7) Create session token using user.language
     token = uuid.uuid4().hex
     lang_for_session = normalize_lang(row.get("language")) or "en"
-
     db.execute(
         text("""
-            INSERT INTO sessions (token, user_id, language, created_at, ended_at)
-            VALUES (:t, :uid, :l, :ts, NULL)
+        INSERT INTO sessions (token, user_id, language, created_at, ended_at)
+        VALUES (:t, :uid, :l, :ts, NULL)
         """),
-        {"t": token, "uid": user_id, "l": lang_for_session, "ts": now_iso()},
+        {"t": token, "uid": row["id"], "l": lang_for_session, "ts": now_iso()}
     )
     db.commit()
 
-    user = user_row_to_dict(row)
-    return {"token": token, "user": user}
+    return {"token": token, "user": user_row_to_dict(row)}
 
 
 @app.post("/logout", status_code=status.HTTP_204_NO_CONTENT)
