@@ -342,31 +342,67 @@ def verify_signup_code(body: VerifySignupIn, db: Session = Depends(get_db)):
     if not ps:
         raise HTTPException(status_code=400, detail="No pending signup for this email")
 
-    # If user already created meanwhile, just clean staged row and return ok
+    # Check if user already exists
     already = db.execute(
-        text("SELECT 1 FROM users WHERE lower(email) = lower(:e)"),
+        text("SELECT id FROM users WHERE lower(email) = lower(:e)"),
         {"e": email}
-    ).first()
+    ).mappings().first()
+
     if not already:
+        # Create user as Free by default
         db.execute(text("""
             INSERT INTO users
             (email, password_hash, salt, dob, country, plan, favorites_json, created_at, language, newsletter)
             VALUES
-            (:email, :ph, :salt, CAST(:dob AS date), :country, :plan, CAST(:favs AS jsonb), NOW(), NULL, :newsletter)
+            (:email, :ph, :salt, CAST(:dob AS date), :country, 'Free',
+             CAST(:favs AS jsonb), NOW(), NULL, :newsletter)
         """), {
             "email": ps["email"],
             "ph": ps["password_hash"],
             "salt": ps["salt"],
             "dob": ps["dob"],
             "country": ps["country"],
-            "plan": ps["plan"] or "Free",
-            "favs": ps["favorites_json"],        # already jsonb
+            "favs": ps["favorites_json"],  # already jsonb
             "newsletter": bool(ps["newsletter"]),
         })
 
-    db.execute(text("DELETE FROM pending_signups WHERE lower(email) = lower(:e)"), {"e": email})
+    row_ent = db.execute(text("""
+        SELECT platform, external_id, expires_at, auto_renew
+        FROM subscription_entitlements
+        WHERE lower(last_seen_email) = lower(:email)
+          AND expires_at IS NOT NULL
+        ORDER BY expires_at DESC
+        LIMIT 1
+    """), {"email": email}).mappings().first()
+
+    now_utc = dt.datetime.now(dt.timezone.utc)
+
+    if row_ent and row_ent["expires_at"] > now_utc:
+        db.execute(text("""
+            UPDATE users
+            SET plan = 'Pro',
+                subscription_platform = :platform,
+                subscription_external_id = :ext_id,
+                subscription_end_at = :end_at,
+                subscription_auto_renew = :auto_renew
+            WHERE lower(email) = lower(:email)
+        """), {
+            "platform": row_ent["platform"],
+            "ext_id": row_ent["external_id"],
+            "end_at": row_ent["expires_at"],
+            "auto_renew": row_ent["auto_renew"],
+            "email": email,
+        })
+
+    # Cleanup staged signup
+    db.execute(
+        text("DELETE FROM pending_signups WHERE lower(email) = lower(:e)"),
+        {"e": email}
+    )
+
     db.commit()
     return {"ok": True}
+
 
 
 
