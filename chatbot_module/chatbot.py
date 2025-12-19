@@ -162,6 +162,7 @@ interpretation_prompt = ChatPromptTemplate.from_messages([
     ("system", interpretation_system_prompt),
     ("human",
      "Question:\n{question}\n\n"
+     "Team strategy / philosophy (may be empty):\n{strategy}\n\n"
      "Player profile:\n{profile_json}\n\n"
      "Stats (metric/value pairs):\n{stats_json}\n\n"
      "Write exactly 3 sentences."
@@ -197,7 +198,9 @@ def answer_question(
     translated_question = translate_to_english_if_needed(question or "", lang)
     # 5) Intent hint — ONLY entity resolution (seen name), no keyword lists
     q_lower = (question or "").lower()
-    mentions_seen_by_name = any(n and n in q_lower for n in seen_list_lower)
+    tq_lower = (translated_question or "").lower()
+    mentions_seen_by_name = any(n and (n in q_lower or n in tq_lower) for n in seen_list_lower)
+
     # Let the LLM infer intent semantically using the preamble rules.
     if mentions_seen_by_name:
         intent_nudge = (
@@ -273,6 +276,7 @@ def answer_question(
 
             out = interpretation_chain.invoke({
                 "question": translated_question,
+                "strategy": strategy or "",
                 "profile_json": profile_json,
                 "stats_json": stats_json,
             }).strip()
