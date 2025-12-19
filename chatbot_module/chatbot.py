@@ -66,7 +66,7 @@ def add_language_strategy_to_prompt(
     strategy: Optional[str],
     preamble_text: Optional[str] = None
 ) -> ChatPromptTemplate:
-    sys_msg = inject_language(system_message, "en")
+    sys_msg = system_message
 
     if strategy:
         sys_msg += "\n\nCurrent scouting strategy / philosophy (must be followed):\n" + strategy + "\n"
@@ -282,6 +282,11 @@ def answer_question(
             }).strip()
             print("OUT")
             print(out)
+
+        print("LANG:", lang, "IS_TR:", is_turkish(lang))
+        print("Q:", question)
+        print("Q_EN:", translated_question)
+        print("OUT_EN:", out[:120])
         if is_turkish(lang):
             try:
                 translated_out = output_tr_translate_chain.invoke({"text": out}).strip()
