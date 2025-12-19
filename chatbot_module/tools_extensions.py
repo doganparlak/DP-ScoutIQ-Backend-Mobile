@@ -430,16 +430,16 @@ def build_player_payload_new(meta: Dict[str, Any]) -> Dict[str, Any]:
 
             stats, resolved = fetch_player_nonzero_stats(db, player_identity)
 
-            # overwrite only if resolved has values
-            team_final = resolved.get("team") or m.get("team")
-            age_final = resolved.get("age") if resolved.get("age") is not None else m.get("age")
-            height_final = resolved.get("height") if resolved.get("height") is not None else m.get("height")
-            weight_final = resolved.get("weight") if resolved.get("weight") is not None else m.get("weight")
+            # overwrite only if resolved has values (resolved has no None/empty keys)
+            team_final   = resolved.get("team", m.get("team"))
+            age_final    = resolved.get("age", m.get("age"))
+            height_final = resolved.get("height", m.get("height"))
+            weight_final = resolved.get("weight", m.get("weight"))
 
             # optional but usually helpful to reduce confusion:
-            nat_final = resolved.get("nationality") or m.get("nationality")
-            gender_final = resolved.get("gender") or m.get("gender")
-            match_count_final = resolved.get("match_count") if resolved.get("match_count") is not None else m.get("match_count")
+            nat_final        = resolved.get("nationality", m.get("nationality"))
+            gender_final     = resolved.get("gender", m.get("gender"))
+            match_count_final= resolved.get("match_count", m.get("match_count"))
 
             output["players"].append({
                 "name": name,
