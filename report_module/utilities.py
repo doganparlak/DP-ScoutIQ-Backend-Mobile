@@ -10,21 +10,8 @@ def _num(v: Any) -> Optional[float]:
     except:
         return None
     
-def fold_ascii(s: Optional[str]) -> str:
-    """
-    Fold diacritics: 'Šeško' -> 'Sesko'
-    Keeps ASCII letters/numbers/spaces; drops combining marks.
-    """
-    if not s:
-        return ""
-    s = str(s)
-    s = unicodedata.normalize("NFKD", s)
-    s = "".join(ch for ch in s if not unicodedata.combining(ch))
-    return s
-
 def _norm(s: Optional[str]) -> str:
-    s0 = fold_ascii(s or "")
-    return re.sub(r"\s+", " ", s0).strip().lower()
+    return re.sub(r"\s+", " ", (s or "")).strip().lower()
 
 def _score_candidate(meta: Dict[str, Any], ident: Dict[str, Any]) -> float:
     score = 0.0

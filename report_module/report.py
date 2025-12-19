@@ -13,8 +13,7 @@ from langchain_core.output_parsers import StrOutputParser
 from report_module.prompts import report_system_prompt
 from report_module.utilities import (_score_candidate,
                                       _first_non_empty, 
-                                      _normalize_roles,
-                                      fold_ascii)
+                                      _normalize_roles)
 
 CHAT_LLM = ChatDeepSeek(model="deepseek-chat", temperature=0.3)
 
@@ -47,9 +46,7 @@ def fetch_docs_for_favorite(
         return []
 
     raw_name = str(name).strip()
-    name_q1 = f"%{raw_name}%"
-    name_folded = fold_ascii(raw_name).strip()
-    name_q2 = f"%{name_folded}%" if name_folded else None
+    name_q = f"%{raw_name}%"
 
     team = player_identity.get("team")
     nat  = player_identity.get("nationality")
@@ -59,18 +56,10 @@ def fetch_docs_for_favorite(
         FROM player_data
         WHERE
           (
-            (metadata->>'player_name') ILIKE :name_q1
-            OR (metadata->>'name') ILIKE :name_q1
-            OR (metadata->>'player') ILIKE :name_q1
-            OR content ILIKE :name_q1
-            OR (
-                :name_q2 IS NOT NULL AND (
-                    (metadata->>'player_name') ILIKE :name_q2
-                    OR (metadata->>'name') ILIKE :name_q2
-                    OR (metadata->>'player') ILIKE :name_q2
-                    OR content ILIKE :name_q2
-                )
-            )
+            (metadata->>'player_name') ILIKE :name_q
+            OR (metadata->>'name') ILIKE :name_q
+            OR (metadata->>'player') ILIKE :name_q
+            OR content ILIKE :name_q
           )
           AND (
             :team_q IS NULL
@@ -87,8 +76,7 @@ def fetch_docs_for_favorite(
         ORDER BY id DESC
         LIMIT 250
     """), {
-        "name_q1": name_q1,
-        "name_q2": name_q2,
+        "name_q": name_q,
         "team_q": (f"%{team.strip()}%" if isinstance(team, str) and team.strip() else None),
         "nat_q":  (f"%{nat.strip()}%"  if isinstance(nat, str) and nat.strip() else None),
     }).mappings().all()

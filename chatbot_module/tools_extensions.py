@@ -2,7 +2,7 @@ from typing import Any, Dict, List, Optional, Tuple
 from sqlalchemy import text
 import re
 import json
-from report_module.utilities import _num, _norm, fold_ascii
+from report_module.utilities import _num, _norm
 from api_module.utilities import get_db 
 
 META_ID_KEYS = {
@@ -179,59 +179,35 @@ def _is_non_zero_stat(stat: Dict[str, Any]) -> bool:
     return (v is not None) and (abs(v) > 0.05)
 
 def _score_candidate(meta: Dict[str, Any], ident: Dict[str, Any]) -> float:
-    """
-    Keep your scoring policy (name + nationality primary),
-    but make comparisons diacritics-safe by comparing both raw-norm and folded-norm.
-    """
     score = 0.0
 
-    # identity inputs
-    name_i_raw = _norm(ident.get("name"))
-    nat_i_raw  = _norm(ident.get("nationality"))
-    gen_i_raw  = _norm(ident.get("gender"))
+    name_i = _norm(ident.get("name"))
+    nat_i  = _norm(ident.get("nationality"))
+    gen_i  = _norm(ident.get("gender"))
 
-    name_i_f = _norm(fold_ascii(ident.get("name")))
-    nat_i_f  = _norm(fold_ascii(ident.get("nationality")))
+    name_m = _norm(meta.get("player_name") or meta.get("name") or meta.get("player"))
+    nat_m  = _norm(meta.get("nationality_name") or meta.get("nationality") or meta.get("country"))
+    gen_m  = _norm(meta.get("gender"))
 
-    # metadata candidate fields
-    name_m_raw = _norm(meta.get("player_name") or meta.get("name") or meta.get("player"))
-    nat_m_raw  = _norm(meta.get("nationality_name") or meta.get("nationality") or meta.get("country"))
-    gen_m_raw  = _norm(meta.get("gender"))
+    if name_i and name_m:
+        if name_i == name_m: score += 10
+        elif name_i in name_m or name_m in name_i: score += 7
 
-    name_m_f = _norm(fold_ascii(meta.get("player_name") or meta.get("name") or meta.get("player")))
-    nat_m_f  = _norm(fold_ascii(meta.get("nationality_name") or meta.get("nationality") or meta.get("country")))
+    if nat_i and nat_m:
+        if nat_i == nat_m: score += 4
+        elif nat_i in nat_m or nat_m in nat_i: score += 2
 
-    # name is most important
-    if (name_i_raw and name_m_raw) or (name_i_f and name_m_f):
-        # prefer exact match (raw or folded)
-        if (name_i_raw and name_m_raw and name_i_raw == name_m_raw) or (name_i_f and name_m_f and name_i_f == name_m_f):
-            score += 10
-        # substring match (raw or folded)
-        elif (name_i_raw and name_m_raw and (name_i_raw in name_m_raw or name_m_raw in name_i_raw)) or \
-             (name_i_f and name_m_f and (name_i_f in name_m_f or name_m_f in name_i_f)):
-            score += 7
-
-    if (nat_i_raw and nat_m_raw) or (nat_i_f and nat_m_f):
-        if (nat_i_raw and nat_m_raw and nat_i_raw == nat_m_raw) or (nat_i_f and nat_m_f and nat_i_f == nat_m_f):
-            score += 4
-        elif (nat_i_raw and nat_m_raw and (nat_i_raw in nat_m_raw or nat_m_raw in nat_i_raw)) or \
-             (nat_i_f and nat_m_f and (nat_i_f in nat_m_f or nat_m_f in nat_i_f)):
-            score += 2
-
-    if gen_i_raw and gen_m_raw and gen_i_raw == gen_m_raw:
+    if gen_i and gen_m and gen_i == gen_m:
         score += 2
 
-    # numeric closeness (don’t punish missing)
     for k, w, tol in [("age", 2.5, 2.0), ("height", 2.0, 4.0), ("weight", 2.0, 5.0)]:
         iv = _num(ident.get(k))
         mv = _num(meta.get(k) or meta.get(f"{k}_cm") or meta.get(f"{k}_kg"))
         if iv is None or mv is None:
             continue
         diff = abs(iv - mv)
-        if diff <= tol:
-            score += w
-        elif diff <= tol * 2:
-            score += w * 0.5
+        if diff <= tol: score += w
+        elif diff <= tol * 2: score += w * 0.5
 
     return score
 
@@ -253,17 +229,12 @@ def fetch_player_nonzero_stats(
         return [], {}
 
     name_raw = str(name).strip()
-    name_fold = fold_ascii(name_raw).strip()
-
     name_q = f"%{name_raw}%"
-    name_q_fold = f"%{name_fold}%" if name_fold and name_fold.lower() != name_raw.lower() else None
-
+    
     nat = player_identity.get("nationality")
     nat_raw = nat.strip() if isinstance(nat, str) else ""
-    nat_fold = fold_ascii(nat_raw).strip()
 
     nat_q = f"%{nat_raw}%" if nat_raw else None
-    nat_q_fold = f"%{nat_fold}%" if nat_fold and nat_fold.lower() != nat_raw.lower() else None
 
     # Broad candidate search (name + nationality) with folded variants
     rows = db.execute(text("""
@@ -275,35 +246,18 @@ def fetch_player_nonzero_stats(
             OR (metadata->>'name') ILIKE :name_q
             OR (metadata->>'player') ILIKE :name_q
             OR (content ILIKE :name_q)
-            OR (
-                :name_q_fold IS NOT NULL AND (
-                    (metadata->>'player_name') ILIKE :name_q_fold
-                    OR (metadata->>'name') ILIKE :name_q_fold
-                    OR (metadata->>'player') ILIKE :name_q_fold
-                    OR (content ILIKE :name_q_fold)
-                )
-            )
           )
           AND (
             :nat_q IS NULL
             OR (metadata->>'nationality_name') ILIKE :nat_q
             OR (metadata->>'nationality') ILIKE :nat_q
             OR (content ILIKE :nat_q)
-            OR (
-                :nat_q_fold IS NOT NULL AND (
-                    (metadata->>'nationality_name') ILIKE :nat_q_fold
-                    OR (metadata->>'nationality') ILIKE :nat_q_fold
-                    OR (content ILIKE :nat_q_fold)
-                )
-            )
           )
         ORDER BY id DESC
         LIMIT :lim
     """), {
         "name_q": name_q,
-        "name_q_fold": name_q_fold,
         "nat_q": nat_q,
-        "nat_q_fold": nat_q_fold,
         "lim": int(limit_docs),
     }).mappings().all()
     print(rows)
