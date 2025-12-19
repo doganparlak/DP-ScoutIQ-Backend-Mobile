@@ -363,11 +363,16 @@ def delete_me(user_id: int = Depends(require_auth), db: Session = Depends(get_db
 
 # --- chat ---
 @app.post("/chat")
-async def chat(body: ChatIn, user_id: int = Depends(require_auth), db: Session = Depends(get_db)) -> Dict[str, Any]:
+async def chat(body: ChatIn, 
+               user_id: int = Depends(require_auth), 
+               accept_language: str | None = Header(default=None),
+               db: Session = Depends(get_db)) -> Dict[str, Any]:
     session_id = body.session_id or "default"
+    header_lang = normalize_lang(accept_language)
+    user_lang = normalize_lang(get_user_language(db, user_id))
+    lang = header_lang or user_lang or "en"
     try:
         if not session_exists_and_active(db, session_id):
-            lang = normalize_lang(get_user_language(db, user_id)) or "en"
             # emulate SQLite INSERT OR REPLACE with UPSERT
             db.execute(
                 text("""
@@ -379,6 +384,13 @@ async def chat(body: ChatIn, user_id: int = Depends(require_auth), db: Session =
                     ended_at = NULL
                 """),
                 {"t": session_id, "uid": user_id, "l": lang, "ts": now_iso()}
+            )
+            db.commit()
+        else:
+            # IMPORTANT: update language even if session already exists
+            db.execute(
+                text("UPDATE sessions SET language = :l WHERE token = :t AND ended_at IS NULL"),
+                {"l": lang, "t": session_id}
             )
             db.commit()
     finally:
