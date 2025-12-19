@@ -12,9 +12,9 @@ from langchain_core.prompts import ChatPromptTemplate
 from langchain_core.output_parsers import StrOutputParser
 from report_module.prompts import report_system_prompt
 from report_module.utilities import (_score_candidate,
-                                      _extract_player_group_key,
                                       _first_non_empty, 
-                                      _normalize_roles)
+                                      _normalize_roles,
+                                      fold_ascii)
 
 CHAT_LLM = ChatDeepSeek(model="deepseek-chat", temperature=0.3)
 
@@ -36,29 +36,41 @@ def fetch_docs_for_favorite(
     limit: int = 30
 ) -> List[Dict[str, Any]]:
     """
-    New behavior:
-    - Use player_identity (from frontend) to locate the correct player in documents_v4
-    - Then fetch that player's docs
+    Behavior (aligned with your single-row-per-player DB reality):
+    1) Broad candidate search in player_data using name/team/nationality filters.
+       - name search uses BOTH raw and diacritic-folded patterns (Šeško vs Sesko).
+    2) Score candidates with _score_candidate and pick BEST id
+    3) Fetch that exact row by id and return it as a single-doc list
     """
     name = player_identity.get("name")
     if not name or not str(name).strip():
-        # No name => cannot reliably search; return empty
         return []
 
-    name_q = f"%{str(name).strip()}%"
+    raw_name = str(name).strip()
+    name_q1 = f"%{raw_name}%"
+    name_folded = fold_ascii(raw_name).strip()
+    name_q2 = f"%{name_folded}%" if name_folded else None
+
     team = player_identity.get("team")
     nat  = player_identity.get("nationality")
 
-    # Broad candidate search (JSONB metadata preferred; fallback to content ILIKE)
     rows = db.execute(text("""
         SELECT id, content, metadata
         FROM player_data
         WHERE
           (
-            (metadata->>'player_name') ILIKE :name_q
-            OR (metadata->>'name') ILIKE :name_q
-            OR (metadata->>'player') ILIKE :name_q
-            OR content ILIKE :name_q
+            (metadata->>'player_name') ILIKE :name_q1
+            OR (metadata->>'name') ILIKE :name_q1
+            OR (metadata->>'player') ILIKE :name_q1
+            OR content ILIKE :name_q1
+            OR (
+                :name_q2 IS NOT NULL AND (
+                    (metadata->>'player_name') ILIKE :name_q2
+                    OR (metadata->>'name') ILIKE :name_q2
+                    OR (metadata->>'player') ILIKE :name_q2
+                    OR content ILIKE :name_q2
+                )
+            )
           )
           AND (
             :team_q IS NULL
@@ -75,7 +87,8 @@ def fetch_docs_for_favorite(
         ORDER BY id DESC
         LIMIT 250
     """), {
-        "name_q": name_q,
+        "name_q1": name_q1,
+        "name_q2": name_q2,
         "team_q": (f"%{team.strip()}%" if isinstance(team, str) and team.strip() else None),
         "nat_q":  (f"%{nat.strip()}%"  if isinstance(nat, str) and nat.strip() else None),
     }).mappings().all()
@@ -83,53 +96,43 @@ def fetch_docs_for_favorite(
     if not rows:
         return []
 
-    # Score candidates and pick best key
-    best: Tuple[float, Optional[str]] = (-1.0, None)
-    metas: List[Dict[str, Any]] = []
-
+    # Pick best ID by scoring
+    best: Tuple[float, Optional[int]] = (-1.0, None)
     for r in rows:
         meta = r.get("metadata") or {}
-        metas.append(meta)
         sc = _score_candidate(meta, player_identity)
-        key = _extract_player_group_key(meta)
-        if key and sc > best[0]:
-            best = (sc, key)
+        rid = r.get("id")
+        if rid is not None and sc > best[0]:
+            best = (sc, int(rid))
 
-    best_key = best[1]
-    if not best_key:
-        # fallback: just return top rows as-is
+    best_id = best[1]
+    if best_id is None:
+        # fallback: return top rows as-is
         return [{"id": r["id"], "content": r.get("content"), "metadata": r.get("metadata")} for r in rows[:limit]]
 
-    # Fetch docs for that player_key (or our fallback key)
-    docs = db.execute(text("""
+    # Fetch the single row by ID (since each player has exactly one row)
+    doc = db.execute(text("""
         SELECT id, content, metadata
         FROM player_data
-        WHERE
-          (metadata->>'player_key') = :pk
-          OR (
-            :pk LIKE '%|%'
-            AND (metadata->>'player_name') IS NOT NULL
-            AND (metadata->>'team_name') IS NOT NULL
-            AND ((metadata->>'player_name') || '|' || (metadata->>'team_name')) = :pk
-          )
-        ORDER BY id DESC
-        LIMIT :lim
-    """), {"pk": best_key, "lim": limit}).mappings().all()
+        WHERE id = :id
+        LIMIT 1
+    """), {"id": best_id}).mappings().first()
 
-    return [{"id": r["id"], "content": r.get("content"), "metadata": r.get("metadata")} for r in docs]
+    if not doc:
+        return []
+
+    return [{
+        "id": doc.get("id"),
+        "content": doc.get("content"),
+        "metadata": doc.get("metadata"),
+    }]
 
 def build_player_card_from_docs(metric_docs: List[Dict[str, Any]]) -> Dict[str, Any]:
-    """
-    Merge metadata across docs to get a single 'best effort' player card.
-    We do NOT invent; we only take what appears in metadata.
-    """
     card: Dict[str, Any] = {}
 
-    # Iterate newest-first; take first non-empty value per field.
     for d in metric_docs:
         meta = d.get("metadata") or {}
 
-        # Common key variants (support multiple)
         name = _first_non_empty(meta.get("player_name"), meta.get("name"), meta.get("player"))
         team = _first_non_empty(meta.get("team"), meta.get("team_name"), meta.get("club"))
         nationality = _first_non_empty(meta.get("nationality"), meta.get("nationality_name"), meta.get("country"))
@@ -162,7 +165,6 @@ def build_player_card_from_docs(metric_docs: List[Dict[str, Any]]) -> Dict[str, 
             if roles:
                 card["roles"] = roles
 
-    # Ensure roles is always present as list (even empty)
     if "roles" not in card:
         card["roles"] = []
 

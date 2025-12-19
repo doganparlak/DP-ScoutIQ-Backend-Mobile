@@ -2,8 +2,7 @@ from typing import Any, Dict, List, Optional, Tuple
 from sqlalchemy import text
 import re
 import json
-import unicodedata
-from report_module.utilities import _num, _norm
+from report_module.utilities import _num, _norm, fold_ascii
 from api_module.utilities import get_db 
 
 META_ID_KEYS = {
@@ -37,18 +36,6 @@ HEAVY_TAGS_RE = re.compile(r"(<img[^>]*>|<table[\s\S]*?</table>)", re.IGNORECASE
 def strip_heavy_html(text: str) -> str:
     """Remove <img> (esp. base64) and <table> blocks before sending to LLMs."""
     return HEAVY_TAGS_RE.sub("", text or "").strip()
-
-def fold_ascii(s: Optional[str]) -> str:
-    """
-    Fold diacritics and special chars into ASCII where possible.
-    Example: 'Šeško' -> 'Sesko'
-    """
-    if not s:
-        return ""
-    s = str(s)
-    s = unicodedata.normalize("NFKD", s)
-    s = s.encode("ascii", "ignore").decode("ascii")
-    return s
 
 def fallback_parse_profile_block_new(raw_text: str) -> Dict[str, Any]:
     """

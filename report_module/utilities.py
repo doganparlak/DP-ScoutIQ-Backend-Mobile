@@ -1,9 +1,7 @@
 import re
-from typing import Any, Dict, List, Optional, Tuple
+from typing import Any, Dict, List, Optional
 from sqlalchemy import text
-
-def _norm(s: Optional[str]) -> str:
-    return re.sub(r"\s+", " ", (s or "")).strip().lower()
+import unicodedata
 
 def _num(v: Any) -> Optional[float]:
     try:
@@ -11,6 +9,22 @@ def _num(v: Any) -> Optional[float]:
         return float(v)
     except:
         return None
+    
+def fold_ascii(s: Optional[str]) -> str:
+    """
+    Fold diacritics: 'Šeško' -> 'Sesko'
+    Keeps ASCII letters/numbers/spaces; drops combining marks.
+    """
+    if not s:
+        return ""
+    s = str(s)
+    s = unicodedata.normalize("NFKD", s)
+    s = "".join(ch for ch in s if not unicodedata.combining(ch))
+    return s
+
+def _norm(s: Optional[str]) -> str:
+    s0 = fold_ascii(s or "")
+    return re.sub(r"\s+", " ", s0).strip().lower()
 
 def _score_candidate(meta: Dict[str, Any], ident: Dict[str, Any]) -> float:
     score = 0.0
@@ -27,16 +41,22 @@ def _score_candidate(meta: Dict[str, Any], ident: Dict[str, Any]) -> float:
 
     # name is most important
     if name_i and name_m:
-        if name_i == name_m: score += 10
-        elif name_i in name_m or name_m in name_i: score += 7
+        if name_i == name_m:
+            score += 10
+        elif name_i in name_m or name_m in name_i:
+            score += 7
 
     if team_i and team_m:
-        if team_i == team_m: score += 6
-        elif team_i in team_m or team_m in team_i: score += 4
+        if team_i == team_m:
+            score += 6
+        elif team_i in team_m or team_m in team_i:
+            score += 4
 
     if nat_i and nat_m:
-        if nat_i == nat_m: score += 4
-        elif nat_i in nat_m or nat_m in nat_i: score += 2
+        if nat_i == nat_m:
+            score += 4
+        elif nat_i in nat_m or nat_m in nat_i:
+            score += 2
 
     if gen_i and gen_m and gen_i == gen_m:
         score += 2
