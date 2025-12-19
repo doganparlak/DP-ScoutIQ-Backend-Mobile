@@ -307,16 +307,6 @@ def run_subscription_sync(db: Session):
     db.commit()
 
 def run_entitlements_sync(db: Session, limit: int = 2000):
-    """
-    Strong sync:
-    - verifies store status based on subscription_entitlements rows
-    - updates subscription_entitlements (source of truth)
-    - optionally updates users if last_seen_user_id still exists
-
-    Android note:
-      If your verify_android_subscription requires receipt, you must store receipt in
-      subscription_entitlements (recommended). Otherwise Android rows will be skipped.
-    """
     now = dt.datetime.now(dt.timezone.utc)
 
     ents = db.execute(
@@ -326,9 +316,7 @@ def run_entitlements_sync(db: Session, limit: int = 2000):
               external_id,
               COALESCE(product_id, '') AS product_id,
               last_seen_user_id,
-              last_seen_email,
-              -- OPTIONAL: only works if you add this column
-              receipt
+              last_seen_email
             FROM subscription_entitlements
             ORDER BY last_verified_at ASC NULLS FIRST, updated_at ASC
             LIMIT :lim
@@ -344,6 +332,7 @@ def run_entitlements_sync(db: Session, limit: int = 2000):
             IOS_PRO_PRODUCT_ID if platform == "ios" else ANDROID_PRO_PRODUCT_ID
         )
 
+        # Default result
         ok = False
         expires_at = now
         auto_renew = False
@@ -352,28 +341,24 @@ def run_entitlements_sync(db: Session, limit: int = 2000):
             if platform == "ios":
                 ok, expires_at, auto_renew = verify_ios_subscription(product_id, ext_id)
             else:
-                receipt = e.get("receipt")
-                if not receipt:
-                    # Can't strongly verify Android without receipt (given your current verifier).
-                    # Skip to avoid incorrectly flipping the entitlement.
-                    db.execute(
-                        text("""
-                            UPDATE subscription_entitlements
-                            SET last_verified_at = NOW(),
-                                updated_at = NOW()
-                            WHERE platform = :platform AND external_id = :ext_id
-                        """),
-                        {"platform": platform, "ext_id": ext_id},
-                    )
-                    continue
-
-                ok, expires_at, auto_renew = verify_android_subscription(product_id, ext_id, receipt)
+                # Can't strongly verify Android without receipt in your current setup.
+                # Keep entitlement row as-is; only bump last_verified_at.
+                db.execute(
+                    text("""
+                        UPDATE subscription_entitlements
+                        SET last_verified_at = NOW(),
+                            updated_at = NOW()
+                        WHERE platform = :platform AND external_id = :ext_id
+                    """),
+                    {"platform": platform, "ext_id": ext_id},
+                )
+                continue
         except Exception:
             ok, expires_at, auto_renew = False, now, False
 
         active = bool(ok and expires_at and expires_at > now)
 
-        # 1) Update entitlement row
+        # 1) Update entitlement row (iOS)
         db.execute(
             text("""
                 UPDATE subscription_entitlements
@@ -395,7 +380,7 @@ def run_entitlements_sync(db: Session, limit: int = 2000):
             },
         )
 
-        # 2) If user still exists, optionally sync user too
+        # 2) Optional: update linked user if they still exist
         uid = e.get("last_seen_user_id")
         if uid:
             user_exists = db.execute(
