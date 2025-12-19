@@ -2,6 +2,7 @@ from typing import Any, Dict, List, Optional, Tuple
 from sqlalchemy import text
 import re
 import json
+import unicodedata
 from report_module.utilities import _num, _norm
 from api_module.utilities import get_db 
 
@@ -36,6 +37,18 @@ HEAVY_TAGS_RE = re.compile(r"(<img[^>]*>|<table[\s\S]*?</table>)", re.IGNORECASE
 def strip_heavy_html(text: str) -> str:
     """Remove <img> (esp. base64) and <table> blocks before sending to LLMs."""
     return HEAVY_TAGS_RE.sub("", text or "").strip()
+
+def fold_ascii(s: Optional[str]) -> str:
+    """
+    Fold diacritics and special chars into ASCII where possible.
+    Example: 'Šeško' -> 'Sesko'
+    """
+    if not s:
+        return ""
+    s = str(s)
+    s = unicodedata.normalize("NFKD", s)
+    s = s.encode("ascii", "ignore").decode("ascii")
+    return s
 
 def fallback_parse_profile_block_new(raw_text: str) -> Dict[str, Any]:
     """
@@ -174,32 +187,51 @@ def _extract_stats_from_doc_meta(doc_meta: Dict[str, Any]) -> List[Dict[str, Any
         out.append({"metric": str(k), "value": nv})
     return out
 
-
 def _is_non_zero_stat(stat: Dict[str, Any]) -> bool:
     v = _num(stat.get("value"))
     return (v is not None) and (abs(v) > 0.05)
 
 def _score_candidate(meta: Dict[str, Any], ident: Dict[str, Any]) -> float:
+    """
+    Keep your scoring policy (name + nationality primary),
+    but make comparisons diacritics-safe by comparing both raw-norm and folded-norm.
+    """
     score = 0.0
 
-    name_i = _norm(ident.get("name"))
-    nat_i  = _norm(ident.get("nationality"))
-    gen_i  = _norm(ident.get("gender"))
+    # identity inputs
+    name_i_raw = _norm(ident.get("name"))
+    nat_i_raw  = _norm(ident.get("nationality"))
+    gen_i_raw  = _norm(ident.get("gender"))
 
-    name_m = _norm(meta.get("player_name") or meta.get("name") or meta.get("player"))
-    nat_m  = _norm(meta.get("nationality_name") or meta.get("nationality") or meta.get("country"))
-    gen_m  = _norm(meta.get("gender"))
+    name_i_f = _norm(fold_ascii(ident.get("name")))
+    nat_i_f  = _norm(fold_ascii(ident.get("nationality")))
+
+    # metadata candidate fields
+    name_m_raw = _norm(meta.get("player_name") or meta.get("name") or meta.get("player"))
+    nat_m_raw  = _norm(meta.get("nationality_name") or meta.get("nationality") or meta.get("country"))
+    gen_m_raw  = _norm(meta.get("gender"))
+
+    name_m_f = _norm(fold_ascii(meta.get("player_name") or meta.get("name") or meta.get("player")))
+    nat_m_f  = _norm(fold_ascii(meta.get("nationality_name") or meta.get("nationality") or meta.get("country")))
 
     # name is most important
-    if name_i and name_m:
-        if name_i == name_m: score += 10
-        elif name_i in name_m or name_m in name_i: score += 7
+    if (name_i_raw and name_m_raw) or (name_i_f and name_m_f):
+        # prefer exact match (raw or folded)
+        if (name_i_raw and name_m_raw and name_i_raw == name_m_raw) or (name_i_f and name_m_f and name_i_f == name_m_f):
+            score += 10
+        # substring match (raw or folded)
+        elif (name_i_raw and name_m_raw and (name_i_raw in name_m_raw or name_m_raw in name_i_raw)) or \
+             (name_i_f and name_m_f and (name_i_f in name_m_f or name_m_f in name_i_f)):
+            score += 7
 
-    if nat_i and nat_m:
-        if nat_i == nat_m: score += 4
-        elif nat_i in nat_m or nat_m in nat_i: score += 2
+    if (nat_i_raw and nat_m_raw) or (nat_i_f and nat_m_f):
+        if (nat_i_raw and nat_m_raw and nat_i_raw == nat_m_raw) or (nat_i_f and nat_m_f and nat_i_f == nat_m_f):
+            score += 4
+        elif (nat_i_raw and nat_m_raw and (nat_i_raw in nat_m_raw or nat_m_raw in nat_i_raw)) or \
+             (nat_i_f and nat_m_f and (nat_i_f in nat_m_f or nat_m_f in nat_i_f)):
+            score += 2
 
-    if gen_i and gen_m and gen_i == gen_m:
+    if gen_i_raw and gen_m_raw and gen_i_raw == gen_m_raw:
         score += 2
 
     # numeric closeness (don’t punish missing)
@@ -221,20 +253,32 @@ def fetch_player_nonzero_stats(
     db,
     player_identity: Dict[str, Any],
     limit_docs: int = 250
-) -> List[Dict[str, Any]]:
+) -> Tuple[List[Dict[str, Any]], Dict[str, Any]]:
     """
-    1) Broad candidate search in `player_data`
-    2) Score candidates to select best_id
-    3) Fetch docs for player_key and collect metadata stats
+    1) Broad candidate search in `player_data` (name + nationality) using BOTH original and folded name
+    2) Score candidates to select best id (int8)
+    3) Fetch that single row by id and collect metadata stats
     4) Filter out stats that are zero
+    5) Return (stats, resolved_identity_fields) where resolved fields come from the winning row
     """
     name = player_identity.get("name")
     if not name or not str(name).strip():
-        return []
+        return [], {}
 
-    name_q = f"%{str(name).strip()}%"
-    nat  = player_identity.get("nationality")
-    print(name_q, nat)
+    name_raw = str(name).strip()
+    name_fold = fold_ascii(name_raw).strip()
+
+    name_q = f"%{name_raw}%"
+    name_q_fold = f"%{name_fold}%" if name_fold and name_fold.lower() != name_raw.lower() else None
+
+    nat = player_identity.get("nationality")
+    nat_raw = nat.strip() if isinstance(nat, str) else ""
+    nat_fold = fold_ascii(nat_raw).strip()
+
+    nat_q = f"%{nat_raw}%" if nat_raw else None
+    nat_q_fold = f"%{nat_fold}%" if nat_fold and nat_fold.lower() != nat_raw.lower() else None
+
+    # Broad candidate search (name + nationality) with folded variants
     rows = db.execute(text("""
         SELECT id, metadata
         FROM player_data
@@ -244,45 +288,61 @@ def fetch_player_nonzero_stats(
             OR (metadata->>'name') ILIKE :name_q
             OR (metadata->>'player') ILIKE :name_q
             OR (content ILIKE :name_q)
+            OR (
+                :name_q_fold IS NOT NULL AND (
+                    (metadata->>'player_name') ILIKE :name_q_fold
+                    OR (metadata->>'name') ILIKE :name_q_fold
+                    OR (metadata->>'player') ILIKE :name_q_fold
+                    OR (content ILIKE :name_q_fold)
+                )
+            )
           )
           AND (
             :nat_q IS NULL
             OR (metadata->>'nationality_name') ILIKE :nat_q
             OR (metadata->>'nationality') ILIKE :nat_q
             OR (content ILIKE :nat_q)
+            OR (
+                :nat_q_fold IS NOT NULL AND (
+                    (metadata->>'nationality_name') ILIKE :nat_q_fold
+                    OR (metadata->>'nationality') ILIKE :nat_q_fold
+                    OR (content ILIKE :nat_q_fold)
+                )
+            )
           )
         ORDER BY id DESC
         LIMIT :lim
     """), {
         "name_q": name_q,
-        "nat_q":  (f"%{nat.strip()}%"  if isinstance(nat, str) and nat.strip() else None),
+        "name_q_fold": name_q_fold,
+        "nat_q": nat_q,
+        "nat_q_fold": nat_q_fold,
         "lim": int(limit_docs),
     }).mappings().all()
-    print("ROWS")
     print(rows)
     if not rows:
-        return []
+        return [], {}
 
-    # pick best player_key
-    best: Tuple[float, Optional[str]] = (-1.0, None)
+    # pick best id (each row == one player)
+    best: Tuple[float, Optional[int]] = (-1.0, None)
     for r in rows:
         meta = r.get("metadata") or {}
         sc = _score_candidate(meta, player_identity)
         rid = r.get("id")
         if rid is not None and sc > best[0]:
             best = (sc, int(rid))
-    print("BEST")
     print(best)
     best_id = best[1]
     if best_id is None:
-        # fallback: try extracting stats directly from the broad rows
+        # fallback: extract stats from broad rows
         raw_stats: List[Dict[str, Any]] = []
         for r in rows:
             doc_meta = r.get("metadata") or {}
             raw_stats.extend(_extract_stats_from_doc_meta(doc_meta))
-        return [s for s in raw_stats if _is_non_zero_stat(s)]
+        nonzero = [s for s in raw_stats if _is_non_zero_stat(s)]
+        return nonzero, {}
 
-    # fetch all docs for that player_key
+    # fetch the single player row by id
     doc = db.execute(text("""
         SELECT id, metadata
         FROM player_data
@@ -291,14 +351,15 @@ def fetch_player_nonzero_stats(
     """), {"id": best_id}).mappings().first()
 
     if not doc:
-       return []
+        return [], {}
 
-    # non-zero filter
     doc_meta = doc.get("metadata") or {}
+
+    # stats
     raw_stats = _extract_stats_from_doc_meta(doc_meta)
     nonzero = [s for s in raw_stats if _is_non_zero_stat(s)]
 
-    # optional: de-dupe by stat name/label if present
+    # optional dedupe
     seen = set()
     deduped: List[Dict[str, Any]] = []
     for s in nonzero:
@@ -309,13 +370,44 @@ def fetch_player_nonzero_stats(
             seen.add(key)
         deduped.append(s)
 
-    return deduped
+    # resolved identity from winning row (authoritative when present)
+    resolved_raw = {
+        "team": doc_meta.get("team_name") or doc_meta.get("team"),
+        "age": _num(doc_meta.get("age")),
+        "height": _num(doc_meta.get("height")),
+        "weight": _num(doc_meta.get("weight")),
+
+        # optional
+        "nationality": doc_meta.get("nationality_name") or doc_meta.get("nationality"),
+        "gender": doc_meta.get("gender"),
+        "position_name": doc_meta.get("position_name"),
+        "match_count": _num(doc_meta.get("match_count")),
+        "id": doc.get("id"),
+    }
+    # Remove None (and empty-string) fields so caller never overwrites with blanks
+    resolved: Dict[str, Any] = {}
+    for k, v in resolved_raw.items():
+        if v is None:
+            continue
+        if isinstance(v, str) and not v.strip():
+            continue
+        resolved[k] = v
+    
+    # Normalize ints where appropriate (only if age exists after filtering)
+    if "age" in resolved:
+        try:
+            resolved["age"] = int(round(float(resolved["age"])))
+        except:
+            # if conversion fails, remove to avoid bad overwrite
+            resolved.pop("age", None)
+
+    print(resolved)
+    return deduped, resolved
 
 def build_player_payload_new(meta: Dict[str, Any]) -> Dict[str, Any]:
     """
-    Extended payload builder that exposes the new meta fields:
-    gender, height, weight, nationality, team, match_count, roles, potential.
-    PLUS: fetch non-zero stats from DB and attach as `stats`.
+    Build payload and overwrite team/age/height/weight (and optionally gender/nationality/match_count)
+    from the winning DB row, if present.
     """
     meta_by = {(p["name"]).strip(): p for p in meta.get("players", []) if p.get("name")}
     names = sorted(set(meta_by.keys()))
@@ -326,7 +418,6 @@ def build_player_payload_new(meta: Dict[str, Any]) -> Dict[str, Any]:
         for name in names:
             m = meta_by.get(name, {}) or {}
 
-            # identity used for matching docs
             player_identity = {
                 "name": name,
                 "team": m.get("team"),
@@ -336,26 +427,34 @@ def build_player_payload_new(meta: Dict[str, Any]) -> Dict[str, Any]:
                 "height": m.get("height"),
                 "weight": m.get("weight"),
             }
-            print("PLAYER IDENTITIY READY")
-            print(player_identity)
-            # DB step: fetch player's non-zero stats
-            stats = fetch_player_nonzero_stats(db, player_identity) 
-            print("STATS")
-            print(stats)
+
+            stats, resolved = fetch_player_nonzero_stats(db, player_identity)
+
+            # overwrite only if resolved has values
+            team_final = resolved.get("team") or m.get("team")
+            age_final = resolved.get("age") if resolved.get("age") is not None else m.get("age")
+            height_final = resolved.get("height") if resolved.get("height") is not None else m.get("height")
+            weight_final = resolved.get("weight") if resolved.get("weight") is not None else m.get("weight")
+
+            # optional but usually helpful to reduce confusion:
+            nat_final = resolved.get("nationality") or m.get("nationality")
+            gender_final = resolved.get("gender") or m.get("gender")
+            match_count_final = resolved.get("match_count") if resolved.get("match_count") is not None else m.get("match_count")
+
             output["players"].append({
                 "name": name,
                 "meta": {
-                    "gender": m.get("gender"),
-                    "height": m.get("height"),
-                    "weight": m.get("weight"),
-                    "nationality": m.get("nationality"),
-                    "team": m.get("team"),
-                    "match_count": m.get("match_count"),
-                    "age": m.get("age"),
+                    "gender": gender_final,
+                    "height": height_final,
+                    "weight": weight_final,
+                    "nationality": nat_final,
+                    "team": team_final,
+                    "match_count": match_count_final,
+                    "age": age_final,
                     "roles": m.get("roles") or [],
                     "potential": m.get("potential"),
                 },
-                "stats": stats or []  
+                "stats": stats or []
             })
 
         return output
