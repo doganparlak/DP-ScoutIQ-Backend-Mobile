@@ -202,6 +202,18 @@ def delete_user_everywhere(db: Session, user_id: int) -> None:
     # 2) Delete email codes
     db.execute(text("DELETE FROM email_codes WHERE email = :e"), {"e": email})
 
+    # 2b) IMPORTANT (Option A): keep entitlement row for future restore,
+    # but detach it from this deleted user_id.
+    db.execute(
+        text("""
+            UPDATE subscription_entitlements
+            SET last_seen_user_id = NULL,
+                updated_at = NOW()
+            WHERE lower(last_seen_email) = lower(:e)
+        """),
+        {"e": email}
+    )
+
     # 3) Delete user (cascades to favorite_players)
     db.execute(text("DELETE FROM users WHERE id = :uid"), {"uid": user_id})
 
