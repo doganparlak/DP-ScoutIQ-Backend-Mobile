@@ -232,6 +232,10 @@ def verify_android_subscription(
 
 # AUTO CHECK FOR SUBSCRIPTION UPDATES FOR ALL USERS
 def run_subscription_sync(db: Session):
+    """
+    Sync USERS table from store verification.
+    Keeps users.plan accurate for active accounts.
+    """
     rows = db.execute(
         text("""
             SELECT
@@ -244,6 +248,7 @@ def run_subscription_sync(db: Session):
             WHERE subscription_external_id IS NOT NULL
         """)
     ).mappings().all()
+
     now = dt.datetime.now(dt.timezone.utc)
 
     for r in rows:
@@ -255,51 +260,182 @@ def run_subscription_sync(db: Session):
         if not platform or not ext_id:
             continue
 
-        if platform == "ios":
-            ok, new_end, auto_renew = verify_ios_subscription(
-                IOS_PRO_PRODUCT_ID, 
-                ext_id
-            )
-        else:
-            ok, new_end, auto_renew = verify_android_subscription(
-                ANDROID_PRO_PRODUCT_ID, 
-                ext_id,
-                receipt
-            )
+        try:
+            if platform == "ios":
+                ok, new_end, auto_renew = verify_ios_subscription(IOS_PRO_PRODUCT_ID, ext_id)
+            else:
+                ok, new_end, auto_renew = verify_android_subscription(ANDROID_PRO_PRODUCT_ID, ext_id, receipt)
+        except Exception:
+            ok, new_end, auto_renew = False, now, False
 
-        # If verification fails or it's no longer active
-        if not ok or new_end <= now:
+        active = bool(ok and new_end and new_end > now)
+
+        if not active:
             db.execute(
                 text("""
                     UPDATE users
-                    SET subscription_end_at      = NULL,
-                        subscription_auto_renew  = FALSE,
-                        subscription_platform    = NULL,
-                        subscription_external_id = NULL,
-                        subscription_receipt     = NULL,
-                        plan                     = 'Free'
+                    SET subscription_end_at        = NULL,
+                        subscription_auto_renew    = FALSE,
+                        subscription_platform      = NULL,
+                        subscription_external_id   = NULL,
+                        subscription_receipt       = NULL,
+                        plan                       = 'Free',
+                        subscription_last_checked_at = :checked_at
                     WHERE id = :id
                 """),
-                {"id": uid},
+                {"id": uid, "checked_at": now_iso()},
             )
             continue
 
-        # Still active, update expiry and keep Pro
         db.execute(
             text("""
                 UPDATE users
-                SET subscription_end_at         = :end_at,
-                    subscription_auto_renew     = :auto_renew,
+                SET subscription_end_at          = :end_at,
+                    subscription_auto_renew      = :auto_renew,
                     subscription_last_checked_at = :checked_at,
                     plan                         = 'Pro'
                 WHERE id = :id
             """),
             {
                 "end_at": new_end.isoformat(),
-                "auto_renew": auto_renew,
+                "auto_renew": bool(auto_renew),
                 "checked_at": now_iso(),
                 "id": uid,
             },
         )
+
+    db.commit()
+
+def run_entitlements_sync(db: Session, limit: int = 2000):
+    """
+    Strong sync:
+    - verifies store status based on subscription_entitlements rows
+    - updates subscription_entitlements (source of truth)
+    - optionally updates users if last_seen_user_id still exists
+
+    Android note:
+      If your verify_android_subscription requires receipt, you must store receipt in
+      subscription_entitlements (recommended). Otherwise Android rows will be skipped.
+    """
+    now = dt.datetime.now(dt.timezone.utc)
+
+    ents = db.execute(
+        text("""
+            SELECT
+              platform,
+              external_id,
+              COALESCE(product_id, '') AS product_id,
+              last_seen_user_id,
+              last_seen_email,
+              -- OPTIONAL: only works if you add this column
+              receipt
+            FROM subscription_entitlements
+            ORDER BY last_verified_at ASC NULLS FIRST, updated_at ASC
+            LIMIT :lim
+        """),
+        {"lim": limit},
+    ).mappings().all()
+
+    for e in ents:
+        platform = e["platform"]
+        ext_id = e["external_id"]
+
+        product_id = e["product_id"] or (
+            IOS_PRO_PRODUCT_ID if platform == "ios" else ANDROID_PRO_PRODUCT_ID
+        )
+
+        ok = False
+        expires_at = now
+        auto_renew = False
+
+        try:
+            if platform == "ios":
+                ok, expires_at, auto_renew = verify_ios_subscription(product_id, ext_id)
+            else:
+                receipt = e.get("receipt")
+                if not receipt:
+                    # Can't strongly verify Android without receipt (given your current verifier).
+                    # Skip to avoid incorrectly flipping the entitlement.
+                    db.execute(
+                        text("""
+                            UPDATE subscription_entitlements
+                            SET last_verified_at = NOW(),
+                                updated_at = NOW()
+                            WHERE platform = :platform AND external_id = :ext_id
+                        """),
+                        {"platform": platform, "ext_id": ext_id},
+                    )
+                    continue
+
+                ok, expires_at, auto_renew = verify_android_subscription(product_id, ext_id, receipt)
+        except Exception:
+            ok, expires_at, auto_renew = False, now, False
+
+        active = bool(ok and expires_at and expires_at > now)
+
+        # 1) Update entitlement row
+        db.execute(
+            text("""
+                UPDATE subscription_entitlements
+                SET product_id = :product_id,
+                    is_active = :active,
+                    expires_at = :exp,
+                    auto_renew = :ar,
+                    last_verified_at = NOW(),
+                    updated_at = NOW()
+                WHERE platform = :platform AND external_id = :ext_id
+            """),
+            {
+                "platform": platform,
+                "ext_id": ext_id,
+                "product_id": product_id,
+                "active": active,
+                "exp": expires_at.isoformat() if expires_at else None,
+                "ar": bool(auto_renew),
+            },
+        )
+
+        # 2) If user still exists, optionally sync user too
+        uid = e.get("last_seen_user_id")
+        if uid:
+            user_exists = db.execute(
+                text("SELECT 1 FROM users WHERE id = :id"),
+                {"id": uid},
+            ).first()
+
+            if user_exists:
+                if not active:
+                    db.execute(
+                        text("""
+                            UPDATE users
+                            SET plan = 'Free',
+                                subscription_end_at = NULL,
+                                subscription_auto_renew = FALSE,
+                                subscription_platform = NULL,
+                                subscription_external_id = NULL,
+                                subscription_receipt = NULL
+                            WHERE id = :id
+                        """),
+                        {"id": uid},
+                    )
+                else:
+                    db.execute(
+                        text("""
+                            UPDATE users
+                            SET plan = 'Pro',
+                                subscription_end_at = :end_at,
+                                subscription_auto_renew = :auto_renew,
+                                subscription_platform = :platform,
+                                subscription_external_id = :ext_id
+                            WHERE id = :id
+                        """),
+                        {
+                            "id": uid,
+                            "end_at": expires_at.isoformat(),
+                            "auto_renew": bool(auto_renew),
+                            "platform": platform,
+                            "ext_id": ext_id,
+                        },
+                    )
 
     db.commit()
