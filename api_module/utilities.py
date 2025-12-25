@@ -433,6 +433,7 @@ ROLE_LONG_TO_SHORT = {v: k for k, v in ROLE_SHORT_TO_LONG.items()}
 ROLE_LONG_TO_SHORT.update({
     "Goalkeeper": "GK",
     "Goal Keeper": "GK",
+    'Central Midfield': 'CM',
     "Centre Back": "CB",
     "Attacking Midfield": "CAM",
     "Defensive Midfield": "CDM",
