@@ -271,7 +271,7 @@ def fetch_player_nonzero_stats(
         "nat_q": nat_q,
         "lim": int(limit_docs),
     }).mappings().all()
-    print(rows)
+    print(rows, flush=True)
     if not rows:
         return [], {}
 
@@ -283,7 +283,7 @@ def fetch_player_nonzero_stats(
         rid = r.get("id")
         if rid is not None and sc > best[0]:
             best = (sc, int(rid))
-    print(best)
+    print(best, flush=True)
     best_id = best[1]
     if best_id is None:
         # fallback: extract stats from broad rows

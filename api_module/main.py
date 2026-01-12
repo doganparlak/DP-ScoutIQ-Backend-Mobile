@@ -56,6 +56,7 @@ app.add_middleware(
 # ---------- endpoints ----------
 @app.get("/health")
 async def health() -> Dict[str, Any]:
+    print("HEALTH HIT", flush=True)
     return {"ok": True}
 
 @app.post("/auth/signup")

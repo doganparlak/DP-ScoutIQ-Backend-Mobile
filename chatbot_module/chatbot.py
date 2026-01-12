@@ -190,8 +190,8 @@ def answer_question(
     # 2) Compute seen players from PRIOR assistant messages ONLY
     seen_players = get_seen_players_from_history(ai_msgs)
     seen_list_lower = { (n or "").lower().strip() for n in seen_players }
-    print("SEEN PLAYERS FETCHED")
-    print(seen_list_lower)
+    print("SEEN PLAYERS FETCHED", flush=True)
+    print(seen_list_lower, flush=True)
     # 3) Build selection preamble (semantic, no keyword parsing)
     preamble = compose_selection_preamble(seen_players, strategy)
     # 4) Translate user question to English if needed (TR -> EN, EN passthrough)
@@ -232,7 +232,7 @@ def answer_question(
         append_chat_message(db, session_id, "human", question or "")
         append_chat_message(db, session_id, "ai", base_answer)
     except Exception as e:
-        print(e)
+        print(e, flush=True)
         append_chat_message(db, session_id, "human", question or "")
         append_chat_message(db, session_id, "ai", "Sorry, I couldn’t generate an answer right now.")
         return {"answer": "Sorry, I couldn’t generate an answer right now.", "answer_raw": str(e)}
@@ -241,20 +241,20 @@ def answer_question(
 
     # 6) Parse current answer into meta/stats
     out = base_answer
-    print("BASE ANSWER")
-    print(out)
+    print("BASE ANSWER", flush=True)
+    print(out, flush=True)
     try:
         meta = parse_player_meta_new(meta_parser_chain, raw_text=base_answer)
         print("META")
-        print(meta)
+        print(meta, flush=True)
         # Keep only NEW players for data payload (so cards/plots are printed once per player)
         meta_new, new_names = filter_players_by_seen(meta, seen_players)
         print("META NEW")
-        print(meta_new)
+        print(meta_new, flush=True)
         # Build structured data for NEW players only (no HTML/PNGs)
         payload = build_player_payload_new(meta_new) if new_names else {"players": []}
         print("PAYLOAD")
-        print(payload)
+        print(payload, flush=True)
         # If QA stage was narrative-only (seen player by name), keep old behavior:
         if not new_names:
             known_names = [p.get("name") for p in (meta.get("players") or []) if p.get("name")]
@@ -264,8 +264,8 @@ def answer_question(
             p0 = (payload.get("players") or [None])[0] or {}
             profile_meta = p0.get("meta") or {}
             stats = p0.get("stats") or []
-            print("STATS")
-            print(stats)
+            print("STATS", flush=True)
+            print(stats, flush=True)
             # Build compact inputs for the interpretation LLM
             profile_json = json.dumps({
                 "name": p0.get("name"),
