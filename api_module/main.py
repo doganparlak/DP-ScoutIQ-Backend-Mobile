@@ -770,8 +770,6 @@ def get_or_create_report(
 ):
     lang = normalize_lang(accept_language) or "en"
     version = 1
-    print("START OF THE REPORT GENEATION")
-    print(f"LANG: {lang}, VERSION: {version}")
 
     # Ensure favorite belongs to user
     owned = db.execute(
@@ -780,7 +778,7 @@ def get_or_create_report(
     ).first()
     if not owned:
         raise HTTPException(status_code=404, detail="Favorite not found")
-    print("CHECK FAVORITE_PLAYERS TABLE COMPLETE")
+
     # Enforce Pro
     # is_user_pro_flag = is_user_pro(db, user_id)
     is_user_pro_flag = True
@@ -789,7 +787,7 @@ def get_or_create_report(
             status_code=403,
             detail="To access the scouting report of the players on your portfolio, upgrade to pro now."
         )
-    print("CHECK USER IS IN PRO PLAN")
+
     # Check cache
     row = db.execute(text("""
             SELECT id, status, content, content_json, language, version
@@ -803,7 +801,6 @@ def get_or_create_report(
 
     if row:
         if row["status"] == "failed":
-            print("CACHED REPORT WAS FAILED — DELETING AND REGENERATING")
             db.execute(
                 text("DELETE FROM scouting_reports WHERE id = :id"),
                 {"id": row["id"]},
@@ -811,7 +808,6 @@ def get_or_create_report(
             db.commit()
             row = None  # continue into regeneration flow
         else:
-            print("REPORT DATA WAS ALREADY GENERATED FOR THE PLAYER (CACHE HIT)")
             return {
                 "favorite_player_id": favorite_id,
                 "status": row["status"],
@@ -822,7 +818,6 @@ def get_or_create_report(
                 "player": payload,  # NEW
             }
 
-    print("REPORT DATA IS NOT PRESENT FOR THE PLAYER (CACHE MISS)")
     # Create processing record
     rid = str(uuid.uuid4())
     db.execute(text("""
@@ -833,7 +828,6 @@ def get_or_create_report(
 
     # Generate synchronously (DeepSeek) and update cache
     try:
-        print("GENERATING REPORT DATA")
         generated = generate_report_content(
             db,
             favorite_id=favorite_id,
@@ -841,9 +835,6 @@ def get_or_create_report(
             version=version,
             player_identity=payload.model_dump(exclude_none=True),  # NEW
         )
-        print("GENERATED REPORT DATA")
-        print(generated)
-        print("INSERTING REPORT DATA TO DB")
         db.execute(text("""
             UPDATE scouting_reports
             SET status = 'ready',
@@ -859,7 +850,6 @@ def get_or_create_report(
             "content_json": json.dumps(generated["content_json"], ensure_ascii=False, default=str),
         })
         db.commit()
-        print("REPORT DATA INSERTION COMPLETE")
         return {
             "favorite_player_id": favorite_id,
             "status": "ready",
@@ -871,8 +861,6 @@ def get_or_create_report(
         }
 
     except Exception as e:
-        print("REPORT DATA GENERATION FAILED")
-        print(e)
         db.execute(text("""
             UPDATE scouting_reports
             SET status = 'failed',

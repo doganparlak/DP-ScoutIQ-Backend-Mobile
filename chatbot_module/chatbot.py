@@ -241,6 +241,7 @@ def answer_question(
 
     # 6) Parse current answer into meta/stats
     out = base_answer
+    print("BASE ANSWER")
     print(out)
     try:
         meta = parse_player_meta_new(meta_parser_chain, raw_text=base_answer)
@@ -261,10 +262,9 @@ def answer_question(
         else:
             # QA stage is block-only -> generate narrative from payload + meta
             p0 = (payload.get("players") or [None])[0] or {}
-            print(p0)
             profile_meta = p0.get("meta") or {}
-            print(profile_meta)
             stats = p0.get("stats") or []
+            print("STATS")
             print(stats)
             # Build compact inputs for the interpretation LLM
             profile_json = json.dumps({
@@ -280,13 +280,6 @@ def answer_question(
                 "profile_json": profile_json,
                 "stats_json": stats_json,
             }).strip()
-            print("OUT")
-            print(out)
-
-        print("LANG:", lang, "IS_TR:", is_turkish(lang))
-        print("Q:", question)
-        print("Q_EN:", translated_question)
-        print("OUT_EN:", out[:120])
         if is_turkish(lang):
             try:
                 translated_out = output_tr_translate_chain.invoke({"text": out}).strip()
