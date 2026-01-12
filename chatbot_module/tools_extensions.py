@@ -2,11 +2,13 @@ from typing import Any, Dict, List, Optional, Tuple
 from sqlalchemy import text
 import re
 import json
+import unicodedata
 from report_module.utilities import _num, _norm
 from api_module.utilities import get_db 
 
 META_ID_KEYS = {
     # identity / grouping
+    "player_name_norm","team_name_norm", "player_key_norm",
     "player_key", "player_name", "name", "player",
     "team_name", "team", "club",
     "nationality_name", "nationality", "country",
@@ -36,6 +38,14 @@ HEAVY_TAGS_RE = re.compile(r"(<img[^>]*>|<table[\s\S]*?</table>)", re.IGNORECASE
 def strip_heavy_html(text: str) -> str:
     """Remove <img> (esp. base64) and <table> blocks before sending to LLMs."""
     return HEAVY_TAGS_RE.sub("", text or "").strip()
+
+def norm_name(s: str) -> str:
+    s = (s or "").strip().lower()
+    s = unicodedata.normalize("NFKD", s)
+    s = "".join(ch for ch in s if not unicodedata.combining(ch))  # remove accents
+    s = re.sub(r"[^a-z0-9\s]", " ", s)  # drop punctuation
+    s = re.sub(r"\s+", " ", s).strip()
+    return s
 
 def fallback_parse_profile_block_new(raw_text: str) -> Dict[str, Any]:
     """
@@ -181,11 +191,11 @@ def _is_non_zero_stat(stat: Dict[str, Any]) -> bool:
 def _score_candidate(meta: Dict[str, Any], ident: Dict[str, Any]) -> float:
     score = 0.0
 
-    name_i = _norm(ident.get("name"))
+    name_i = norm_name(ident.get("name") or "")
     nat_i  = _norm(ident.get("nationality"))
     gen_i  = _norm(ident.get("gender"))
 
-    name_m = _norm(meta.get("player_name") or meta.get("name") or meta.get("player"))
+    name_m = meta.get("player_name_norm") or norm_name(meta.get("player_name") or "")
     nat_m  = _norm(meta.get("nationality_name") or meta.get("nationality") or meta.get("country"))
     gen_m  = _norm(meta.get("gender"))
 
@@ -218,7 +228,7 @@ def fetch_player_nonzero_stats(
     limit_docs: int = 250
 ) -> Tuple[List[Dict[str, Any]], Dict[str, Any]]:
     """
-    1) Broad candidate search in `player_data` (name + nationality) using BOTH original and folded name
+    1) Broad candidate search in `player_data_new` (name + nationality) using BOTH original and folded name
     2) Score candidates to select best id (int8)
     3) Fetch that single row by id and collect metadata stats
     4) Filter out stats that are zero
@@ -229,34 +239,35 @@ def fetch_player_nonzero_stats(
         return [], {}
 
     name_raw = str(name).strip()
-    name_q = f"%{name_raw}%"
-    
+    name_norm = norm_name(name_raw)
+
+    name_raw_q  = f"%{name_raw}%"
+    name_norm_q = f"%{name_norm}%"
+
     nat = player_identity.get("nationality")
     nat_raw = nat.strip() if isinstance(nat, str) else ""
-
     nat_q = f"%{nat_raw}%" if nat_raw else None
 
     # Broad candidate search (name + nationality) with folded variants
     rows = db.execute(text("""
         SELECT id, metadata
-        FROM player_data
+        FROM player_data_new
         WHERE
-          (
-            (metadata->>'player_name') ILIKE :name_q
-            OR (metadata->>'name') ILIKE :name_q
-            OR (metadata->>'player') ILIKE :name_q
-            OR (content ILIKE :name_q)
-          )
-          AND (
+        (
+            (metadata->>'player_name_norm') ILIKE :name_norm_q
+            OR (metadata->>'player_name') ILIKE :name_raw_q
+            OR (content ILIKE :name_raw_q)
+        )
+        AND (
             :nat_q IS NULL
             OR (metadata->>'nationality_name') ILIKE :nat_q
-            OR (metadata->>'nationality') ILIKE :nat_q
             OR (content ILIKE :nat_q)
-          )
+        )
         ORDER BY id DESC
         LIMIT :lim
     """), {
-        "name_q": name_q,
+        "name_norm_q": name_norm_q,
+        "name_raw_q": name_raw_q,
         "nat_q": nat_q,
         "lim": int(limit_docs),
     }).mappings().all()
