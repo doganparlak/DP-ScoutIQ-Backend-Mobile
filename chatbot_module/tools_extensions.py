@@ -247,7 +247,7 @@ def fetch_player_nonzero_stats(
     nat = player_identity.get("nationality")
     nat_raw = nat.strip() if isinstance(nat, str) else ""
     nat_q = f"%{nat_raw}%" if nat_raw else None
-
+    print(name_norm_q, name_raw_q, flush=True)
     # Broad candidate search (name + nationality) with folded variants
     rows = db.execute(text("""
         SELECT id, metadata
@@ -297,7 +297,7 @@ def fetch_player_nonzero_stats(
     # fetch the single player row by id
     doc = db.execute(text("""
         SELECT id, metadata
-        FROM player_data
+        FROM player_data_new
         WHERE id = :id
         LIMIT 1
     """), {"id": best_id}).mappings().first()
@@ -379,7 +379,7 @@ def build_player_payload_new(meta: Dict[str, Any]) -> Dict[str, Any]:
                 "height": m.get("height"),
                 "weight": m.get("weight"),
             }
-
+            print("PLAYER IDENTITY:", player_identity, flush=True)
             stats, resolved = fetch_player_nonzero_stats(db, player_identity)
 
             # overwrite only if resolved has values (resolved has no None/empty keys)
