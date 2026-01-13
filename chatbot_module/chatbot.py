@@ -190,8 +190,6 @@ def answer_question(
     # 2) Compute seen players from PRIOR assistant messages ONLY
     seen_players = get_seen_players_from_history(ai_msgs)
     seen_list_lower = { (n or "").lower().strip() for n in seen_players }
-    print("SEEN PLAYERS FETCHED", flush=True)
-    print(seen_list_lower, flush=True)
     # 3) Build selection preamble (semantic, no keyword parsing)
     preamble = compose_selection_preamble(seen_players, strategy)
     # 4) Translate user question to English if needed (TR -> EN, EN passthrough)
@@ -245,12 +243,8 @@ def answer_question(
     print(out, flush=True)
     try:
         meta = parse_player_meta_new(meta_parser_chain, raw_text=base_answer)
-        print("META")
-        print(meta, flush=True)
         # Keep only NEW players for data payload (so cards/plots are printed once per player)
         meta_new, new_names = filter_players_by_seen(meta, seen_players)
-        print("META NEW")
-        print(meta_new, flush=True)
         # Build structured data for NEW players only (no HTML/PNGs)
         payload = build_player_payload_new(meta_new) if new_names else {"players": []}
         print("PAYLOAD")
