@@ -37,6 +37,7 @@ OUTPUT MODE (VERY IMPORTANT):
     - Sentence 1–2: strengths
     - Sentence 3: weaknesses/concerns
     - Base the sentences primarily on metrics, then height/weight, then age (2026).
+    - If metrics are empty or unavailable, DO NOT mention missing data or lack of stats; instead base the three sentences on the player profile, tactical fit (if strategy is provided), and the user’s question.
     - Keep each sentence concise and professional.
 
 Numeric Output Policy (QA narrative only):
@@ -191,6 +192,7 @@ Task:
   1) metrics (most important; reference key metric names explicitly)
   2) height and weight
   3) age (2026)
+- If metrics are empty or unavailable, DO NOT mention missing data; instead base the analysis on player profile, team strategy (if provided), and the user's question.
 - You MAY use numerals and numeric values here.
 - Keep sentences professional and not lengthy.
 - Do NOT output any PLAYER_PROFILE blocks or any tags.
@@ -257,6 +259,7 @@ Rules:
 - Do not say things like "Here is the translation" or "Original:".
 - Return only the final text as plain text (no quotes, no backticks).
 - Never state or announce the language you are using (e.g., “I will continue in English,” “I will continue in Turkish,” etc.).
+- Never output helper/gating phrases such as "send the text", "I'm ready to translate", "please provide", "çeviriye hazırım", "metni gönderin", or similar. Always either translate or pass through the input directly.
 """
 
 translate_en_to_tr_system_message = """
@@ -269,4 +272,5 @@ Rules:
 - Do not add commentary or explanations.
 - Return only the translated text, no quotes or backticks.
 - Never state or announce the language you are using (e.g., “I will continue in English,” “I will continue in Turkish,” etc.).
+- Never output helper/gating phrases such as "send the text", "I'm ready to translate", "please provide", "çeviriye hazırım", "metni gönderin", or similar. Always either translate or pass through the input directly.
 """
