@@ -240,7 +240,6 @@ def fetch_player_nonzero_stats(
     nat = player_identity.get("nationality")
     nat_raw = nat.strip() if isinstance(nat, str) else ""
     nat_q = f"%{nat_raw}%" if nat_raw else None
-    print(name_norm_q, name_raw_q, flush=True)
     # Broad candidate search (name + nationality) with folded variants
     rows = db.execute(text("""
         SELECT id, metadata, content
@@ -264,7 +263,6 @@ def fetch_player_nonzero_stats(
         "nat_q": nat_q,
         "lim": int(limit_docs),
     }).mappings().all()
-    print(rows, flush=True)
     if not rows:
         return [], {}
 
@@ -276,7 +274,6 @@ def fetch_player_nonzero_stats(
         rid = r.get("id")
         if rid is not None and sc > best[0]:
             best = (sc, int(rid))
-    print(best, flush=True)
     best_id = best[1]
     if best_id is None:
         # fallback: extract stats from broad rows
@@ -346,7 +343,6 @@ def fetch_player_nonzero_stats(
             # if conversion fails, remove to avoid bad overwrite
             resolved.pop("age", None)
 
-    print(resolved)
     return deduped, resolved
 
 def build_player_payload_new(meta: Dict[str, Any]) -> Dict[str, Any]:
@@ -372,7 +368,6 @@ def build_player_payload_new(meta: Dict[str, Any]) -> Dict[str, Any]:
                 "height": m.get("height"),
                 "weight": m.get("weight"),
             }
-            print("PLAYER IDENTITY:", player_identity, flush=True)
             stats, resolved = fetch_player_nonzero_stats(db, player_identity)
 
             # overwrite only if resolved has values (resolved has no None/empty keys)
