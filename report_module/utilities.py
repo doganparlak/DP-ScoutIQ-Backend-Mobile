@@ -10,19 +10,27 @@ def _num(v: Any) -> Optional[float]:
     except:
         return None
     
+def norm_name(s: str) -> str:
+    s = (s or "").strip().lower()
+    s = unicodedata.normalize("NFKD", s)
+    s = "".join(ch for ch in s if not unicodedata.combining(ch))  # remove accents
+    s = re.sub(r"[^a-z0-9\s]", " ", s)  # drop punctuation
+    s = re.sub(r"\s+", " ", s).strip()
+    return s
+    
 def _norm(s: Optional[str]) -> str:
     return re.sub(r"\s+", " ", (s or "")).strip().lower()
 
 def _score_candidate(meta: Dict[str, Any], ident: Dict[str, Any]) -> float:
     score = 0.0
 
-    name_i = _norm(ident.get("name"))
-    team_i = _norm(ident.get("team"))
+    name_i = norm_name(ident.get("name") or "")
+    team_i = norm_name(ident.get("team") or "")
     nat_i  = _norm(ident.get("nationality"))
     gen_i  = _norm(ident.get("gender"))
 
-    name_m = _norm(meta.get("player_name") or meta.get("name") or meta.get("player"))
-    team_m = _norm(meta.get("team_name") or meta.get("team") or meta.get("club"))
+    name_m = meta.get("player_name_norm") or norm_name(meta.get("player_name") or "")
+    team_m = meta.get("team_name_norm") or norm_name(meta.get("team_name") or meta.get("team"))
     nat_m  = _norm(meta.get("nationality_name") or meta.get("nationality") or meta.get("country"))
     gen_m  = _norm(meta.get("gender"))
 

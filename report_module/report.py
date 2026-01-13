@@ -13,7 +13,8 @@ from langchain_core.output_parsers import StrOutputParser
 from report_module.prompts import report_system_prompt
 from report_module.utilities import (_score_candidate,
                                       _first_non_empty, 
-                                      _normalize_roles)
+                                      _normalize_roles,
+                                      norm_name)
 
 CHAT_LLM = ChatDeepSeek(model="deepseek-chat", temperature=0.3)
 
@@ -32,11 +33,11 @@ report_chain = _report_prompt | CHAT_LLM | StrOutputParser()
 def fetch_docs_for_favorite(
     db,
     player_identity: Dict[str, Any],
-    limit: int = 30
+    limit_docs: int = 30
 ) -> List[Dict[str, Any]]:
     """
     Behavior (aligned with your single-row-per-player DB reality):
-    1) Broad candidate search in player_data using name/team/nationality filters.
+    1) Broad candidate search in player_data_new using name/team/nationality filters.
        - name search uses BOTH raw and diacritic-folded patterns (Šeško vs Sesko).
     2) Score candidates with _score_candidate and pick BEST id
     3) Fetch that exact row by id and return it as a single-doc list
@@ -45,42 +46,38 @@ def fetch_docs_for_favorite(
     if not name or not str(name).strip():
         return []
 
-    raw_name = str(name).strip()
-    name_q = f"%{raw_name}%"
+    name_raw = str(name).strip()
+    name_norm = norm_name(name_raw)
 
-    team = player_identity.get("team")
-    nat  = player_identity.get("nationality")
+    name_raw_q  = f"%{name_raw}%"
+    name_norm_q = f"%{name_norm}%"
+
+    nat = player_identity.get("nationality")
+    nat_raw = nat.strip() if isinstance(nat, str) else ""
+    nat_q = f"%{nat_raw}%" if nat_raw else None
 
     rows = db.execute(text("""
-        SELECT id, content, metadata
-        FROM player_data
+        SELECT id, metadata, content
+        FROM player_data_new
         WHERE
-          (
-            (metadata->>'player_name') ILIKE :name_q
-            OR (metadata->>'name') ILIKE :name_q
-            OR (metadata->>'player') ILIKE :name_q
-            OR content ILIKE :name_q
-          )
-          AND (
-            :team_q IS NULL
-            OR (metadata->>'team_name') ILIKE :team_q
-            OR (metadata->>'team') ILIKE :team_q
-            OR content ILIKE :team_q
-          )
-          AND (
+        (
+            (metadata->>'player_name_norm') ILIKE :name_norm_q
+            OR (metadata->>'player_name') ILIKE :name_raw_q
+            OR (content ILIKE :name_raw_q)
+        )
+        AND (
             :nat_q IS NULL
             OR (metadata->>'nationality_name') ILIKE :nat_q
-            OR (metadata->>'nationality') ILIKE :nat_q
-            OR content ILIKE :nat_q
-          )
+            OR (content ILIKE :nat_q)
+        )
         ORDER BY id DESC
-        LIMIT 250
+        LIMIT :lim
     """), {
-        "name_q": name_q,
-        "team_q": (f"%{team.strip()}%" if isinstance(team, str) and team.strip() else None),
-        "nat_q":  (f"%{nat.strip()}%"  if isinstance(nat, str) and nat.strip() else None),
+        "name_norm_q": name_norm_q,
+        "name_raw_q": name_raw_q,
+        "nat_q": nat_q,
+        "lim": int(limit_docs),
     }).mappings().all()
-
     if not rows:
         return []
 
@@ -96,12 +93,12 @@ def fetch_docs_for_favorite(
     best_id = best[1]
     if best_id is None:
         # fallback: return top rows as-is
-        return [{"id": r["id"], "content": r.get("content"), "metadata": r.get("metadata")} for r in rows[:limit]]
+        return [{"id": r["id"], "content": r.get("content"), "metadata": r.get("metadata")} for r in rows[:limit_docs]]
 
     # Fetch the single row by ID (since each player has exactly one row)
     doc = db.execute(text("""
-        SELECT id, content, metadata
-        FROM player_data
+        SELECT id, metadata, content
+        FROM player_data_new
         WHERE id = :id
         LIMIT 1
     """), {"id": best_id}).mappings().first()
@@ -189,7 +186,7 @@ def generate_report_content(
     docs = fetch_docs_for_favorite(
         db,
         player_identity=player_identity or {},
-        limit=30
+        limit_docs=30
     )
     player_card = build_player_card_from_docs(docs)
 

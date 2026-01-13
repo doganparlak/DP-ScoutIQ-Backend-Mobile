@@ -3,7 +3,7 @@ from sqlalchemy import text
 import re
 import json
 import unicodedata
-from report_module.utilities import _num, _norm
+from report_module.utilities import _num, _norm, norm_name
 from api_module.utilities import get_db 
 
 META_ID_KEYS = {
@@ -39,13 +39,6 @@ def strip_heavy_html(text: str) -> str:
     """Remove <img> (esp. base64) and <table> blocks before sending to LLMs."""
     return HEAVY_TAGS_RE.sub("", text or "").strip()
 
-def norm_name(s: str) -> str:
-    s = (s or "").strip().lower()
-    s = unicodedata.normalize("NFKD", s)
-    s = "".join(ch for ch in s if not unicodedata.combining(ch))  # remove accents
-    s = re.sub(r"[^a-z0-9\s]", " ", s)  # drop punctuation
-    s = re.sub(r"\s+", " ", s).strip()
-    return s
 
 def fallback_parse_profile_block_new(raw_text: str) -> Dict[str, Any]:
     """
@@ -250,7 +243,7 @@ def fetch_player_nonzero_stats(
     print(name_norm_q, name_raw_q, flush=True)
     # Broad candidate search (name + nationality) with folded variants
     rows = db.execute(text("""
-        SELECT id, metadata
+        SELECT id, metadata, content
         FROM player_data_new
         WHERE
         (
