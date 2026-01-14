@@ -37,7 +37,7 @@ def fetch_docs_for_favorite(
 ) -> List[Dict[str, Any]]:
     """
     Behavior (aligned with your single-row-per-player DB reality):
-    1) Broad candidate search in player_data_new using name/team/nationality filters.
+    1) Broad candidate search in player_data using name/team/nationality filters.
        - name search uses BOTH raw and diacritic-folded patterns (Šeško vs Sesko).
     2) Score candidates with _score_candidate and pick BEST id
     3) Fetch that exact row by id and return it as a single-doc list
@@ -58,7 +58,7 @@ def fetch_docs_for_favorite(
 
     rows = db.execute(text("""
         SELECT id, metadata, content
-        FROM player_data_new
+        FROM player_data
         WHERE
         (
             (metadata->>'player_name_norm') ILIKE :name_norm_q
@@ -98,7 +98,7 @@ def fetch_docs_for_favorite(
     # Fetch the single row by ID (since each player has exactly one row)
     doc = db.execute(text("""
         SELECT id, metadata, content
-        FROM player_data_new
+        FROM player_data
         WHERE id = :id
         LIMIT 1
     """), {"id": best_id}).mappings().first()

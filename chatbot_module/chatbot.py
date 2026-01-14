@@ -239,16 +239,12 @@ def answer_question(
 
     # 6) Parse current answer into meta/stats
     out = base_answer
-    print("BASE ANSWER", flush=True)
-    print(out, flush=True)
     try:
         meta = parse_player_meta_new(meta_parser_chain, raw_text=base_answer)
         # Keep only NEW players for data payload (so cards/plots are printed once per player)
         meta_new, new_names = filter_players_by_seen(meta, seen_players)
         # Build structured data for NEW players only (no HTML/PNGs)
         payload = build_player_payload_new(meta_new) if new_names else {"players": []}
-        print("PAYLOAD")
-        print(payload, flush=True)
         # If QA stage was narrative-only (seen player by name), keep old behavior:
         if not new_names:
             known_names = [p.get("name") for p in (meta.get("players") or []) if p.get("name")]
@@ -258,8 +254,6 @@ def answer_question(
             p0 = (payload.get("players") or [None])[0] or {}
             profile_meta = p0.get("meta") or {}
             stats = p0.get("stats") or []
-            print("STATS", flush=True)
-            print(stats, flush=True)
             # Build compact inputs for the interpretation LLM
             profile_json = json.dumps({
                 "name": p0.get("name"),

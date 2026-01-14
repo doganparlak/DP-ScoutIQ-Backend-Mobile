@@ -57,7 +57,7 @@ class SupabaseRPCRetriever(BaseRetriever):
 
             # 2) call Postgres function on documents
             resp = self.client.rpc(
-                "find_player_new",
+                "find_player",
                 {
                     "query_embedding": q_vec,
                     "match_count": self.k,

@@ -221,7 +221,7 @@ def fetch_player_nonzero_stats(
     limit_docs: int = 250
 ) -> Tuple[List[Dict[str, Any]], Dict[str, Any]]:
     """
-    1) Broad candidate search in `player_data_new` (name + nationality) using BOTH original and folded name
+    1) Broad candidate search in `player_data` (name + nationality) using BOTH original and folded name
     2) Score candidates to select best id (int8)
     3) Fetch that single row by id and collect metadata stats
     4) Filter out stats that are zero
@@ -243,7 +243,7 @@ def fetch_player_nonzero_stats(
     # Broad candidate search (name + nationality) with folded variants
     rows = db.execute(text("""
         SELECT id, metadata, content
-        FROM player_data_new
+        FROM player_data
         WHERE
         (
             (metadata->>'player_name_norm') ILIKE :name_norm_q
@@ -287,7 +287,7 @@ def fetch_player_nonzero_stats(
     # fetch the single player row by id
     doc = db.execute(text("""
         SELECT id, metadata
-        FROM player_data_new
+        FROM player_data
         WHERE id = :id
         LIMIT 1
     """), {"id": best_id}).mappings().first()
