@@ -56,7 +56,6 @@ app.add_middleware(
 # ---------- endpoints ----------
 @app.get("/health")
 async def health() -> Dict[str, Any]:
-    print("HEALTH HIT", flush=True)
     return {"ok": True}
 
 @app.post("/auth/signup")
@@ -672,8 +671,6 @@ def activate_subscription(
     user_id: int = Depends(require_auth),
     db: Session = Depends(get_db),
 ):
-    print("BODY")
-    print(body)
     allowed_product_ids = {IOS_PRO_PRODUCT_ID, ANDROID_PRO_PRODUCT_ID}
     if body.product_id not in allowed_product_ids:
         raise HTTPException(status_code=400, detail="Unknown product")
@@ -692,7 +689,6 @@ def activate_subscription(
         )
 
     if not ok:
-        print("COULDNT VERIFY PURCHASE")
         raise HTTPException(status_code=400, detail="Could not verify purchase")
 
     # Get user email for entitlement linking (best effort)

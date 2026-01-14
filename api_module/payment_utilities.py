@@ -117,7 +117,6 @@ def verify_ios_subscription(
     is_active = False
     will_auto_renew = False
     groups = getattr(status_response, "data", []) or []
-    print(groups)
     for group in groups:
         # Each group has lastTransactions: list[LastTransactionsItem]
         for last_tx in getattr(group, "lastTransactions", []) or []:
