@@ -8,6 +8,8 @@ data_module/player_level_stats_wwa.csv
 data_module/player_level_stats_wwa_full.csv
 data_module/explore.py
 
+#database backup
+database_backup/*
 # Chatbot module
 chatbot_module/cost_approximation.py
 
