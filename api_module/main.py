@@ -273,13 +273,15 @@ def logout_all(user_id: int = Depends(require_auth), db: Session = Depends(get_d
 
 # --- email codes: reset ---
 @app.post("/auth/request_reset")
-def request_reset(body: PasswordResetRequestIn, db: Session = Depends(get_db)):
+def request_reset(body: PasswordResetRequestIn, accept_language: str | None = Header(default=None), db: Session = Depends(get_db)):
     email = body.email
-    row = db.execute(text("SELECT id FROM users WHERE email = :e"), {"e": email}).mappings().first()
+    row = db.execute(text("SELECT id, language FROM users WHERE email = :e"), {"e": email}).mappings().first()
     if row:
         code = create_email_code(email, purpose="reset")
-        send_email_code(email, code, mail_type="reset")
+        preferred_lang = normalize_lang(row.get("language")) or normalize_lang(accept_language)
+        send_email_code(email, code, mail_type="reset", lang=preferred_lang)
     return {"ok": True}
+
 
 @app.post("/help/reach_out")
 def reach_out(
@@ -309,7 +311,7 @@ def verify_reset(body: VerifyResetIn):
 
 # --- email codes: signup ---
 @app.post("/auth/request_signup_code")
-def request_signup_code(body: SignupCodeRequestIn, db: Session = Depends(get_db)):
+def request_signup_code(body: SignupCodeRequestIn, accept_language: str | None = Header(default=None), db: Session = Depends(get_db)):
     email = body.email.strip()
     staged_exists = db.execute(
         text("SELECT 1 FROM pending_signups WHERE lower(email) = lower(:e)"),
@@ -324,8 +326,9 @@ def request_signup_code(body: SignupCodeRequestIn, db: Session = Depends(get_db)
         db.commit()
 
     code = create_email_code(email, purpose="signup")
-    send_email_code(email, code, mail_type="signup")
+    send_email_code(email, code, mail_type="signup", lang=accept_language)
     return {"ok": True}
+
 
 @app.post("/auth/verify_signup_code")
 def verify_signup_code(body: VerifySignupIn, db: Session = Depends(get_db)):

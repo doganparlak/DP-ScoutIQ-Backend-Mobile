@@ -358,26 +358,45 @@ def send_reachout_email(user_email: str, note: str) -> None:
         try: server.quit()
         except: pass
 
-def send_email_code(receiver_email: str, code: str, mail_type: str) -> None:
+def send_email_code(receiver_email: str, code: str, mail_type: str, lang: Optional[str] = None) -> None:
+    """
+    Sends verification/reset code email in TR if lang is 'tr', else EN.
+    """
     se = settings['email']['sender_email']
     spw = settings['email']['sender_password']
     host = settings['email']['smtp_server']
     port = settings['email']['smtp_port']
 
+    lang_norm = normalize_lang(lang) or "en"
+    is_tr = (lang_norm == "tr")
+
     if mail_type == 'reset':
-        subject = 'Your ScoutWise password reset code'
+        subject = "ScoutWise parola sıfırlama kodun" if is_tr else "Your ScoutWise password reset code"
         body = (
+            "Merhaba,\n\n"
+            "Parolanı sıfırlamak için aşağıdaki 6 haneli kodu kullan:\n\n"
+            f"{code}\n\n"
+            "Kod 10 dakika içinde geçerliliğini yitirir.\n\n"
+            "Sevgiler,\nScoutWise Destek"
+        ) if is_tr else (
             "Dear User,\n\n"
-            f"Use this 6-digit code to reset your password:\n\n"
+            "Use this 6-digit code to reset your password:\n\n"
             f"{code}\n\n"
             "The code expires in 10 minutes.\n\n"
             "Best,\nScoutWise Support"
         )
-    else:
-        subject = 'Your ScoutWise sign-up verification code'
+
+    else:  # signup / verification
+        subject = "ScoutWise e-posta doğrulama kodun" if is_tr else "Your ScoutWise sign-up verification code"
         body = (
+            "Merhaba,\n\n"
+            "E-posta adresini doğrulamak için aşağıdaki 6 haneli kodu kullan:\n\n"
+            f"{code}\n\n"
+            "Kod 10 dakika içinde geçerliliğini yitirir.\n\n"
+            "Sevgiler,\nScoutWise Destek"
+        ) if is_tr else (
             "Dear User,\n\n"
-            f"Use this 6-digit code to verify your email:\n\n"
+            "Use this 6-digit code to verify your email:\n\n"
             f"{code}\n\n"
             "The code expires in 10 minutes.\n\n"
             "Best,\nScoutWise Support"
@@ -394,11 +413,14 @@ def send_email_code(receiver_email: str, code: str, mail_type: str) -> None:
         server.starttls()
         server.login(se, spw)
         server.sendmail(se, receiver_email, msg.as_string())
-    except Exception as e:
+    except Exception:
         pass
     finally:
-        try: server.quit()
-        except: pass
+        try:
+            server.quit()
+        except:
+            pass
+
 
 # ---------- ROLE Utilities ----------
 ROLE_SHORT_TO_LONG = {
