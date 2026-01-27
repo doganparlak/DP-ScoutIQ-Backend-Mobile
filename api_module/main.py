@@ -673,7 +673,8 @@ def activate_subscription(
     body: IAPActivateIn,
     user_id: int = Depends(require_auth),
     db: Session = Depends(get_db),
-):
+):  
+    print("[BODY]:", body)
     allowed_product_ids = {IOS_PRO_PRODUCT_ID, ANDROID_PRO_PRODUCT_ID}
     if body.product_id not in allowed_product_ids:
         raise HTTPException(status_code=400, detail="Unknown product")
@@ -685,6 +686,7 @@ def activate_subscription(
             body.external_id,  # original_transaction_id
         )
     else:
+        print("[ANDROID VERIFICATION]")
         ok, expires_at, auto_renew = verify_android_subscription(
             ANDROID_PRO_PRODUCT_ID,
             body.external_id,  # purchaseToken
@@ -692,8 +694,10 @@ def activate_subscription(
         )
 
     if not ok:
+        print("[ANDROID VERIFICATION FAILED]")
         raise HTTPException(status_code=400, detail="Could not verify purchase")
 
+    print("[ANDROID VERIFICATION SUCCEEDED]")
     # Get user email for entitlement linking (best effort)
     email = get_user_email_by_id(db, user_id)
 
