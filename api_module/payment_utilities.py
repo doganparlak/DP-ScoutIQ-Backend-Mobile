@@ -324,18 +324,7 @@ def run_entitlements_sync(db: Session, limit: int = 2000):
             if platform == "ios":
                 ok, expires_at, auto_renew = verify_ios_subscription(product_id, ext_id)
             else:
-                # Can't strongly verify Android without receipt in your current setup.
-                # Keep entitlement row as-is; only bump last_verified_at.
-                db.execute(
-                    text("""
-                        UPDATE subscription_entitlements
-                        SET last_verified_at = NOW(),
-                            updated_at = NOW()
-                        WHERE platform = :platform AND external_id = :ext_id
-                    """),
-                    {"platform": platform, "ext_id": ext_id},
-                )
-                continue
+                ok, expires_at, auto_renew = verify_android_subscription(product_id, ext_id)
         except Exception:
             ok, expires_at, auto_renew = False, now, False
 
