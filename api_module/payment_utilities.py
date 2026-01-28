@@ -12,6 +12,7 @@ from appstoreserverlibrary.api_client import AppStoreServerAPIClient, APIExcepti
 from appstoreserverlibrary.models.Environment import Environment
 from google.oauth2 import service_account
 from googleapiclient.discovery import build
+from google.auth.transport.requests import Request
 
 
 def _normalize_apple_private_key(raw: str) -> bytes:
@@ -180,8 +181,11 @@ def verify_android_subscription(
             GOOGLE_PLAY_SERVICE_ACCOUNT_JSON,
             scopes=GOOGLE_PLAY_SCOPES,
         )
+        print("SA email:", credentials.service_account_email)
+        credentials.refresh(Request())
+        print("Access token starts with:", credentials.token[:20])
         print("SERVICE BUILDING")
-        service = build("androidpublisher", "v3", credentials=credentials)
+        service = build("androidpublisher", "v3", credentials=credentials, cache_discovery=False)
 
         package_name = GOOGLE_PLAY_PACKAGE_NAME
         print(f"VERIFYING ANDROID SUBSCRIPTION: package={package_name}, product={product_id}, token={purchase_token}")
