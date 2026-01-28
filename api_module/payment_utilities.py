@@ -10,6 +10,8 @@ from sqlalchemy.orm import Session
 from sqlalchemy import text
 from appstoreserverlibrary.api_client import AppStoreServerAPIClient, APIException
 from appstoreserverlibrary.models.Environment import Environment
+from google.oauth2 import service_account
+from googleapiclient.discovery import build
 
 
 def _normalize_apple_private_key(raw: str) -> bytes:
@@ -47,29 +49,13 @@ app_store_client = AppStoreServerAPIClient(
     environment,
 )
 
-GOOGLE_PLAY_SERVICE_ACCOUNT_JSON = os.environ.get("GOOGLE_PLAY_SERVICE_ACCOUNT_JSON", "")
+BASE_DIR = os.path.dirname(os.path.abspath(__file__))
+GOOGLE_PLAY_SERVICE_ACCOUNT_JSON = GOOGLE_PLAY_SERVICE_ACCOUNT_JSON = os.path.join(
+                                        BASE_DIR,
+                                        "play_service_account.json"
+                                )  
 GOOGLE_PLAY_PACKAGE_NAME = os.environ.get("GOOGLE_PLAY_PACKAGE_NAME", "")
 GOOGLE_PLAY_SCOPES = ["https://www.googleapis.com/auth/androidpublisher"]
-
-_google_play_session: Optional[AuthorizedSession] = None
-
-def _get_google_play_session() -> Optional[AuthorizedSession]:
-    global _google_play_session
-    if _google_play_session is not None:
-        return _google_play_session
-    if not GOOGLE_PLAY_SERVICE_ACCOUNT_JSON:
-        return None
-    try:
-        info = json.loads(GOOGLE_PLAY_SERVICE_ACCOUNT_JSON)
-        creds = service_account.Credentials.from_service_account_info(
-            info,
-            scopes=GOOGLE_PLAY_SCOPES,
-        )
-        _google_play_session = AuthorizedSession(creds)
-        return _google_play_session
-    except Exception as e:
-        print("[subscriptions] could not create Google Play session:", e)
-        return None
         
 def _decode_jws_without_verification(jws: str) -> Dict[str, Any]:
     """
@@ -172,62 +158,55 @@ def verify_ios_subscription(
 
 def verify_android_subscription(
     product_id: str,
-    external_id: str,
-    receipt: Optional[str],
+    purchase_token: str,
+    receipt: str | None = None,  
 ) -> tuple[bool, dt.datetime, bool]:
     """
-    Validate an Android subscription using Google Play Developer API.
-
-    external_id = purchaseToken.
+    Verify Android subscription via Google Play Developer API.
 
     Returns: (is_active, expires_at, auto_renew)
     """
     now = dt.datetime.now(dt.timezone.utc)
-    if not GOOGLE_PLAY_PACKAGE_NAME:
-        # We can't verify without package name; fail closed.
-        return False, now, False
 
-    session = _get_google_play_session()
-    if session is None:
+    if not purchase_token:
         return False, now, False
-
-    url = (
-        "https://androidpublisher.googleapis.com/androidpublisher/v3"
-        f"/applications/{GOOGLE_PLAY_PACKAGE_NAME}"
-        f"/purchases/subscriptionsv2/tokens/{external_id}"
-    )
 
     try:
-        resp = session.get(url, timeout=10)
-        if resp.status_code != 200:
-            print("[subscriptions] Google Play verify status:", resp.status_code, resp.text)
-            return False, now, False
-        data = resp.json()
+        print("CREDENTIALS SETTING")
+        print("SERVICE ACCOUNT PATH:", GOOGLE_PLAY_SERVICE_ACCOUNT_JSON)
+        print("FILE EXISTS:", os.path.exists(GOOGLE_PLAY_SERVICE_ACCOUNT_JSON))
+        credentials = service_account.Credentials.from_service_account_file(
+            GOOGLE_PLAY_SERVICE_ACCOUNT_JSON,
+            scopes=GOOGLE_PLAY_SCOPES,
+        )
+        print("SERVICE BUILDING")
+        service = build("androidpublisher", "v3", credentials=credentials)
+
+        package_name = GOOGLE_PLAY_PACKAGE_NAME
+        print(f"VERIFYING ANDROID SUBSCRIPTION: package={package_name}, product={product_id}, token={purchase_token}")
+        result = (
+            service.purchases()
+            .subscriptions()
+            .get(
+                packageName=package_name,
+                subscriptionId=product_id,
+                token=purchase_token,
+            )
+            .execute()
+        )
+        print("[GOOGLE RESULT]", result)
+        # Google returns milliseconds
+        expiry_ms = int(result.get("expiryTimeMillis", 0))
+        expires_at = dt.datetime.fromtimestamp(expiry_ms / 1000, tz=dt.timezone.utc)
+
+        auto_renew = bool(result.get("autoRenewing", False))
+        is_active = expires_at > now
+
+        return is_active, expires_at, auto_renew
+
     except Exception as e:
-        print("[subscriptions] verify_android_subscription error:", e)
+        print("[ANDROID VERIFY ERROR]", str(e))
         return False, now, False
-
-    line_items = data.get("lineItems") or []
-    if not line_items:
-        return False, now, False
-
-    item = line_items[0]
-    expiry_time = item.get("expiryTime")
-    if not expiry_time:
-        return False, now, False
-
-    try:
-        # expiryTime is RFC3339
-        expires_at = dt.datetime.fromisoformat(expiry_time.replace("Z", "+00:00"))
-    except Exception:
-        expires_at = now
-
-    is_active = expires_at > now
-
-    state = data.get("subscriptionState")
-    auto_renew = state not in {"CANCELED", "EXPIRED", "PAUSED"}
-
-    return is_active, expires_at, auto_renew
 
 # AUTO CHECK FOR SUBSCRIPTION UPDATES FOR ALL USERS
 def run_subscription_sync(db: Session):
