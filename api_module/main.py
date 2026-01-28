@@ -700,7 +700,7 @@ def activate_subscription(
     print("[ANDROID VERIFICATION SUCCEEDED]")
     # Get user email for entitlement linking (best effort)
     email = get_user_email_by_id(db, user_id)
-    
+
     # Single transaction: update users + upsert entitlement
     db.execute(
         text("""
@@ -724,7 +724,7 @@ def activate_subscription(
             "id": user_id,
         },
     )
-
+    print("USERS TABLE UPDATED")
     db.execute(
         text("""
             INSERT INTO subscription_entitlements (
@@ -757,7 +757,7 @@ def activate_subscription(
             "email": email,  # can be None; ok
         },
     )
-
+    print("SUBS ENTITLEMENTS TABLE UPDATED")
     db.commit()
 
     return {
