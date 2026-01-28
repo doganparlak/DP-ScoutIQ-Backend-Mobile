@@ -49,11 +49,11 @@ app_store_client = AppStoreServerAPIClient(
     environment,
 )
 
-BASE_DIR = os.path.dirname(os.path.abspath(__file__))
-GOOGLE_PLAY_SERVICE_ACCOUNT_JSON = GOOGLE_PLAY_SERVICE_ACCOUNT_JSON = os.path.join(
+BASE_DIR = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+GOOGLE_PLAY_SERVICE_ACCOUNT_JSON = os.path.join(
                                         BASE_DIR,
                                         "play_service_account.json"
-                                )  
+                                    )  
 GOOGLE_PLAY_PACKAGE_NAME = os.environ.get("GOOGLE_PLAY_PACKAGE_NAME", "")
 GOOGLE_PLAY_SCOPES = ["https://www.googleapis.com/auth/androidpublisher"]
         
