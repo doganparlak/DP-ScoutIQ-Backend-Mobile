@@ -179,21 +179,14 @@ def verify_android_subscription(
         return False, now, False
 
     try:
-        print("CREDENTIALS SETTING")
-        print("SERVICE ACCOUNT PATH:", GOOGLE_PLAY_SERVICE_ACCOUNT_JSON)
-        print("FILE EXISTS:", os.path.exists(GOOGLE_PLAY_SERVICE_ACCOUNT_JSON))
         credentials = service_account.Credentials.from_service_account_file(
             GOOGLE_PLAY_SERVICE_ACCOUNT_JSON,
             scopes=GOOGLE_PLAY_SCOPES,
         )
-        print("SA email:", credentials.service_account_email)
         credentials.refresh(Request())
-        print("Access token starts with:", credentials.token[:20])
-        print("SERVICE BUILDING")
         service = build("androidpublisher", "v3", credentials=credentials, cache_discovery=False)
 
         package_name = GOOGLE_PLAY_PACKAGE_NAME
-        print(f"VERIFYING ANDROID SUBSCRIPTION: package={package_name}, product={product_id}, token={purchase_token}")
         result = (
             service.purchases()
             .subscriptions()
@@ -204,7 +197,6 @@ def verify_android_subscription(
             )
             .execute()
         )
-        print("[GOOGLE RESULT]", result)
         # Google returns milliseconds
         expiry_ms = int(result.get("expiryTimeMillis", 0))
         expires_at = dt.datetime.fromtimestamp(expiry_ms / 1000, tz=dt.timezone.utc)
