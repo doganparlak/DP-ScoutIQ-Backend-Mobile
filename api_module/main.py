@@ -16,10 +16,10 @@ from api_module.utilities import (
     hash_pw, new_salt, now_iso, get_user_email_by_id, delete_user_everywhere, get_bearer_token, revoke_session,
     user_row_to_dict, require_auth, create_email_code, verify_email_code, send_email_code, to_long_roles, normalize_lang, get_user_language,
     session_exists_and_active, delete_chat_messages, split_response_parts, pick, send_reachout_email,
-    is_user_pro
+    is_user_pro, plan_from_product_id
 )
 from api_module.payment_utilities import(
-     verify_ios_subscription, verify_android_subscription, run_subscription_sync
+     verify_ios_subscription, verify_android_subscription, run_subscription_sync,
 )
 from api_module.database import get_db
 from api_module.models import (
@@ -35,8 +35,12 @@ import datetime as dt
 PASSWORD_RE = re.compile(r'^(?=.*[A-Za-z])(?=.*\d).{8,}$')
 
 ADMIN_SUBSCRIPTION_SYNC_TOKEN = os.getenv("SUBSCRIPTION_SYNC_TOKEN", "")
-IOS_PRO_PRODUCT_ID = os.getenv("IOS_PRO_PRODUCT_ID", "scoutwise_pro_monthly_ios")
-ANDROID_PRO_PRODUCT_ID = os.getenv("ANDROID_PRO_PRODUCT_ID", "scoutwise_pro_monthly_android")
+#IOS_PRO_PRODUCT_ID = os.getenv("IOS_PRO_PRODUCT_ID", "scoutwise_pro_monthly_ios")
+#ANDROID_PRO_PRODUCT_ID = os.getenv("ANDROID_PRO_PRODUCT_ID", "scoutwise_pro_monthly_android")
+IOS_PRO_MONTHLY_PRODUCT_ID = os.getenv("IOS_PRO_MONTHLY_PRODUCT_ID", "scoutwise_pro_monthly_ios")
+IOS_PRO_YEARLY_PRODUCT_ID  = os.getenv("IOS_PRO_YEARLY_PRODUCT_ID", "scoutwise_pro_yearly_ios")
+ANDROID_PRO_MONTHLY_PRODUCT_ID = os.getenv("ANDROID_PRO_MONTHLY_PRODUCT_ID", "scoutwise_pro_monthly_android")
+ANDROID_PRO_YEARLY_PRODUCT_ID  = os.getenv("ANDROID_PRO_YEARLY_PRODUCT_ID", "scoutwise_pro_yearly_android")
 
 
 app = FastAPI()
@@ -124,7 +128,7 @@ def login(payload: LoginIn, accept_language: str | None = Header(default=None), 
 
     # ---- restore entitlement (Option A) ----
     row_ent = db.execute(text("""
-        SELECT platform, external_id, expires_at, auto_renew
+        SELECT platform, external_id, product_id, expires_at, auto_renew
         FROM subscription_entitlements
         WHERE lower(last_seen_email) = lower(:email)
           AND expires_at IS NOT NULL
@@ -136,15 +140,17 @@ def login(payload: LoginIn, accept_language: str | None = Header(default=None), 
     now_db = dt.datetime.now(dt.timezone.utc)
 
     if row_ent and row_ent["expires_at"] and row_ent["expires_at"] > now_db:
+        plan = plan_from_product_id(row_ent.get("product_id"))
         db.execute(text("""
             UPDATE users
-            SET plan = 'Pro',
+            SET plan = :plan,
                 subscription_end_at = :end_at,
                 subscription_auto_renew = :auto_renew,
                 subscription_platform = :platform,
                 subscription_external_id = :ext_id
             WHERE id = :id
         """), {
+            "plan": plan,
             "end_at": row_ent["expires_at"],
             "auto_renew": row_ent["auto_renew"],
             "platform": row_ent["platform"],
@@ -370,7 +376,7 @@ def verify_signup_code(body: VerifySignupIn, db: Session = Depends(get_db)):
         })
 
     row_ent = db.execute(text("""
-        SELECT platform, external_id, expires_at, auto_renew
+        SELECT platform, external_id, product_id, expires_at, auto_renew
         FROM subscription_entitlements
         WHERE lower(last_seen_email) = lower(:email)
           AND expires_at IS NOT NULL
@@ -381,15 +387,17 @@ def verify_signup_code(body: VerifySignupIn, db: Session = Depends(get_db)):
     now_utc = dt.datetime.now(dt.timezone.utc)
 
     if row_ent and row_ent["expires_at"] > now_utc:
+        plan = plan_from_product_id(row_ent.get("product_id"))
         db.execute(text("""
             UPDATE users
-            SET plan = 'Pro',
+            SET plan = :plan,
                 subscription_platform = :platform,
                 subscription_external_id = :ext_id,
                 subscription_end_at = :end_at,
                 subscription_auto_renew = :auto_renew
             WHERE lower(email) = lower(:email)
         """), {
+            "plan": plan,
             "platform": row_ent["platform"],
             "ext_id": row_ent["external_id"],
             "end_at": row_ent["expires_at"],
@@ -675,29 +683,36 @@ def activate_subscription(
     db: Session = Depends(get_db),
 ):  
     print("[BODY]:", body)
-    allowed_product_ids = {IOS_PRO_PRODUCT_ID, ANDROID_PRO_PRODUCT_ID}
+    allowed_product_ids = {
+        IOS_PRO_MONTHLY_PRODUCT_ID,
+        IOS_PRO_YEARLY_PRODUCT_ID,
+        ANDROID_PRO_MONTHLY_PRODUCT_ID,
+        ANDROID_PRO_YEARLY_PRODUCT_ID,
+    }
     if body.product_id not in allowed_product_ids:
         raise HTTPException(status_code=400, detail="Unknown product")
 
     # Verify against store
     if body.platform == "ios":
         ok, expires_at, auto_renew = verify_ios_subscription(
-            IOS_PRO_PRODUCT_ID,
+            body.product_id,
             body.external_id,  # original_transaction_id
         )
     else:
         print("[ANDROID VERIFICATION]")
         ok, expires_at, auto_renew = verify_android_subscription(
-            ANDROID_PRO_PRODUCT_ID,
+            body.product_id,
             body.external_id,  # purchaseToken
             body.receipt,
         )
 
     if not ok:
-        print("[ANDROID VERIFICATION FAILED]")
+        print("[VERIFICATION FAILED]")
         raise HTTPException(status_code=400, detail="Could not verify purchase")
 
-    print("[ANDROID VERIFICATION SUCCEEDED]")
+    plan = plan_from_product_id(body.product_id)
+    print("[VERIFICATION SUCCEEDED]")
+    print(f"[PLAN]: {plan}, EXPIRES AT: {expires_at}, AUTO RENEW: {auto_renew}")
     # Get user email for entitlement linking (best effort)
     email = get_user_email_by_id(db, user_id)
 
@@ -705,7 +720,7 @@ def activate_subscription(
     db.execute(
         text("""
             UPDATE users
-            SET plan = 'Pro',
+            SET plan = :plan,
                 subscription_platform = :platform,
                 subscription_external_id = :ext_id,
                 subscription_end_at = :end_at,
@@ -714,7 +729,8 @@ def activate_subscription(
                 subscription_receipt = :receipt
             WHERE id = :id
         """),
-        {
+        {   
+            "plan": plan,
             "platform": body.platform,
             "ext_id": body.external_id,
             "end_at": expires_at.isoformat(),
@@ -762,7 +778,7 @@ def activate_subscription(
 
     return {
         "ok": True,
-        "plan": "Pro",
+        "plan": plan,
         "subscriptionEndAt": expires_at.isoformat(),
     }
 

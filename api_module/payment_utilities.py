@@ -31,8 +31,13 @@ def _normalize_apple_private_key(raw: str) -> bytes:
     return raw.encode("utf-8")
 
 
-IOS_PRO_PRODUCT_ID = os.getenv("IOS_PRO_PRODUCT_ID", "scoutwise_pro_monthly_ios")
-ANDROID_PRO_PRODUCT_ID = os.getenv("ANDROID_PRO_PRODUCT_ID", "scoutwise_pro_monthly_android")
+#IOS_PRO_PRODUCT_ID = os.getenv("IOS_PRO_PRODUCT_ID", "scoutwise_pro_monthly_ios")
+#ANDROID_PRO_PRODUCT_ID = os.getenv("ANDROID_PRO_PRODUCT_ID", "scoutwise_pro_monthly_android")
+IOS_PRO_MONTHLY_PRODUCT_ID = os.getenv("IOS_PRO_MONTHLY_PRODUCT_ID", "scoutwise_pro_monthly_ios")
+IOS_PRO_YEARLY_PRODUCT_ID  = os.getenv("IOS_PRO_YEARLY_PRODUCT_ID", "scoutwise_pro_yearly_ios")
+ANDROID_PRO_MONTHLY_PRODUCT_ID = os.getenv("ANDROID_PRO_MONTHLY_PRODUCT_ID", "scoutwise_pro_monthly_android")
+ANDROID_PRO_YEARLY_PRODUCT_ID  = os.getenv("ANDROID_PRO_YEARLY_PRODUCT_ID", "scoutwise_pro_yearly_android")
+
 APPLE_IAP_KEY_ID = os.environ["APPLE_IAP_KEY_ID"]
 APPLE_IAP_ISSUER_ID = os.environ["APPLE_IAP_ISSUER_ID"]
 APPLE_IAP_PRIVATE_KEY = os.environ["APPLE_IAP_PRIVATE_KEY"]
@@ -243,15 +248,45 @@ def run_subscription_sync(db: Session):
         if not platform or not ext_id:
             continue
 
+        # Default to inactive
+        active = False
+        new_end = None
+        auto_renew = False
+        plan = "Free"
+
         try:
             if platform == "ios":
-                ok, new_end, auto_renew = verify_ios_subscription(IOS_PRO_PRODUCT_ID, ext_id)
+                # yearly first
+                ok, end_at, ar = verify_ios_subscription(IOS_PRO_YEARLY_PRODUCT_ID, ext_id)
+                if ok and end_at and end_at > now:
+                    active = True
+                    new_end = end_at
+                    auto_renew = ar
+                    plan = "Pro Yearly"
+                else:
+                    ok, end_at, ar = verify_ios_subscription(IOS_PRO_MONTHLY_PRODUCT_ID, ext_id)
+                    if ok and end_at and end_at > now:
+                        active = True
+                        new_end = end_at
+                        auto_renew = ar
+                        plan = "Pro Monthly"
             else:
-                ok, new_end, auto_renew = verify_android_subscription(ANDROID_PRO_PRODUCT_ID, ext_id, receipt)
+                # yearly first
+                ok, end_at, ar = verify_android_subscription(ANDROID_PRO_YEARLY_PRODUCT_ID, ext_id, receipt)
+                if ok and end_at and end_at > now:
+                    active = True
+                    new_end = end_at
+                    auto_renew = ar
+                    plan = "Pro Yearly"
+                else:
+                    ok, end_at, ar = verify_android_subscription(ANDROID_PRO_MONTHLY_PRODUCT_ID, ext_id, receipt)
+                    if ok and end_at and end_at > now:
+                        active = True
+                        new_end = end_at
+                        auto_renew = ar
+                        plan = "Pro Monthly"
         except Exception:
-            ok, new_end, auto_renew = False, now, False
-
-        active = bool(ok and new_end and new_end > now)
+            active = False
 
         if not active:
             db.execute(
@@ -276,13 +311,14 @@ def run_subscription_sync(db: Session):
                 SET subscription_end_at          = :end_at,
                     subscription_auto_renew      = :auto_renew,
                     subscription_last_checked_at = :checked_at,
-                    plan                         = 'Pro'
+                    plan                         = :plan
                 WHERE id = :id
             """),
             {
                 "end_at": new_end.isoformat(),
                 "auto_renew": bool(auto_renew),
                 "checked_at": now_iso(),
+                "plan": plan,
                 "id": uid,
             },
         )
@@ -312,7 +348,7 @@ def run_entitlements_sync(db: Session, limit: int = 2000):
         ext_id = e["external_id"]
 
         product_id = e["product_id"] or (
-            IOS_PRO_PRODUCT_ID if platform == "ios" else ANDROID_PRO_PRODUCT_ID
+            IOS_PRO_MONTHLY_PRODUCT_ID if platform == "ios" else ANDROID_PRO_MONTHLY_PRODUCT_ID
         )
 
         # Default result
@@ -376,10 +412,11 @@ def run_entitlements_sync(db: Session, limit: int = 2000):
                         {"id": uid},
                     )
                 else:
+                    plan = "Pro Yearly" if "yearly" in (product_id or "").lower() else "Pro Monthly"
                     db.execute(
                         text("""
                             UPDATE users
-                            SET plan = 'Pro',
+                            SET plan = :plan,
                                 subscription_end_at = :end_at,
                                 subscription_auto_renew = :auto_renew,
                                 subscription_platform = :platform,
@@ -388,6 +425,7 @@ def run_entitlements_sync(db: Session, limit: int = 2000):
                         """),
                         {
                             "id": uid,
+                            "plan": plan,
                             "end_at": expires_at.isoformat(),
                             "auto_renew": bool(auto_renew),
                             "platform": platform,

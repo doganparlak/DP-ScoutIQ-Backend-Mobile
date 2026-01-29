@@ -15,7 +15,7 @@ from collections.abc import Mapping
 # DB session provider
 from api_module.database import SessionLocal
 
-PlanLiteral = Literal["Free", "Pro"]
+PlanLiteral = Literal["Free", "Pro Monthly", "Pro Yearly"]
 
 MESSAGES = {
     "weak_pw": {
@@ -572,7 +572,7 @@ def split_response_parts(html: str):
 # === USER PLAN CHECK ====
 def is_user_pro(db: Session, user_id: int) -> bool:
     row = db.execute(text("""
-        SELECT subscription_end_at
+        SELECT plan, subscription_end_at
         FROM users
         WHERE id = :uid
         LIMIT 1
@@ -580,8 +580,23 @@ def is_user_pro(db: Session, user_id: int) -> bool:
 
     if not row:
         return False
+    
+    plan = row.get("plan")
+    end_at = row.get("subscription_end_at")
 
-    # Pro if subscription_end_at exists and is in the future
-    return row["subscription_end_at"] is not None and row["subscription_end_at"] > db.execute(text("NOW()")).scalar()
+    if plan not in ("Pro Monthly", "Pro Yearly"):
+        return False
 
+    # subscription_end_at must exist and be in the future
+    now_db = db.execute(text("NOW()")).scalar()
+    return end_at is not None and end_at > now_db()
 
+def plan_from_product_id(product_id: str | None) -> str:
+    if not product_id:
+        return "Free"
+    pid = product_id.lower()
+    if "yearly" in pid:
+        return "Pro Yearly"
+    if "monthly" in pid:
+        return "Pro Monthly"
+    return "Pro Monthly"
