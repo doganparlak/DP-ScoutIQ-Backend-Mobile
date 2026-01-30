@@ -708,6 +708,32 @@ def activate_subscription(
     if not ok:
         raise HTTPException(status_code=400, detail="Could not verify purchase")
 
+    # ---- SILENT BLOCK: never allow this (platform, external_id) to link to a different user ----
+    ent = db.execute(text("""
+        SELECT last_seen_user_id
+        FROM subscription_entitlements
+        WHERE platform = :platform AND external_id = :ext_id
+        LIMIT 1
+    """), {"platform": body.platform, "ext_id": body.external_id}).mappings().first()
+
+    if ent:
+        other_uid = ent.get("last_seen_user_id")
+        if other_uid and int(other_uid) != int(user_id):
+            # do nothing, return current user's current plan silently
+            me = db.execute(text("""
+                SELECT plan, subscription_end_at
+                FROM users
+                WHERE id = :id
+            """), {"id": user_id}).mappings().first()
+
+            end_at = (me or {}).get("subscription_end_at")
+            return {
+                "ok": True,
+                "plan": (me or {}).get("plan") or "Free",
+                "subscriptionEndAt": end_at.isoformat() if end_at else None,
+            }
+
+
     plan = plan_from_product_id(body.product_id)
     # Get user email for entitlement linking (best effort)
     email = get_user_email_by_id(db, user_id)
