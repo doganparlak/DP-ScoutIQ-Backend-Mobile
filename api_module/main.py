@@ -197,7 +197,7 @@ def set_new_password(
         text("SELECT language FROM users WHERE lower(email) = lower(:e)"),
         {"e": body.email},
     ).mappings().first()
-    preferred_lang = normalize_lang((row_lang or {}).get("language")) or normalize_lang(accept_language) or "en"
+    preferred_lang = normalize_lang(accept_language) or "en"
 
     # 1) Password strength check
     if not PASSWORD_RE.match(body.new_password):
@@ -438,8 +438,8 @@ async def chat(body: ChatIn,
                db: Session = Depends(get_db)) -> Dict[str, Any]:
     session_id = body.session_id or "default"
     header_lang = normalize_lang(accept_language)
-    user_lang = normalize_lang(get_user_language(db, user_id))
-    lang = header_lang or user_lang or "en"
+    #user_lang = normalize_lang(get_user_language(db, user_id))
+    lang = header_lang or "en" #or user_lang 
     try:
         if not session_exists_and_active(db, session_id):
             # emulate SQLite INSERT OR REPLACE with UPSERT
