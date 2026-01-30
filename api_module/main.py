@@ -699,7 +699,6 @@ def activate_subscription(
             body.external_id,  # original_transaction_id
         )
     else:
-        print("[ANDROID VERIFICATION]")
         ok, expires_at, auto_renew = verify_android_subscription(
             body.product_id,
             body.external_id,  # purchaseToken
@@ -707,12 +706,9 @@ def activate_subscription(
         )
 
     if not ok:
-        print("[VERIFICATION FAILED]")
         raise HTTPException(status_code=400, detail="Could not verify purchase")
 
     plan = plan_from_product_id(body.product_id)
-    print("[VERIFICATION SUCCEEDED]")
-    print(f"[PLAN]: {plan}, EXPIRES AT: {expires_at}, AUTO RENEW: {auto_renew}")
     # Get user email for entitlement linking (best effort)
     email = get_user_email_by_id(db, user_id)
 
@@ -740,7 +736,6 @@ def activate_subscription(
             "id": user_id,
         },
     )
-    print("USERS TABLE UPDATED")
     db.execute(
         text("""
             INSERT INTO subscription_entitlements (
@@ -773,7 +768,6 @@ def activate_subscription(
             "email": email,  # can be None; ok
         },
     )
-    print("SUBS ENTITLEMENTS TABLE UPDATED")
     db.commit()
 
     return {
@@ -886,18 +880,3 @@ def get_or_create_report(
         raise HTTPException(status_code=500, detail="Failed to generate scouting report")
 
 
-# OPTIONAL ENDPOINT: run subscription sync via endpoint
-@app.post("/internal/subscriptions/sync")
-def sync_subscriptions(
-    x_admin_token: str = Header(..., alias="X-Admin-Token"),
-    db: Session = Depends(get_db),
-):
-
-    if not ADMIN_SUBSCRIPTION_SYNC_TOKEN or not hmac.compare_digest(
-        x_admin_token,
-        ADMIN_SUBSCRIPTION_SYNC_TOKEN,
-    ):
-        raise HTTPException(status_code=401, detail="Unauthorized")
-
-    run_subscription_sync(db)
-    return {"ok": True}
