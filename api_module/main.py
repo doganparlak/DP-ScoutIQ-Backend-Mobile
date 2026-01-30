@@ -284,7 +284,7 @@ def request_reset(body: PasswordResetRequestIn, accept_language: str | None = He
     row = db.execute(text("SELECT id, language FROM users WHERE email = :e"), {"e": email}).mappings().first()
     if row:
         code = create_email_code(email, purpose="reset")
-        preferred_lang = normalize_lang(row.get("language")) or normalize_lang(accept_language)
+        preferred_lang = normalize_lang(accept_language) or "en"
         send_email_code(email, code, mail_type="reset", lang=preferred_lang)
     return {"ok": True}
 
