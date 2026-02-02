@@ -682,7 +682,6 @@ def activate_subscription(
     user_id: int = Depends(require_auth),
     db: Session = Depends(get_db),
 ):  
-    print("[BODY]:", body)
     allowed_product_ids = {
         IOS_PRO_MONTHLY_PRODUCT_ID,
         IOS_PRO_YEARLY_PRODUCT_ID,
