@@ -78,6 +78,25 @@ def fetch_docs_for_favorite(
         "nat_q": nat_q,
         "lim": int(limit_docs),
     }).mappings().all()
+
+    # ✅ fallback: name-only search if nothing returned
+    if not rows:
+        rows = db.execute(text("""
+            SELECT id, metadata, content
+            FROM player_data
+            WHERE
+            (
+                (metadata->>'player_name_norm') ILIKE :name_norm_q
+                OR (metadata->>'player_name') ILIKE :name_raw_q
+                OR (content ILIKE :name_raw_q)
+            )
+            ORDER BY id DESC
+            LIMIT :lim
+        """), {
+            "name_norm_q": name_norm_q,
+            "name_raw_q": name_raw_q,
+            "lim": int(limit_docs),
+        }).mappings().all()
     if not rows:
         return []
 

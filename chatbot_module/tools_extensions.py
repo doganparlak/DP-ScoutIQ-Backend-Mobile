@@ -265,9 +265,31 @@ def fetch_player_nonzero_stats(
         "nat_q": nat_q,
         "lim": int(limit_docs),
     }).mappings().all()
+    print(rows)
+    print("=================================")
+    # ✅ fallback: name-only search if nothing returned
+    if not rows:
+        rows = db.execute(text("""
+            SELECT id, metadata, content
+            FROM player_data
+            WHERE
+            (
+                (metadata->>'player_name_norm') ILIKE :name_norm_q
+                OR (metadata->>'player_name') ILIKE :name_raw_q
+                OR (content ILIKE :name_raw_q)
+            )
+            ORDER BY id DESC
+            LIMIT :lim
+        """), {
+            "name_norm_q": name_norm_q,
+            "name_raw_q": name_raw_q,
+            "lim": int(limit_docs),
+        }).mappings().all()
     if not rows:
         return [], {}
     print(rows)
+    print("=================================")
+    
     # pick best id (each row == one player)
     best: Tuple[float, Optional[int]] = (-1.0, None)
     for r in rows:
