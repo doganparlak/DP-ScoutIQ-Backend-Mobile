@@ -145,6 +145,7 @@ def build_player_card_from_docs(metric_docs: List[Dict[str, Any]]) -> Dict[str, 
         height = _first_non_empty(meta.get("height"), meta.get("height_cm"))
         weight = _first_non_empty(meta.get("weight"), meta.get("weight_kg"))
         potential = _first_non_empty(meta.get("potential"))
+        position_name = _first_non_empty(meta.get("position_name"), meta.get("position"))
         roles_raw = _first_non_empty(meta.get("roles"), meta.get("roles_json"), meta.get("position"), meta.get("position_name"))
 
         if "name" not in card and name is not None:
@@ -164,13 +165,24 @@ def build_player_card_from_docs(metric_docs: List[Dict[str, Any]]) -> Dict[str, 
         if "potential" not in card and potential is not None:
             card["potential"] = potential
 
+        # ✅ NEW: set position_name once (authoritative)
+        if "position_name" not in card and position_name is not None:
+            card["position_name"] = position_name
+
+        # ✅ roles only set if position_name is missing
         if "roles" not in card:
-            roles = _normalize_roles(roles_raw)
-            if roles:
-                card["roles"] = roles
+            if card.get("position_name"):
+                card["roles"] = [str(card["position_name"])]
+            else:
+                roles = _normalize_roles(roles_raw)
+                card["roles"] = roles if roles else []
 
     if "roles" not in card:
-        card["roles"] = []
+        # final safety
+        if card.get("position_name"):
+            card["roles"] = [str(card["position_name"])]
+        else:
+            card["roles"] = []
 
     return card
 

@@ -409,6 +409,15 @@ def build_player_payload_new(meta: Dict[str, Any]) -> Dict[str, Any]:
             nat_final        = resolved.get("nationality", m.get("nationality"))
             gender_final     = resolved.get("gender", m.get("gender"))
             match_count_final= resolved.get("match_count", m.get("match_count"))
+            pos_final = resolved.get("position_name", m.get("position_name"))
+
+            # Prefer DB position -> roles (frontend consumes roles)
+            roles_final = m.get("roles") or []
+            if pos_final:
+                roles_final = [str(pos_final)]
+            elif not roles_final:
+                roles_final = []
+
 
             output["players"].append({
                 "name": name,
@@ -417,10 +426,11 @@ def build_player_payload_new(meta: Dict[str, Any]) -> Dict[str, Any]:
                     "height": height_final,
                     "weight": weight_final,
                     "nationality": nat_final,
+                    "position_name": pos_final,
                     "team": team_final,
                     "match_count": match_count_final,
                     "age": age_final,
-                    "roles": m.get("roles") or [],
+                    "roles": roles_final,
                     "potential": m.get("potential"),
                 },
                 "stats": stats or []
