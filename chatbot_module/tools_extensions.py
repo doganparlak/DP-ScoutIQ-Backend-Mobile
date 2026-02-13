@@ -336,6 +336,8 @@ def fetch_player_nonzero_stats(
             seen.add(key)
         deduped.append(s)
 
+    print("doc_meta:", doc_meta)
+    print("=================================")
     # resolved identity from winning row (authoritative when present)
     resolved_raw = {
         "team": doc_meta.get("team_name") or doc_meta.get("team"),
@@ -350,6 +352,8 @@ def fetch_player_nonzero_stats(
         "match_count": _num(doc_meta.get("match_count")),
         "id": doc.get("id"),
     }
+    print("resolved_raw:", resolved_raw)
+    print("=================================")
     # Remove None (and empty-string) fields so caller never overwrites with blanks
     resolved: Dict[str, Any] = {}
     for k, v in resolved_raw.items():
@@ -358,7 +362,8 @@ def fetch_player_nonzero_stats(
         if isinstance(v, str) and not v.strip():
             continue
         resolved[k] = v
-    
+
+    print("resolved:", resolved)
     # Normalize ints where appropriate (only if age exists after filtering)
     if "age" in resolved:
         try:
