@@ -240,8 +240,7 @@ def fetch_player_nonzero_stats(
     nat = player_identity.get("nationality")
     nat_raw = nat.strip() if isinstance(nat, str) else ""
     nat_q = f"%{nat_raw}%" if nat_raw else None
-    print(name_norm_q, name_raw_q, nat_q)
-    print("=================================")
+
     # Broad candidate search (name + nationality) with folded variants
     rows = db.execute(text("""
         SELECT id, metadata, content
@@ -265,8 +264,7 @@ def fetch_player_nonzero_stats(
         "nat_q": nat_q,
         "lim": int(limit_docs),
     }).mappings().all()
-    print(rows)
-    print("=================================")
+
     # ✅ fallback: name-only search if nothing returned
     if not rows:
         rows = db.execute(text("""
@@ -287,8 +285,6 @@ def fetch_player_nonzero_stats(
         }).mappings().all()
     if not rows:
         return [], {}
-    print(rows)
-    print("=================================")
     
     # pick best id (each row == one player)
     best: Tuple[float, Optional[int]] = (-1.0, None)
@@ -336,8 +332,6 @@ def fetch_player_nonzero_stats(
             seen.add(key)
         deduped.append(s)
 
-    print("doc_meta:", doc_meta)
-    print("=================================")
     # resolved identity from winning row (authoritative when present)
     resolved_raw = {
         "team": doc_meta.get("team_name") or doc_meta.get("team"),
@@ -352,8 +346,6 @@ def fetch_player_nonzero_stats(
         "match_count": _num(doc_meta.get("match_count")),
         "id": doc.get("id"),
     }
-    print("resolved_raw:", resolved_raw)
-    print("=================================")
     # Remove None (and empty-string) fields so caller never overwrites with blanks
     resolved: Dict[str, Any] = {}
     for k, v in resolved_raw.items():
@@ -363,7 +355,6 @@ def fetch_player_nonzero_stats(
             continue
         resolved[k] = v
 
-    print("resolved:", resolved)
     # Normalize ints where appropriate (only if age exists after filtering)
     if "age" in resolved:
         try:
