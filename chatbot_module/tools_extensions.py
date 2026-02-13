@@ -240,6 +240,8 @@ def fetch_player_nonzero_stats(
     nat = player_identity.get("nationality")
     nat_raw = nat.strip() if isinstance(nat, str) else ""
     nat_q = f"%{nat_raw}%" if nat_raw else None
+    print(name_norm_q, name_raw_q, nat_q)
+    print("=================================")
     # Broad candidate search (name + nationality) with folded variants
     rows = db.execute(text("""
         SELECT id, metadata, content
@@ -265,7 +267,7 @@ def fetch_player_nonzero_stats(
     }).mappings().all()
     if not rows:
         return [], {}
-
+    print(rows)
     # pick best id (each row == one player)
     best: Tuple[float, Optional[int]] = (-1.0, None)
     for r in rows:
