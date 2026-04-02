@@ -30,8 +30,7 @@ from chatbot_module.tools import (
     filter_players_by_seen,
     strip_meta_stats_text,
     compose_selection_preamble,
-    inject_language,
-    is_turkish
+    is_turkish,
 )
 from chatbot_module.tools_extensions import (
     parse_player_meta_new,
