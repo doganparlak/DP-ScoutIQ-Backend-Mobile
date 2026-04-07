@@ -263,7 +263,7 @@ def update_me(patch: ProfilePatch, user_id: int = Depends(require_auth), db: Ses
     consent = patch.consent if patch.consent is not None else row.get("consent", False)
 
     db.execute(
-        text("UPDATE users SET dob = CAST(:dob AS date), country = :country, plan = :plan, favorites_json = :favs, consent = :consent WHERE id = :id"),
+        text("UPDATE users SET dob = CAST(:dob AS date), country = :country, plan = :plan, favorites_json = :favs, consent = :consent, WHERE id = :id"),
         {"dob": dob, "country": country, "plan": plan, "favs": favs, "consent": consent, "id": user_id}
     )
     db.commit()
