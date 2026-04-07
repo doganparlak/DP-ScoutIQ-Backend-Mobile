@@ -83,6 +83,8 @@ class ProfileOut(BaseModel):
 
     consent: bool = False
 
+class ConsentPatch(BaseModel):
+    consent: bool
 class ProfilePatch(BaseModel):
     dob: Optional[str] = None
     country: Optional[str] = None
