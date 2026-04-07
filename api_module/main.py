@@ -260,10 +260,11 @@ def update_me(patch: ProfilePatch, user_id: int = Depends(require_auth), db: Ses
     country = patch.country if patch.country is not None else row["country"]
     plan = patch.plan if patch.plan is not None else row["plan"]
     favs = json.dumps(patch.favorite_players) if patch.favorite_players is not None else row["favorites_json"]
+    consent = patch.consent if patch.consent is not None else row.get("consent", False)
 
     db.execute(
-        text("UPDATE users SET dob = CAST(:dob AS date), country = :country, plan = :plan, favorites_json = :favs WHERE id = :id"),
-        {"dob": dob, "country": country, "plan": plan, "favs": favs, "id": user_id}
+        text("UPDATE users SET dob = CAST(:dob AS date), country = :country, plan = :plan, favorites_json = :favs, consent = :consent WHERE id = :id"),
+        {"dob": dob, "country": country, "plan": plan, "favs": favs, "consent": consent, "id": user_id}
     )
     db.commit()
 

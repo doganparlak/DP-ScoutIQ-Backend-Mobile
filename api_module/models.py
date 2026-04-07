@@ -81,11 +81,14 @@ class ProfileOut(BaseModel):
     subscriptionPlatform: Optional[str] = None
     subscriptionAutoRenew: Optional[bool] = None
 
+    consent: bool = False
+
 class ProfilePatch(BaseModel):
     dob: Optional[str] = None
     country: Optional[str] = None
     plan: Optional[str] = None
     favorite_players: Optional[List[Dict[str, Any]]] = None
+    consent: Optional[bool] = None
 
 class PlanUpdateIn(BaseModel):
     plan: PlanLiteral

@@ -171,6 +171,7 @@ def user_row_to_dict(row: any) -> dict:
         "subscriptionEndAt": _to_iso_datetime(get("subscription_end_at")),
         "subscriptionPlatform": get("subscription_platform"),
         "subscriptionAutoRenew": get("subscription_auto_renew"),
+        "consent": bool(get("consent", False)),
     }
 
 # ----- deletion helpers -----
