@@ -710,8 +710,8 @@ def activate_subscription(
     user_id: int = Depends(require_auth),
     db: Session = Depends(get_db),
 ):  
-    print("[USER ID]", user_id)
-    print("[BODY]:", body)
+    #print("[USER ID]", user_id)
+    #print("[BODY]:", body)
     allowed_product_ids = {
         IOS_PRO_MONTHLY_PRODUCT_ID,
         IOS_PRO_YEARLY_PRODUCT_ID,
@@ -723,12 +723,12 @@ def activate_subscription(
 
     # Verify against store
     if body.platform == "ios":
-        print("[VERIFYING IOS SUBSCRIPTION]", {"product_id": body.product_id, "external_id": body.external_id})
+        #print("[VERIFYING IOS SUBSCRIPTION]", {"product_id": body.product_id, "external_id": body.external_id})
         ok, expires_at, auto_renew = verify_ios_subscription(
             body.product_id,
             body.external_id,  # original_transaction_id
         )
-        print("[IOS VERIFY]", {"ok": ok, "expires_at": expires_at, "auto_renew": auto_renew})
+        #print("[IOS VERIFY]", {"ok": ok, "expires_at": expires_at, "auto_renew": auto_renew})
     else:
         ok, expires_at, auto_renew = verify_android_subscription(
             body.product_id,
@@ -737,7 +737,7 @@ def activate_subscription(
         )
 
     if not ok:
-        print("[SUBSCRIPTION VERIFICATION FAILED]", {"platform": body.platform, "product_id": body.product_id, "external_id": body.external_id})
+        #print("[SUBSCRIPTION VERIFICATION FAILED]", {"platform": body.platform, "product_id": body.product_id, "external_id": body.external_id})
         raise HTTPException(status_code=400, detail="Could not verify purchase")
 
     # ---- SILENT BLOCK: never allow this (platform, external_id) to link to a different user ----
@@ -769,7 +769,7 @@ def activate_subscription(
     plan = plan_from_product_id(body.product_id)
     # Get user email for entitlement linking (best effort)
     email = get_user_email_by_id(db, user_id)
-    print("ACTIVATING SUBSCRIPTION")
+    #print("ACTIVATING SUBSCRIPTION")
     # Single transaction: update users + upsert entitlement
     db.execute(
         text("""
@@ -827,7 +827,7 @@ def activate_subscription(
         },
     )
     db.commit()
-    print("SUBSCRIPTION ACTIVATED")
+    #print("SUBSCRIPTION ACTIVATED")
     return {
         "ok": True,
         "plan": plan,

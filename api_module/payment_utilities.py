@@ -47,8 +47,8 @@ APPLE_USE_SANDBOX = os.environ.get("APPLE_IAP_USE_SANDBOX", "false").lower() == 
 environment = Environment.SANDBOX if APPLE_USE_SANDBOX else Environment.PRODUCTION
 signing_key_bytes = _normalize_apple_private_key(APPLE_IAP_PRIVATE_KEY)
 
-print("[APPLE ENV]", "SANDBOX" if APPLE_USE_SANDBOX else "PRODUCTION")
-print("[APPLE BUNDLE ID]", APPLE_BUNDLE_ID)
+#print("[APPLE ENV]", "SANDBOX" if APPLE_USE_SANDBOX else "PRODUCTION")
+#print("[APPLE BUNDLE ID]", APPLE_BUNDLE_ID)
 
 app_store_client = AppStoreServerAPIClient(
     signing_key_bytes,
@@ -84,7 +84,7 @@ def _decode_jws_without_verification(jws: str) -> Dict[str, Any]:
             algorithms=["ES256"],  # Apple's JWS uses ES256
         )
     except Exception as e:
-        print("[subscriptions] jws decode error:", e)
+        #print("[subscriptions] jws decode error:", e)
         return {}
 
 def verify_ios_subscription(
@@ -98,24 +98,24 @@ def verify_ios_subscription(
     """
     now = dt.datetime.now(dt.timezone.utc)
     if not original_transaction_id:
-        print("[IOS VERIFY] Missing original_transaction_id")
+        #print("[IOS VERIFY] Missing original_transaction_id")
         return False, now, False
 
     try:
-        print("[IOS VERIFY] Fetching subscription status from Apple for transaction:", original_transaction_id)
+        #print("[IOS VERIFY] Fetching subscription status from Apple for transaction:", original_transaction_id)
         # Ask Apple for all subscription statuses for this original transaction
         status_response = app_store_client.get_all_subscription_statuses(
             original_transaction_id
         )
-        print("[IOS VERIFY] Received subscription status from Apple:", status_response)
+        #print("[IOS VERIFY] Received subscription status from Apple:", status_response)
     except APIException as e:
-        print("[IOS VERIFY] Apple API error:", e)
+        #print("[IOS VERIFY] Apple API error:", e)
         return False, now, False
     
     latest_expires_at: Optional[dt.datetime] = None
     is_active = False
     will_auto_renew = False
-    print("Groups in status response:", getattr(status_response, "data", []))
+    #print("Groups in status response:", getattr(status_response, "data", []))
     groups = getattr(status_response, "data", []) or []
     for group in groups:
         # Each group has lastTransactions: list[LastTransactionsItem]
@@ -148,8 +148,8 @@ def verify_ios_subscription(
 
                 # active if not expired and ownership is PURCHASED
                 ownership = decoded_tx.get("inAppOwnershipType")
-                print(ownership)
-                print(expires_at > now)
+                #print(ownership)
+                #print(expires_at > now)
                 is_active = expires_at > now 
                 #and ownership in (
                 #    "PURCHASED",
@@ -160,7 +160,6 @@ def verify_ios_subscription(
 
             # Try to refine auto_renew by looking at signedRenewalInfo
             signed_renewal = getattr(last_tx, "signedRenewalInfo", None)
-            print("signed_renewal", signed_renewal)
             if signed_renewal:
                 decoded_renewal = _decode_jws_without_verification(signed_renewal)
                 if decoded_renewal:
@@ -218,7 +217,7 @@ def verify_android_subscription(
         return is_active, expires_at, auto_renew
 
     except Exception as e:
-        print("[ANDROID VERIFY ERROR]", str(e))
+        #print("[ANDROID VERIFY ERROR]", str(e))
         return False, now, False
 
 # AUTO CHECK FOR SUBSCRIPTION UPDATES FOR ALL USERS
