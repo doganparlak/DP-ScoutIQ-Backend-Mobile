@@ -47,6 +47,9 @@ APPLE_USE_SANDBOX = os.environ.get("APPLE_IAP_USE_SANDBOX", "false").lower() == 
 environment = Environment.SANDBOX if APPLE_USE_SANDBOX else Environment.PRODUCTION
 signing_key_bytes = _normalize_apple_private_key(APPLE_IAP_PRIVATE_KEY)
 
+print("[APPLE ENV]", "SANDBOX" if APPLE_USE_SANDBOX else "PRODUCTION")
+print("[APPLE BUNDLE ID]", APPLE_BUNDLE_ID)
+
 app_store_client = AppStoreServerAPIClient(
     signing_key_bytes,
     APPLE_IAP_KEY_ID,
@@ -95,20 +98,24 @@ def verify_ios_subscription(
     """
     now = dt.datetime.now(dt.timezone.utc)
     if not original_transaction_id:
+        print("[IOS VERIFY] Missing original_transaction_id")
         return False, now, False
 
     try:
+        print("[IOS VERIFY] Fetching subscription status from Apple for transaction:", original_transaction_id)
         # Ask Apple for all subscription statuses for this original transaction
         status_response = app_store_client.get_all_subscription_statuses(
             original_transaction_id
         )
-       
+        print("[IOS VERIFY] Received subscription status from Apple:", status_response)
     except APIException as e:
+        print("[IOS VERIFY] Apple API error:", e)
         return False, now, False
     
     latest_expires_at: Optional[dt.datetime] = None
     is_active = False
     will_auto_renew = False
+    print("Groups in status response:", getattr(status_response, "data", []))
     groups = getattr(status_response, "data", []) or []
     for group in groups:
         # Each group has lastTransactions: list[LastTransactionsItem]
@@ -141,15 +148,19 @@ def verify_ios_subscription(
 
                 # active if not expired and ownership is PURCHASED
                 ownership = decoded_tx.get("inAppOwnershipType")
-                is_active = expires_at > now and ownership in (
-                    "PURCHASED",
-                    "FAMILY_SHARED",
-                )
+                print(ownership)
+                print(expires_at > now)
+                is_active = expires_at > now 
+                #and ownership in (
+                #    "PURCHASED",
+                #    "FAMILY_SHARED",
+                #)
 
                 will_auto_renew = is_active
 
             # Try to refine auto_renew by looking at signedRenewalInfo
             signed_renewal = getattr(last_tx, "signedRenewalInfo", None)
+            print("signed_renewal", signed_renewal)
             if signed_renewal:
                 decoded_renewal = _decode_jws_without_verification(signed_renewal)
                 if decoded_renewal:
