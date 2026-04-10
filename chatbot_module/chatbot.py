@@ -222,19 +222,18 @@ def answer_question(
     inputs = {
         "question": retrieval_query,
     }
-    db = get_db()
     try:
         result = qa_chain.invoke(inputs)
         base_answer = (result.get("answer") or "").strip()
-        append_chat_message(db, session_id, "human", question or "")
-        append_chat_message(db, session_id, "ai", base_answer)
     except Exception as e:
         print(e, flush=True)
-        append_chat_message(db, session_id, "human", question or "")
-        append_chat_message(db, session_id, "ai", "Sorry, I couldn’t generate an answer right now.")
+        db = get_db()
+        try:
+            append_chat_message(db, session_id, "human", question or "")
+            append_chat_message(db, session_id, "ai", "Sorry, I couldn’t generate an answer right now.")
+        finally:
+            db.close()
         return {"answer": "Sorry, I couldn’t generate an answer right now.", "answer_raw": str(e)}
-    finally:
-        db.close()
 
     # 6) Parse current answer into meta/stats
     out = base_answer
@@ -274,6 +273,14 @@ def answer_question(
                     out = translated_out
             except Exception as e:
                 pass
+        
+        stored_ai_content = "[[PAYLOAD_JSON]]\n" + json.dumps(payload, ensure_ascii=False) + "\n[[/PAYLOAD_JSON]]" + "\n\n" + out
+        db = get_db()
+        try:
+            append_chat_message(db, session_id, "human", question or "")
+            append_chat_message(db, session_id, "ai", stored_ai_content)
+        finally:
+            db.close()
 
         return {"answer": out, "data": payload}
 
