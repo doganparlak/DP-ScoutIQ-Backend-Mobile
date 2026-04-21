@@ -1,6 +1,7 @@
 import re
 import json
 import math
+import unicodedata
 from typing import Dict, Any, Tuple, Iterable, Optional
 import matplotlib.pyplot as plt
 
@@ -23,6 +24,10 @@ LANG_DIRECTIVES = {
     ),
 }
 PLAYER_PROFILE_OPEN_TAG_RE = re.compile(r"\[\[\s*PLAYER_PROFILE\s*:\s*(.*?)\s*\]\]", re.IGNORECASE)
+PAYLOAD_JSON_BLOCK_RE = re.compile(
+    r"\[\[\s*PAYLOAD_JSON\s*\]\](?P<body>[\s\S]*?)\[\[\/PAYLOAD_JSON\]\]",
+    re.IGNORECASE,
+)
 HEAVY_TAGS_RE = re.compile(r"(<img[^>]*>|<table[\s\S]*?</table>)", re.IGNORECASE)
 # Flagged block delimiters (exact tokens instructed in system_message)
 FLAG_BLOCK_START_RE = re.compile(r"^\s*\[\[(PLAYER_PROFILE|PLAYER_STATS)(?::[^\]]+)?\]\]\s*$", re.IGNORECASE)
@@ -61,8 +66,10 @@ BUL_POT_RE  = re.compile(r"^\s*-\s*Potential\s*:\s*(?P<val>\d{1,3})\s*$", re.IGN
 
 def get_seen_players_from_history(history) -> set[str]:
     """
-    Scan ASSISTANT messages in history and collect any names that appear in
-    [[PLAYER_PROFILE:<Name>]] tags. Returns a normalized set of names.
+    Scan ASSISTANT messages in history and collect player names from either:
+    - [[PLAYER_PROFILE:<Name>]] tags
+    - persisted [[PAYLOAD_JSON]] blocks
+    Returns a normalized set of names.
     """
     seen = set()
 
@@ -73,10 +80,27 @@ def get_seen_players_from_history(history) -> set[str]:
         role = getattr(msg, "type", "") or getattr(msg, "role", "")
         if "ai" in role or role == "assistant":
             content = getattr(msg, "content", "") or ""
+
             for m in PLAYER_PROFILE_OPEN_TAG_RE.finditer(content):
                 name = norm(m.group(1))
                 if name:
                     seen.add(name)
+
+            for m in PAYLOAD_JSON_BLOCK_RE.finditer(content):
+                raw_json = (m.group("body") or "").strip()
+                if not raw_json:
+                    continue
+                try:
+                    payload = json.loads(raw_json)
+                except Exception:
+                    continue
+
+                for player in (payload.get("players") or []):
+                    if not isinstance(player, dict):
+                        continue
+                    name = norm(player.get("name") or "")
+                    if name:
+                        seen.add(name)
     return seen
 
 # === STRIP HEAVY HTML TOOL ===
@@ -265,6 +289,63 @@ def strip_meta_stats_text(text: str, known_names: list[str] | None = None) -> st
 # ======== Answer Question Helpers =========
 def normalize_name(s: str) -> str:
     return (s or "").strip().lower()
+
+def _fold_text(s: str) -> str:
+    text = unicodedata.normalize("NFKD", s or "")
+    text = "".join(ch for ch in text if not unicodedata.combining(ch))
+    return text.lower().strip()
+
+def normalize_club_name(s: str) -> str:
+    text = _fold_text(s or "")
+    text = text.replace("&", " and ")
+    text = re.sub(r"[^\w\s]", " ", text)
+    text = re.sub(
+        r"\b(a\.?s\.?|as|sk|sc|fc|cf|ac|afc|jk|fk|club|kulubu|kulubu|spor kulubu|sports club)\b",
+        " ",
+        text,
+    )
+    text = re.sub(
+        r"\b(u\d{2}|u\d{1,2}|under\s*\d{1,2}|b\s*team|reserves?|reserve|academy|ii|2nd team|second team|youth)\b",
+        " ",
+        text,
+    )
+    text = re.sub(r"\s+", " ", text).strip()
+    return text
+
+def is_same_club(club_a: Optional[str], club_b: Optional[str]) -> bool:
+    a = normalize_club_name(club_a or "")
+    b = normalize_club_name(club_b or "")
+    if not a or not b:
+        return False
+    if a == b:
+        return True
+    a_tokens = set(a.split())
+    b_tokens = set(b.split())
+    if a_tokens and b_tokens and a_tokens == b_tokens:
+        return True
+    if a in b or b in a:
+        return True
+    return False
+
+
+
+def extract_target_team_from_question(question: Optional[str]) -> Optional[str]:
+    text = (question or "").strip()
+    if not text:
+        return None
+
+    patterns = [
+        r"\b([A-Za-z0-9 .&'\-]+?)\s+i[cç]in\b",
+        r"\b(?:for|to)\s+([A-Za-z0-9 .&'\-]+?)(?=$|\s+(?:a|an|the|need|needs|looking|searching|want|wants|with|who)\b|[,.!?])",
+    ]
+    for pattern in patterns:
+        m = re.search(pattern, text, re.IGNORECASE)
+        if not m:
+            continue
+        team = re.sub(r"\s+", " ", (m.group(1) or "").strip(" .,!?:;\"'"))
+        if team:
+            return team
+    return None
 
 def compose_selection_preamble(
     seen_players: Iterable[str],

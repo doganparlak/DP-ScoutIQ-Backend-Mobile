@@ -31,6 +31,8 @@ from chatbot_module.tools import (
     strip_meta_stats_text,
     compose_selection_preamble,
     is_turkish,
+    is_same_club,
+    extract_target_team_from_question,
 )
 from chatbot_module.tools_extensions import (
     parse_player_meta_new,
@@ -193,11 +195,26 @@ def answer_question(
     preamble = compose_selection_preamble(seen_players, strategy)
     # 4) Translate user question to English if needed (TR -> EN, EN passthrough)
     translated_question = translate_to_english_if_needed(question or "", lang)
+    print(translated_question, flush=True)
+    target_team = extract_target_team_from_question(translated_question)
+    if not target_team:
+        for row in reversed(history_rows):
+            if row.get("role") != "human":
+                continue
+            target_team = extract_target_team_from_question(row.get("content") or "")
+            if target_team:
+                break
+    target_team_nudge = ""
+    if target_team:
+        target_team_nudge = (
+            f'Target team rule: the user is scouting for "{target_team}". '
+            f'NEVER suggest a player from "{target_team}" or any variant of the same club. '
+            'The player must already belong to a different club.\n\n'
+        )
     # 5) Intent hint — ONLY entity resolution (seen name), no keyword lists
     q_lower = (question or "").lower()
     tq_lower = (translated_question or "").lower()
     mentions_seen_by_name = any(n and (n in q_lower or n in tq_lower) for n in seen_list_lower)
-
     # Let the LLM infer intent semantically using the preamble rules.
     if mentions_seen_by_name:
         intent_nudge = (
@@ -210,7 +227,7 @@ def answer_question(
             "Intent: the user may be asking for a different option or for collective reasoning about previously discussed players. "
             "Infer intention semantically (not by keywords) using the selection rules above.\n\n"
         )
-    preamble_text = preamble + intent_nudge
+    preamble_text = preamble + target_team_nudge + intent_nudge
     qa_chain = create_qa_chain(
         lang=lang,
         history_rows=history_rows,
@@ -229,7 +246,7 @@ def answer_question(
         print(e, flush=True)
         db = get_db()
         try:
-            append_chat_message(db, session_id, "human", question or "")
+            append_chat_message(db, session_id, "human", translated_question)
             append_chat_message(db, session_id, "ai", "Sorry, I couldn’t generate an answer right now.")
         finally:
             db.close()
@@ -239,6 +256,31 @@ def answer_question(
     out = base_answer
     try:
         meta = parse_player_meta_new(meta_parser_chain, raw_text=base_answer)
+        players = meta.get("players") or []
+
+        # Hard same-club safeguard: if the model suggests a player already at the
+        # destination club, retry once with an explicit exclusion preamble.
+        if target_team and players:
+            suggested_team = (players[0] or {}).get("team")
+            print(suggested_team, flush=True)
+            if is_same_club(target_team, suggested_team):
+                print(f"Same-club suggestion detected: target_team='{target_team}' vs suggested_team='{suggested_team}'. Retrying with exclusion preamble.", flush=True)
+                retry_preamble = (
+                    preamble_text
+                    + f'\nInvalid previous choice: "{suggested_team}" is the same club as "{target_team}". '
+                      'Never suggest a player from the target team. Choose a player from a different club.\n'
+                )
+                retry_chain = create_qa_chain(
+                    lang=lang,
+                    history_rows=history_rows,
+                    strategy=strategy,
+                    preamble_text=retry_preamble
+                )
+                retry_result = retry_chain.invoke(inputs)
+                base_answer = (retry_result.get("answer") or "").strip()
+                out = base_answer
+                meta = parse_player_meta_new(meta_parser_chain, raw_text=base_answer)
+
         # Keep only NEW players for data payload (so cards/plots are printed once per player)
         meta_new, new_names = filter_players_by_seen(meta, seen_players)
         # Build structured data for NEW players only (no HTML/PNGs)
@@ -266,18 +308,19 @@ def answer_question(
                 "profile_json": profile_json,
                 "stats_json": stats_json,
             }).strip()
+        memory_out = out
         if is_turkish(lang):
             try:
-                translated_out = output_tr_translate_chain.invoke({"text": out}).strip()
+                translated_out = output_tr_translate_chain.invoke({"text": memory_out}).strip()
                 if translated_out:
                     out = translated_out
             except Exception as e:
                 pass
         
-        stored_ai_content = "[[PAYLOAD_JSON]]\n" + json.dumps(payload, ensure_ascii=False) + "\n[[/PAYLOAD_JSON]]" + "\n\n" + out
+        stored_ai_content = "[[PAYLOAD_JSON]]\n" + json.dumps(payload, ensure_ascii=False) + "\n[[/PAYLOAD_JSON]]" + "\n\n" + memory_out
         db = get_db()
         try:
-            append_chat_message(db, session_id, "human", question or "")
+            append_chat_message(db, session_id, "human", translated_question)
             append_chat_message(db, session_id, "ai", stored_ai_content)
         finally:
             db.close()
@@ -289,7 +332,7 @@ def answer_question(
         # Persist raw base answer if parsing failed (optional)
         db = get_db()
         try:
-            append_chat_message(db, session_id, "human", question or "")
+            append_chat_message(db, session_id, "human", translated_question)
             append_chat_message(db, session_id, "ai", base_answer)
         finally:
             db.close()
