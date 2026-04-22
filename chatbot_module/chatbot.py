@@ -41,10 +41,16 @@ from chatbot_module.tools import (
     request_allows_non_senior_squads,
     is_premium_request,
     is_premium_allowed_club,
+    is_transfer_fallback_club,
     is_generic_alternative_request,
     get_candidate_rejection_reason,
     player_matches_requested_position,
+    summarize_doc_candidate,
+    build_pass2_query,
+    build_pass3_query,
+    collect_recent_human_constraints,
     extract_target_team_from_question,
+    rewrite_position_reference_phrases,
     strip_target_team_from_question,
 )
 from chatbot_module.tools_extensions import (
@@ -74,7 +80,8 @@ TRANSLATE_LLM = ChatDeepSeek(
 )
 
 SHARED_RETRIEVER = get_retriever(k=12, filter=None)
-CANDIDATE_RETRIEVER = get_retriever(k=30, filter=None)
+CANDIDATE_RETRIEVER = get_retriever(k=40, filter=None)
+BROAD_CANDIDATE_RETRIEVER = get_retriever(k=60, filter=None)
 FILTERED_CONTEXT_DOCS = 10
 
 
@@ -87,54 +94,6 @@ class StaticDocsRetriever(BaseRetriever):
     async def _aget_relevant_documents(self, query: str) -> List[Document]:
         return list(self.docs)
 
-
-def _summarize_doc_candidate(doc: Document) -> str:
-    md = doc.metadata or {}
-    player_name = str(md.get("player_name") or md.get("name") or "").strip() or "Unknown"
-    team_name = str(md.get("team_name") or md.get("team") or md.get("club") or "").strip() or "Unknown"
-    nationality = str(md.get("nationality_name") or md.get("nationality") or md.get("country") or "").strip() or "Unknown"
-    position_name = str(md.get("position_name") or md.get("position") or "").strip() or "Unknown"
-    similarity = md.get("similarity")
-    similarity_text = f"{similarity:.4f}" if isinstance(similarity, (int, float)) else "n/a"
-    return (
-        f"name='{player_name}', team='{team_name}', nationality='{nationality}', "
-        f"position='{position_name}', similarity='{similarity_text}'"
-    )
-
-
-def _build_pass2_query(
-    original_query: str,
-    stripped_query: str,
-    target_team: Optional[str],
-    *,
-    allow_turkish: bool,
-    allow_non_senior: bool,
-    premium_only: bool,
-) -> str:
-    base_query = (stripped_query or original_query or "").strip()
-    constraints: List[str] = []
-    if target_team:
-        constraints.append(
-            f"The player must be a realistic transfer target for {target_team} and must already belong to a different club."
-        )
-    if not allow_turkish:
-        constraints.append(
-            "Exclude Turkish players, players from Turkish clubs, and clearly Turkish-looking player names."
-        )
-    if not allow_non_senior:
-        constraints.append(
-            "Exclude youth teams, reserve teams, academy teams, and B teams; prefer senior first-team players only."
-        )
-    if premium_only:
-        constraints.append(
-            "Keep premium-only quality constraints and restrict candidates to the approved premium club set."
-        )
-    constraints.append(
-        "Prefer realistic first-team players with a clear role match, not random low-signal or unknown-position candidates."
-    )
-    return base_query + "\n" + " ".join(constraints)
-
-
 def build_filtered_retriever(
     query: str,
     target_team: Optional[str],
@@ -142,13 +101,20 @@ def build_filtered_retriever(
     allow_turkish = request_allows_turkish_entities(query)
     allow_non_senior = request_allows_non_senior_squads(query)
     premium_only = is_premium_request(query)
+    success_pass_label: Optional[str] = None
 
-    def _filter_docs(raw_docs: List[Document], active_query: str, pass_label: str) -> List[Document]:
-        print(
-            f"[selection] Filtering candidates ({pass_label}) for query='{active_query}', target_team='{target_team}', "
-            f"allow_turkish='{allow_turkish}', allow_non_senior='{allow_non_senior}', premium_only='{premium_only}', raw_doc_count='{len(raw_docs)}'",
-            flush=True,
-        )
+    def _filter_docs(
+        raw_docs: List[Document],
+        active_query: str,
+        pass_label: str,
+        *,
+        restrict_to_fallback_clubs: bool = False,
+    ) -> List[Document]:
+        # print(
+        #     f"[selection] Filtering candidates ({pass_label}) for query='{active_query}', target_team='{target_team}', "
+        #     f"allow_turkish='{allow_turkish}', allow_non_senior='{allow_non_senior}', premium_only='{premium_only}', raw_doc_count='{len(raw_docs)}'",
+        #     flush=True,
+        # )
         filtered_docs: List[Document] = []
         seen_names = set()
         for idx, doc in enumerate(raw_docs, start=1):
@@ -156,7 +122,8 @@ def build_filtered_retriever(
             player_name = str(md.get("player_name") or md.get("name") or "").strip()
             team_name = str(md.get("team_name") or md.get("team") or md.get("club") or "").strip()
             nationality = str(md.get("nationality_name") or md.get("nationality") or md.get("country") or "").strip()
-            summary = _summarize_doc_candidate(doc)
+            position_name = str(md.get("position_name") or md.get("position") or "").strip()
+            summary = summarize_doc_candidate(doc)
 
             rejection_reason = get_candidate_rejection_reason(
                 player_name,
@@ -169,46 +136,64 @@ def build_filtered_retriever(
             )
             if rejection_reason:
                 if rejection_reason == "premium club restriction":
-                    print(
-                        f"[selection] REJECT {pass_label} raw_doc#{idx}: premium club restriction "
-                        f"(premium_allowed='{is_premium_allowed_club(team_name)}') -> {summary}",
-                        flush=True,
-                    )
+                    # print(
+                    #     f"[selection] REJECT {pass_label} raw_doc#{idx}: premium club restriction "
+                    #     f"(premium_allowed='{is_premium_allowed_club(team_name)}') -> {summary}",
+                    #     flush=True,
+                    # )
+                    pass
                 elif rejection_reason == "Turkish exclusion":
-                    print(
-                        f"[selection] REJECT {pass_label} raw_doc#{idx}: Turkish exclusion "
-                        f"(club='{is_disallowed_turkish_club(team_name)}', nationality='{is_turkish_nationality(nationality)}', "
-                        f"name='{is_likely_turkish_name(player_name)}') -> {summary}",
-                        flush=True,
-                    )
+                    # print(
+                    #     f"[selection] REJECT {pass_label} raw_doc#{idx}: Turkish exclusion "
+                    #     f"(club='{is_disallowed_turkish_club(team_name)}', nationality='{is_turkish_nationality(nationality)}', "
+                    #     f"name='{is_likely_turkish_name(player_name)}') -> {summary}",
+                    #     flush=True,
+                    # )
+                    pass
                 else:
-                    print(f"[selection] REJECT {pass_label} raw_doc#{idx}: {rejection_reason} -> {summary}", flush=True)
+                    # print(f"[selection] REJECT {pass_label} raw_doc#{idx}: {rejection_reason} -> {summary}", flush=True)
+                    pass
+                continue
+
+            if restrict_to_fallback_clubs and not is_transfer_fallback_club(team_name):
+                continue
+
+            position_match_ok, requested_position_groups, player_position_groups = player_matches_requested_position(
+                active_query,
+                position_name,
+                [position_name] if position_name else [],
+            )
+            if not position_match_ok:
+                # print(
+                #     f"[selection] REJECT {pass_label} raw_doc#{idx}: position mismatch "
+                #     f"(requested='{sorted(requested_position_groups) if requested_position_groups else []}', "
+                #     f"player='{sorted(player_position_groups) if player_position_groups else []}') -> {summary}",
+                #     flush=True,
+                # )
                 continue
 
             dedupe_key = (player_name or doc.page_content[:80]).strip().lower()
             if dedupe_key in seen_names:
-                print(f"[selection] REJECT {pass_label} raw_doc#{idx}: duplicate candidate key='{dedupe_key}' -> {summary}", flush=True)
+                # print(f"[selection] REJECT {pass_label} raw_doc#{idx}: duplicate candidate key='{dedupe_key}' -> {summary}", flush=True)
                 continue
             seen_names.add(dedupe_key)
             filtered_docs.append(doc)
-            print(f"[selection] KEEP {pass_label} raw_doc#{idx}: {summary}", flush=True)
+            # print(f"[selection] KEEP {pass_label} raw_doc#{idx}: {summary}", flush=True)
             if len(filtered_docs) >= FILTERED_CONTEXT_DOCS:
                 break
         return filtered_docs
 
     raw_docs = CANDIDATE_RETRIEVER.invoke(query or "")
-    if not raw_docs:
-        print(
-            f"[selection] No raw docs from candidate retriever for query='{query}'. Using shared retriever.",
-            flush=True,
-        )
-        return SHARED_RETRIEVER
+    filtered_docs = _filter_docs(raw_docs, query, "pass1") if raw_docs else []
+    if filtered_docs:
+        success_pass_label = "pass1"
+    alt_query = query
+    pass3_query = query
 
-    filtered_docs = _filter_docs(raw_docs, query, "pass1")
     if not filtered_docs and target_team:
         alt_query = strip_target_team_from_question(query, target_team)
         if alt_query != query:
-            pass2_query = _build_pass2_query(
+            pass2_query = build_pass2_query(
                 query,
                 alt_query,
                 target_team,
@@ -216,30 +201,64 @@ def build_filtered_retriever(
                 allow_non_senior=allow_non_senior,
                 premium_only=premium_only,
             )
-            print(
-                f"[selection] No survivors on pass1. Retrying candidate retrieval with pass2 query='{pass2_query}'.",
-                flush=True,
-            )
+            # print(
+            #     f"[selection] No survivors on pass1. Retrying candidate retrieval with pass2 query='{pass2_query}'.",
+            #     flush=True,
+            # )
             alt_docs = CANDIDATE_RETRIEVER.invoke(pass2_query)
             filtered_docs = _filter_docs(alt_docs, pass2_query, "pass2")
+            if filtered_docs:
+                success_pass_label = "pass2"
+
+        if not filtered_docs:
+            pass3_query = build_pass3_query(
+                query,
+                alt_query,
+                target_team,
+                allow_turkish=allow_turkish,
+                allow_non_senior=allow_non_senior,
+            )
+            fallback_docs = CANDIDATE_RETRIEVER.invoke(pass3_query)
+            filtered_docs = _filter_docs(
+                fallback_docs,
+                pass3_query,
+                "pass3",
+                restrict_to_fallback_clubs=True,
+            )
+            if filtered_docs:
+                success_pass_label = "pass3"
+
+    if not filtered_docs:
+        broad_query = pass3_query if target_team else query
+        broad_docs = BROAD_CANDIDATE_RETRIEVER.invoke(broad_query)
+        filtered_docs = _filter_docs(
+            broad_docs,
+            broad_query,
+            "pass4",
+            restrict_to_fallback_clubs=bool(target_team),
+        )
+        if filtered_docs:
+            success_pass_label = "pass4"
 
     if filtered_docs:
-        print(
-            f"[selection] Filtered retrieval candidates: kept {len(filtered_docs)} docs after filtering.",
-            flush=True,
-        )
+        # print(f"[selection] succeeded_on='{success_pass_label}'", flush=True)
+        # print(
+        #     f"[selection] Filtered retrieval candidates: kept {len(filtered_docs)} docs after filtering.",
+        #     flush=True,
+        # )
         for idx, doc in enumerate(filtered_docs, start=1):
-            print(
-                f"[selection] FINAL_FILTERED_POOL#{idx}: {_summarize_doc_candidate(doc)}",
-                flush=True,
-            )
+            # print(
+            #     f"[selection] FINAL_FILTERED_POOL#{idx}: {summarize_doc_candidate(doc)}",
+            #     flush=True,
+            # )
+            pass
         return StaticDocsRetriever(docs=filtered_docs)
 
-    print(
-        f"[selection] Filtered retrieval produced no survivors for query='{query}'. Falling back to shared retriever.",
-        flush=True,
-    )
-    return SHARED_RETRIEVER
+    # print(
+    #     f"[selection] Filtered retrieval produced no survivors for query='{query}'. Returning empty filtered retriever.",
+    #     flush=True,
+    # )
+    return StaticDocsRetriever(docs=[])
 
 def add_language_strategy_to_prompt(
     ui_language: Optional[str],
@@ -352,24 +371,6 @@ interpretation_prompt = ChatPromptTemplate.from_messages([
 
 interpretation_chain = interpretation_prompt | CHAT_LLM | StrOutputParser()
 
-
-def _collect_recent_human_constraints(history_rows: list, limit: int = 3) -> list[str]:
-    constraints: list[str] = []
-    for row in reversed(history_rows):
-        if row.get("role") != "human":
-            continue
-        text = (row.get("content") or "").strip()
-        if not text:
-            continue
-        if is_generic_alternative_request(text):
-            continue
-        constraints.append(text)
-        if len(constraints) >= limit:
-            break
-    constraints.reverse()
-    return constraints
-
-
 # ===== Q&A Actions =====
 def answer_question(
     question: str, 
@@ -391,12 +392,14 @@ def answer_question(
     # 3) Build selection preamble (semantic, no keyword parsing)
     preamble = compose_selection_preamble(seen_players, strategy)
     # 4) Translate user question to English if needed (TR -> EN, EN passthrough)
-    translated_question = translate_to_english_if_needed(question or "", lang)
-    generic_alternative_request = is_generic_alternative_request(translated_question)
-    print(
-        f"[answer] session='{session_id}', lang='{lang}', original_question='{question}', translated_question='{translated_question}'",
-        flush=True,
+    translated_question = rewrite_position_reference_phrases(
+        translate_to_english_if_needed(question or "", lang)
     )
+    generic_alternative_request = is_generic_alternative_request(translated_question)
+    # print(
+    #     f"[answer] session='{session_id}', lang='{lang}', original_question='{question}', translated_question='{translated_question}'",
+    #     flush=True,
+    # )
     target_team = extract_target_team_from_question(translated_question)
     if not target_team:
         for row in reversed(history_rows):
@@ -407,11 +410,15 @@ def answer_question(
                 break
     recent_constraint_messages: list[str] = []
     if generic_alternative_request:
-        recent_constraint_messages = _collect_recent_human_constraints(history_rows, limit=3)
-        print(
-            f"[answer] carried_constraints={recent_constraint_messages}",
-            flush=True,
+        recent_constraint_messages = collect_recent_human_constraints(
+            history_rows,
+            is_generic_alternative_fn=is_generic_alternative_request,
+            limit=3,
         )
+        # print(
+        #     f"[answer] carried_constraints={recent_constraint_messages}",
+        #     flush=True,
+        # )
     target_team_nudge = ""
     if target_team:
         target_team_nudge = (
@@ -456,12 +463,12 @@ def answer_question(
             "Follow-up request: suggest another different player with the same criteria."
         )
     runtime_retriever = build_filtered_retriever(retrieval_query, target_team)
-    print(
-        f"[answer] target_team='{target_team}', mentions_seen_by_name='{mentions_seen_by_name}', "
-        f"generic_alternative_request='{generic_alternative_request}', retrieval_query='{retrieval_query}', "
-        f"retriever='{type(runtime_retriever).__name__}'",
-        flush=True,
-    )
+    # print(
+    #     f"[answer] target_team='{target_team}', mentions_seen_by_name='{mentions_seen_by_name}', "
+    #     f"generic_alternative_request='{generic_alternative_request}', retrieval_query='{retrieval_query}', "
+    #     f"retriever='{type(runtime_retriever).__name__}'",
+    #     flush=True,
+    # )
     qa_chain = create_qa_chain(
         lang=lang,
         history_rows=history_rows,
@@ -476,9 +483,9 @@ def answer_question(
     try:
         result = qa_chain.invoke(inputs)
         base_answer = (result.get("answer") or "").strip()
-        print(f"[answer] initial_llm_answer={base_answer}", flush=True)
+        # print(f"[answer] initial_llm_answer={base_answer}", flush=True)
     except Exception as e:
-        print(e, flush=True)
+        # print(e, flush=True)
         db = get_db()
         try:
             append_chat_message(db, session_id, "human", translated_question)
@@ -496,20 +503,20 @@ def answer_question(
         new_names = set()
         payload = {"players": []}
 
-        for attempt_idx in range(1, 4):
-            print(f"[answer] selection_attempt='{attempt_idx}'", flush=True)
+        for attempt_idx in range(1, 3):
+            # print(f"[answer] selection_attempt='{attempt_idx}'", flush=True)
             meta = parse_player_meta_new(meta_parser_chain, raw_text=base_answer)
             players = meta.get("players") or []
-            print(f"[answer] parsed_players={players}", flush=True)
+            # print(f"[answer] parsed_players={players}", flush=True)
 
             # Hard same-club safeguard: if the model suggests a player already at the
             # destination club, retry with an explicit exclusion preamble.
             if target_team and players:
                 suggested_name = (players[0] or {}).get("name")
                 suggested_team = (players[0] or {}).get("team")
-                print(suggested_team, flush=True)
+                # print(suggested_team, flush=True)
                 if is_same_club(target_team, suggested_team):
-                    print(f"Same-club suggestion detected: target_team='{target_team}' vs suggested_team='{suggested_team}'. Retrying with exclusion preamble.", flush=True)
+                    # print(f"Same-club suggestion detected: target_team='{target_team}' vs suggested_team='{suggested_team}'. Retrying with exclusion preamble.", flush=True)
                     retry_preamble = (
                         retry_preamble
                         + f'\nInvalid previous choice: "{suggested_team}" is the same club as "{target_team}". '
@@ -534,14 +541,14 @@ def answer_question(
             meta_new, new_names = filter_players_by_seen(meta, seen_players)
             # Build structured data for NEW players only (no HTML/PNGs)
             payload = build_player_payload_new(meta_new) if new_names else {"players": []}
-            print(f"[answer] new_names={sorted(new_names) if new_names else []}", flush=True)
+            # print(f"[answer] new_names={sorted(new_names) if new_names else []}", flush=True)
 
             if generic_alternative_request and players and not new_names:
                 duplicate_name = (players[0] or {}).get("name")
-                print(
-                    f"[answer] duplicate alternative suggestion detected for seen player='{duplicate_name}'. Retrying.",
-                    flush=True,
-                )
+                # print(
+                #     f"[answer] duplicate alternative suggestion detected for seen player='{duplicate_name}'. Retrying.",
+                #     flush=True,
+                # )
                 retry_preamble = (
                     retry_preamble
                     + f'\nInvalid previous choice: "{duplicate_name or "This player"}" was already shown earlier in this chat. '
@@ -557,7 +564,7 @@ def answer_question(
                 )
                 retry_result = retry_chain.invoke(inputs)
                 base_answer = (retry_result.get("answer") or "").strip()
-                print(f"[answer] retry_llm_answer={base_answer}", flush=True)
+                # print(f"[answer] retry_llm_answer={base_answer}", flush=True)
                 out = base_answer
                 continue
 
@@ -569,12 +576,12 @@ def answer_question(
             resolved_position_name = resolved_meta.get("position_name")
             resolved_roles = resolved_meta.get("roles") or []
             turkish_name_flag = is_likely_turkish_name(resolved_name)
-            print(
-                f"[answer] resolved_player name='{resolved_name}', team='{resolved_team}', "
-                f"nationality='{resolved_nationality}', position_name='{resolved_position_name}', "
-                f"roles='{resolved_roles}', turkish_name_flag='{turkish_name_flag}'",
-                flush=True,
-            )
+            # print(
+            #     f"[answer] resolved_player name='{resolved_name}', team='{resolved_team}', "
+            #     f"nationality='{resolved_nationality}', position_name='{resolved_position_name}', "
+            #     f"roles='{resolved_roles}', turkish_name_flag='{turkish_name_flag}'",
+            #     flush=True,
+            # )
             position_match_ok, requested_position_groups, player_position_groups = player_matches_requested_position(
                 retrieval_query,
                 resolved_position_name,
@@ -597,15 +604,15 @@ def answer_question(
                 resolved_rejection_reason = "position mismatch"
 
             if resolved_rejection_reason:
-                print(
-                    f"{resolved_rejection_reason} safeguard triggered: "
-                    f"name='{resolved_name}', team='{resolved_team}', nationality='{resolved_nationality}', "
-                    f"position_name='{resolved_position_name}', roles='{resolved_roles}', "
-                    f"requested_position_groups='{sorted(requested_position_groups) if requested_position_groups else []}', "
-                    f"player_position_groups='{sorted(player_position_groups) if player_position_groups else []}', "
-                    f"turkish_name_flag='{turkish_name_flag}'. Retrying.",
-                    flush=True,
-                )
+                # print(
+                #     f"{resolved_rejection_reason} safeguard triggered: "
+                #     f"name='{resolved_name}', team='{resolved_team}', nationality='{resolved_nationality}', "
+                #     f"position_name='{resolved_position_name}', roles='{resolved_roles}', "
+                #     f"requested_position_groups='{sorted(requested_position_groups) if requested_position_groups else []}', "
+                #     f"player_position_groups='{sorted(player_position_groups) if player_position_groups else []}', "
+                #     f"turkish_name_flag='{turkish_name_flag}'. Retrying.",
+                #     flush=True,
+                # )
                 retry_preamble = (
                     retry_preamble
                     + f'\nInvalid previous choice: "{resolved_name or "This player"}" resolves to team "{resolved_team}" '
@@ -630,14 +637,14 @@ def answer_question(
                 )
                 retry_result = retry_chain.invoke(inputs)
                 base_answer = (retry_result.get("answer") or "").strip()
-                print(f"[answer] retry_llm_answer={base_answer}", flush=True)
+                # print(f"[answer] retry_llm_answer={base_answer}", flush=True)
                 out = base_answer
                 continue
 
-            print(
-                f"[answer] accepted_player name='{resolved_name}', team='{resolved_team}', nationality='{resolved_nationality}'",
-                flush=True,
-            )
+            # print(
+            #     f"[answer] accepted_player name='{resolved_name}', team='{resolved_team}', nationality='{resolved_nationality}'",
+            #     flush=True,
+            # )
             break
 
         # If QA stage was narrative-only (seen player by name), keep old behavior:

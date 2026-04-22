@@ -2,7 +2,7 @@ import re
 import json
 import math
 import unicodedata
-from typing import Dict, Any, Tuple, Iterable, Optional
+from typing import Dict, Any, Tuple, Iterable, Optional, List
 import matplotlib.pyplot as plt
 
 LANG_DIRECTIVES = {
@@ -106,6 +106,28 @@ PREMIUM_ALLOWED_CLUBS = [
     "Ajax", "AFC Ajax",
     "Sporting CP", "Sporting", "Sporting Clube de Portugal",
     "Porto", "FC Porto",
+]
+
+TRANSFER_FALLBACK_CLUBS = [
+    *PREMIUM_ALLOWED_CLUBS,
+    "Club Brugge", "Club Brugge KV",
+    "Shakhtar Donetsk", "FC Shakhtar Donetsk", "Shakhtar",
+    "PSV Eindhoven", "PSV", "PSV Eindhoven",
+    "Olympique Lyonnais", "Lyon", "OL",
+    "Marseille", "Olympique de Marseille", "OM",
+    "Real Sociedad", "Real Sociedad de Futbol",
+    "AS Monaco", "Monaco",
+    "Rangers FC", "Rangers",
+    "Celtic FC", "Celtic",
+    "Sparta Prague", "AC Sparta Praha", "Sparta Praha",
+    "Dinamo Zagreb", "GNK Dinamo Zagreb",
+    "Red Star Belgrade", "FK Crvena Zvezda", "Crvena Zvezda", "Red Star",
+    "Basel", "FC Basel",
+    "Young Boys", "BSC Young Boys",
+    "Lille OSC", "Lille",
+    "Wolfsburg", "VfL Wolfsburg",
+    "Brighton & Hove Albion", "Brighton", "Brighton and Hove Albion",
+    "Real Betis", "Real Betis Balompie", "Betis",
 ]
 
 COMMON_TURKISH_NAME_TOKENS = {
@@ -469,13 +491,18 @@ def is_generic_alternative_request(question: Optional[str]) -> bool:
         return False
     patterns = [
         r"\bsuggest another player\b",
+        r"\bsuggest another\b",
         r"\banother player\b",
+        r"\banother\b",
         r"\banother option\b",
         r"\bsomeone else\b",
         r"\bdifferent player\b",
+        r"\bdifferent\b",
         r"\bnew player\b",
         r"\bother player\b",
+        r"\bother\b",
         r"\bnext player\b",
+        r"\bnext\b",
     ]
     return any(re.search(pattern, text) for pattern in patterns)
 
@@ -502,6 +529,13 @@ def is_premium_allowed_club(team: Optional[str]) -> bool:
     if not candidate:
         return False
     return any(is_same_club(candidate, club_name) for club_name in PREMIUM_ALLOWED_CLUBS)
+
+
+def is_transfer_fallback_club(team: Optional[str]) -> bool:
+    candidate = (team or "").strip()
+    if not candidate:
+        return False
+    return any(is_same_club(candidate, club_name) for club_name in TRANSFER_FALLBACK_CLUBS)
 
 
 def get_candidate_rejection_reason(
@@ -564,15 +598,48 @@ def _canonical_role_group(role: Optional[str]) -> Optional[str]:
     return None
 
 
+def rewrite_position_reference_phrases(question: Optional[str]) -> str:
+    text = (question or "").strip()
+    if not text:
+        return ""
+
+    pattern_replacements = [
+        ([r"\b(?:no|number)\s*1\b", r"\b1\s*numara\b", r"\bone\s*numara\b"], "goalkeeper"),
+        ([r"\b(?:no|number)\s*2\b", r"\b2\s*numara\b", r"\btwo\s*numara\b"], "right back"),
+        ([r"\b(?:no|number)\s*3\b", r"\b3\s*numara\b", r"\bthree\s*numara\b"], "left back"),
+        ([r"\b(?:no|number)\s*4\b", r"\b4\s*numara\b", r"\bfour\s*numara\b", r"\bstoper\b", r"\bstopper\b"], "center back"),
+        ([r"\b(?:no|number)\s*6\b", r"\b6\s*numara\b", r"\bsix\s*numara\b"], "defensive midfielder"),
+        ([r"\b(?:no|number)\s*7\b", r"\b7\s*numara\b", r"\bseven\s*numara\b"], "right winger"),
+        ([r"\b(?:no|number)\s*8\b", r"\b8\s*numara\b", r"\beight\s*numara\b"], "central midfielder"),
+        ([r"\b(?:no|number)\s*9\b", r"\b9\s*numara\b", r"\bnine\s*numara\b"], "striker"),
+        ([r"\b(?:no|number)\s*10\b", r"\b10\s*numara\b", r"\bten\s*numara\b"], "attacking midfielder"),
+        ([r"\b(?:no|number)\s*11\b", r"\b11\s*numara\b", r"\beleven\s*numara\b"], "left winger"),
+    ]
+
+    rewritten = text
+    for patterns, replacement in pattern_replacements:
+        for pattern in patterns:
+            rewritten = re.sub(pattern, replacement, rewritten, flags=re.IGNORECASE)
+
+    return re.sub(r"\s+", " ", rewritten).strip()
+
+
 def get_requested_position_groups(question: Optional[str]) -> Optional[set[str]]:
-    text = normalize_search_text(question)
+    text = normalize_search_text(rewrite_position_reference_phrases(question))
     if not text:
         return None
 
     pattern_groups = [
-        ([r"\bno 6\b", r"\bnumber 6\b", r"\b6 numara\b", r"\bcdm\b", r"\bdefensive midfielder\b", r"\bdefensive midfield\b"], {"defensive_midfield"}),
-        ([r"\bno 8\b", r"\bnumber 8\b", r"\b8 numara\b", r"\bcm\b", r"\bcentral midfielder\b", r"\bcentral midfield\b"], {"central_midfield"}),
-        ([r"\bno 10\b", r"\bnumber 10\b", r"\b10 numara\b", r"\bcam\b", r"\battacking midfielder\b", r"\battacking midfield\b"], {"attacking_midfield"}),
+        ([r"\bno 1\b", r"\bnumber 1\b", r"\b1 numara\b", r"\bone numara\b", r"\bgk\b", r"\bgoal keeper\b", r"\bgoalkeeper\b"], {"goalkeeper"}),
+        ([r"\bno 2\b", r"\bnumber 2\b", r"\b2 numara\b", r"\btwo numara\b", r"\bright back\b", r"\brb\b"], {"right_back", "right_wing_back"}),
+        ([r"\bno 3\b", r"\bnumber 3\b", r"\b3 numara\b", r"\bthree numara\b", r"\bleft back\b", r"\blb\b"], {"left_back", "left_wing_back"}),
+        ([r"\bno 4\b", r"\bnumber 4\b", r"\b4 numara\b", r"\bfour numara\b", r"\bcb\b", r"\bcenter back\b", r"\bcentre back\b", r"\bstopper\b"], {"center_back"}),
+        ([r"\bno 6\b", r"\bnumber 6\b", r"\b6 numara\b", r"\bsix numara\b", r"\bcdm\b", r"\bdefensive midfielder\b", r"\bdefensive midfield\b"], {"defensive_midfield"}),
+        ([r"\bno 7\b", r"\bnumber 7\b", r"\b7 numara\b", r"\bseven numara\b", r"\bright winger\b", r"\bright wing\b", r"\bright midfield\b", r"\bright midfielder\b", r"\brm\b"], {"right_wing", "right_midfield"}),
+        ([r"\bno 8\b", r"\bnumber 8\b", r"\b8 numara\b", r"\beight numara\b", r"\bcm\b", r"\bcentral midfielder\b", r"\bcentral midfield\b"], {"central_midfield"}),
+        ([r"\bno 9\b", r"\bnumber 9\b", r"\b9 numara\b", r"\bnine numara\b", r"\b9\b", r"\bstriker\b", r"\bcenter forward\b", r"\bcentre forward\b", r"\battacker\b", r"\bsantrafor\b", r"\bst\b", r"\bcf\b"], {"center_forward"}),
+        ([r"\bno 10\b", r"\bnumber 10\b", r"\b10 numara\b", r"\bten numara\b", r"\bcam\b", r"\battacking midfielder\b", r"\battacking midfield\b"], {"attacking_midfield"}),
+        ([r"\bno 11\b", r"\bnumber 11\b", r"\b11 numara\b", r"\beleven numara\b", r"\bleft winger\b", r"\bleft wing\b", r"\bleft midfield\b", r"\bleft midfielder\b", r"\blm\b"], {"left_wing", "left_midfield"}),
         ([r"\bright wing back\b", r"\brwb\b"], {"right_wing_back", "right_back"}),
         ([r"\bleft wing back\b", r"\blwb\b"], {"left_wing_back", "left_back"}),
         ([r"\bwing back\b", r"\bwingback\b"], {"left_wing_back", "right_wing_back", "left_back", "right_back"}),
@@ -585,7 +652,6 @@ def get_requested_position_groups(question: Optional[str]) -> Optional[set[str]]
         ([r"\bwinger\b", r"\bwing\b"], {"left_wing", "right_wing"}),
         ([r"\bcenter forward\b", r"\bcentre forward\b", r"\bcenterforward\b", r"\bcentreforward\b", r"\bstriker\b", r"\bforward\b", r"\bsantrafor\b", r"\bst\b", r"\bcf\b"], {"center_forward"}),
         ([r"\bmidfielder\b", r"\bmidfield\b"], {"defensive_midfield", "central_midfield", "attacking_midfield"}),
-        ([r"\bgoalkeeper\b", r"\bgoal keeper\b", r"\bgk\b"], {"goalkeeper"}),
     ]
     for patterns, groups in pattern_groups:
         if any(re.search(pattern, text) for pattern in patterns):
@@ -687,6 +753,109 @@ def compose_selection_preamble(
     )
 
     return strategy_block + selection_rules
+
+
+def summarize_doc_candidate(doc: Any) -> str:
+    md = getattr(doc, "metadata", None) or {}
+    page_content = getattr(doc, "page_content", "") or ""
+    player_name = str(md.get("player_name") or md.get("name") or "").strip() or "Unknown"
+    team_name = str(md.get("team_name") or md.get("team") or md.get("club") or "").strip() or "Unknown"
+    nationality = str(md.get("nationality_name") or md.get("nationality") or md.get("country") or "").strip() or "Unknown"
+    position_name = str(md.get("position_name") or md.get("position") or "").strip() or "Unknown"
+    similarity = md.get("similarity")
+    similarity_text = f"{similarity:.4f}" if isinstance(similarity, (int, float)) else "n/a"
+    _ = page_content
+    return (
+        f"name='{player_name}', team='{team_name}', nationality='{nationality}', "
+        f"position='{position_name}', similarity='{similarity_text}'"
+    )
+
+
+def build_pass2_query(
+    original_query: str,
+    stripped_query: str,
+    target_team: Optional[str],
+    *,
+    allow_turkish: bool,
+    allow_non_senior: bool,
+    premium_only: bool,
+) -> str:
+    base_query = (stripped_query or original_query or "").strip()
+    constraints: List[str] = []
+    if target_team:
+        constraints.append(
+            f"The player must be a realistic transfer target for {target_team} and must already belong to a different club."
+        )
+    if not allow_turkish:
+        constraints.append(
+            "Exclude Turkish players, players from Turkish clubs, and clearly Turkish-looking player names."
+        )
+    if not allow_non_senior:
+        constraints.append(
+            "Exclude youth teams, reserve teams, academy teams, and B teams; prefer senior first-team players only."
+        )
+    if premium_only:
+        constraints.append(
+            "Keep premium-only quality constraints and restrict candidates to the approved premium club set."
+        )
+    constraints.append(
+        "Prefer realistic first-team players with a clear role match, not random low-signal or unknown-position candidates."
+    )
+    return base_query + "\n" + " ".join(constraints)
+
+
+def build_pass3_query(
+    original_query: str,
+    stripped_query: str,
+    target_team: Optional[str],
+    *,
+    allow_turkish: bool,
+    allow_non_senior: bool,
+) -> str:
+    base_query = (stripped_query or original_query or "").strip()
+    clubs_text = ", ".join(TRANSFER_FALLBACK_CLUBS)
+    constraints: List[str] = []
+    if target_team:
+        constraints.append(
+            f"The player must be a realistic transfer target for {target_team} and must already belong to a different club."
+        )
+    constraints.append(
+        f"If the normal search has no valid answer, search only among players from these clubs: {clubs_text}."
+    )
+    if not allow_turkish:
+        constraints.append(
+            "Exclude Turkish players, players from Turkish clubs, and clearly Turkish-looking player names."
+        )
+    if not allow_non_senior:
+        constraints.append(
+            "Exclude youth teams, reserve teams, academy teams, and B teams; prefer senior first-team players only."
+        )
+    constraints.append(
+        "Keep a clear role match and prefer realistic first-team transfer targets from these clubs."
+    )
+    return base_query + "\n" + " ".join(constraints)
+
+
+def collect_recent_human_constraints(
+    history_rows: list,
+    *,
+    is_generic_alternative_fn,
+    limit: int = 3,
+) -> list[str]:
+    constraints: list[str] = []
+    for row in reversed(history_rows):
+        if row.get("role") != "human":
+            continue
+        text = (row.get("content") or "").strip()
+        if not text:
+            continue
+        if is_generic_alternative_fn(text):
+            continue
+        constraints.append(text)
+        if len(constraints) >= limit:
+            break
+    constraints.reverse()
+    return constraints
 
 # ------- Language Adjustment --------
 def _normalize_lang_code(code: Optional[str]) -> str:
