@@ -61,6 +61,66 @@ BUL_AGE_RE  = re.compile(r"^\s*-\s*Age(?:\s*\(.*?\))?\s*:\s*(?P<val>\d{1,3})\s*$
 BUL_ROLE_RE = re.compile(r"^\s*-\s*Roles?\s*:\s*(?P<val>.+?)\s*$", re.IGNORECASE)
 BUL_POT_RE  = re.compile(r"^\s*-\s*Potential\s*:\s*(?P<val>\d{1,3})\s*$", re.IGNORECASE)
 
+DISALLOWED_TURKISH_CLUBS = [
+    "Galatasaray", "Fenerbahce", "Fenerbahçe", "Besiktas", "Beşiktaş", "Trabzonspor",
+    "Goztepe", "Göztepe", "Istanbul Basaksehir", "İstanbul Başakşehir", "Samsunspor",
+    "Gaziantep FK", "Kocaelispor", "Alanyaspor", "Genclerbirligi", "Gençlerbirliği",
+    "Caykur Rizespor", "Çaykur Rizespor", "Kayserispor", "Kasimpasa", "Kasımpaşa",
+    "Fatih Karagumruk", "Fatih Karagümrük", "Eyupspor", "Eyüpspor", "Antalyaspor",
+    "Hatayspor", "Adana Demirspor", "Altay", "Amed SK", "Ankara Keciorengucu",
+    "Ankara Keçiörengücü", "Bandirmaspor", "Bandırmaspor", "Boluspor", "Bodrum FK",
+    "Corum FK", "Çorum FK", "Erzurumspor FK", "Esenler Erokspor", "Igdir FK",
+    "Iğdır FK", "Istanbulspor", "İstanbulspor", "Manisa FK", "Pendikspor",
+    "Sakaryaspor", "Sariyer", "Sarıyer", "Serik Belediyespor", "Umraniyespor",
+    "Ümraniyespor", "Van Spor FK", "Sivasspor",
+]
+
+PREMIUM_ALLOWED_CLUBS = [
+    "Real Madrid", "Real Madrid CF",
+    "Bayern Munich", "FC Bayern Munich", "Bayern Munchen", "FC Bayern Munchen",
+    "Liverpool FC", "Liverpool",
+    "Inter Milan", "Inter", "FC Internazionale Milano", "Internazionale", "Inter Milano",
+    "Paris Saint-Germain", "Paris Saint Germain", "PSG",
+    "Manchester City", "Manchester City FC", "Man City",
+    "Bayer Leverkusen", "Bayer 04 Leverkusen",
+    "Borussia Dortmund", "BVB", "BV Borussia Dortmund",
+    "FC Barcelona", "Barcelona", "Barca", "FC Barcellona",
+    "AS Roma", "Roma", "A S Roma",
+    "SL Benfica", "Benfica", "Sport Lisboa e Benfica",
+    "Atletico Madrid", "Atletico de Madrid", "Club Atletico de Madrid", "Atletico Madrid", "Atletico",
+    "Manchester United", "Manchester United FC", "Man United",
+    "Chelsea FC", "Chelsea",
+    "Arsenal FC", "Arsenal",
+    "Eintracht Frankfurt", "SG Eintracht Frankfurt",
+    "West Ham United", "West Ham", "West Ham United FC",
+    "Feyenoord", "Feyenoord Rotterdam",
+    "AC Milan", "Milan", "AC Milan", "Associazione Calcio Milan",
+    "Atalanta BC", "Atalanta", "Atalanta Bergamasca Calcio",
+    "Fiorentina", "ACF Fiorentina",
+    "Juventus", "Juventus FC", "Juve",
+    "RB Leipzig", "RasenBallsport Leipzig", "Red Bull Leipzig",
+    "Napoli", "SSC Napoli",
+    "Lazio", "SS Lazio",
+    "Sevilla FC", "Sevilla",
+    "Villarreal CF", "Villarreal",
+    "Ajax", "AFC Ajax",
+    "Sporting CP", "Sporting", "Sporting Clube de Portugal",
+    "Porto", "FC Porto",
+]
+
+COMMON_TURKISH_NAME_TOKENS = {
+    "ahmet", "ali", "arda", "berk", "berkay", "bugra", "burak", "can", "cem",
+    "deniz", "emir", "emre", "enes", "eren", "furkan", "hakan", "halil", "ibrahim",
+    "ismail", "kaan", "kerem", "mert", "mehmet", "mustafa", "oguz", "omer", "orhun",
+    "salih", "serdar", "tolga", "ugur", "umut", "yasin", "yunus",
+}
+
+COMMON_TURKISH_SURNAME_TOKENS = {
+    "arslan", "aslan", "aydin", "cakir", "celik", "demir", "demirci", "dogan",
+    "guler", "kara", "kaplan", "kaya", "kilic", "koç", "koc", "ozcan", "ozdemir",
+    "sahin", "tekin", "yildirim", "yilmaz",
+}
+
 
 # === GET SEEN PLAYERS TOOL ===
 
@@ -328,6 +388,232 @@ def is_same_club(club_a: Optional[str], club_b: Optional[str]) -> bool:
     return False
 
 
+def normalize_search_text(value: Optional[str]) -> str:
+    text = unicodedata.normalize("NFKD", (value or "").strip()).encode("ascii", "ignore").decode("ascii").lower()
+    text = re.sub(r"[^\w\s]", " ", text)
+    text = re.sub(r"\s+", " ", text).strip()
+    return text
+
+
+def is_turkish_nationality(value: Optional[str]) -> bool:
+    text = normalize_search_text(value)
+    return text in {"turkey", "turkish", "turkiye"}
+
+
+def is_disallowed_turkish_club(team: Optional[str]) -> bool:
+    candidate = (team or "").strip()
+    if not candidate:
+        return False
+    return any(is_same_club(candidate, club_name) for club_name in DISALLOWED_TURKISH_CLUBS)
+
+
+def is_likely_turkish_name(name: Optional[str]) -> bool:
+    raw = (name or "").strip()
+    if not raw:
+        return False
+    lowered = raw.lower()
+    if any(ch in lowered for ch in "çğıöşü"):
+        return True
+
+    folded = normalize_search_text(raw)
+    tokens = [tok for tok in re.split(r"[^a-z]+", folded) if tok]
+    if not tokens:
+        return False
+
+    score = 0
+    for tok in tokens:
+        if tok in COMMON_TURKISH_NAME_TOKENS:
+            score += 1
+        if tok in COMMON_TURKISH_SURNAME_TOKENS:
+            score += 1
+        if tok.endswith("oglu") or tok.endswith("gil") or tok.endswith("tas") or tok.endswith("turk"):
+            score += 1
+
+    return score >= 2
+
+
+def is_non_senior_team(team: Optional[str]) -> bool:
+    text = normalize_search_text(team)
+    if not text:
+        return False
+    return bool(re.search(r"\b(u\d{1,2}|under\s*\d{1,2}|b\s*team|reserves?|reserve|academy|ii|2nd team|second team|youth|juvenil)\b", text))
+
+
+def request_allows_turkish_entities(question: Optional[str]) -> bool:
+    text = normalize_search_text(question)
+    if not text:
+        return False
+
+    explicit_patterns = [
+        r"\bturk(?:ish|iye)?\b",
+        r"\bfrom turkey\b",
+        r"\bfrom turkish league\b",
+        r"\bfrom super lig\b",
+        r"\bfrom tff 1 lig\b",
+    ]
+    if any(re.search(pattern, text) for pattern in explicit_patterns):
+        return True
+    return False
+
+
+def request_allows_non_senior_squads(question: Optional[str]) -> bool:
+    text = normalize_search_text(question)
+    if not text:
+        return False
+    return bool(re.search(r"\b(youth|academy|reserve|reserves|b team|u\d{1,2}|under\s*\d{1,2}|second team|ii team|juvenil)\b", text))
+
+
+def is_generic_alternative_request(question: Optional[str]) -> bool:
+    text = normalize_search_text(question)
+    if not text:
+        return False
+    patterns = [
+        r"\bsuggest another player\b",
+        r"\banother player\b",
+        r"\banother option\b",
+        r"\bsomeone else\b",
+        r"\bdifferent player\b",
+        r"\bnew player\b",
+        r"\bother player\b",
+        r"\bnext player\b",
+    ]
+    return any(re.search(pattern, text) for pattern in patterns)
+
+
+def is_premium_request(question: Optional[str]) -> bool:
+    text = normalize_search_text(question)
+    if not text:
+        return False
+    premium_patterns = [
+        r"\btop class\b",
+        r"\belite\b",
+        r"\bworld class\b",
+        r"\bvery good\b",
+        r"\bhigh budget\b",
+        r"\bbig budget\b",
+        r"\bmoney is not an issue\b",
+        r"\bunlimited budget\b",
+    ]
+    return any(re.search(pattern, text) for pattern in premium_patterns)
+
+
+def is_premium_allowed_club(team: Optional[str]) -> bool:
+    candidate = (team or "").strip()
+    if not candidate:
+        return False
+    return any(is_same_club(candidate, club_name) for club_name in PREMIUM_ALLOWED_CLUBS)
+
+
+def get_candidate_rejection_reason(
+    player_name: Optional[str],
+    team_name: Optional[str],
+    nationality: Optional[str],
+    *,
+    target_team: Optional[str] = None,
+    allow_turkish: bool = False,
+    allow_non_senior: bool = False,
+    premium_only: bool = False,
+) -> Optional[str]:
+    if target_team and is_same_club(target_team, team_name):
+        return "same target club"
+    if not allow_non_senior and is_non_senior_team(team_name):
+        return "non-senior squad"
+    if premium_only and not is_premium_allowed_club(team_name):
+        return "premium club restriction"
+    if not allow_turkish and (
+        is_disallowed_turkish_club(team_name)
+        or is_turkish_nationality(nationality)
+        or is_likely_turkish_name(player_name)
+    ):
+        return "Turkish exclusion"
+    return None
+
+
+def _canonical_role_group(role: Optional[str]) -> Optional[str]:
+    text = normalize_search_text(role)
+    if not text:
+        return None
+    if "goalkeeper" in text or text == "goal keeper":
+        return "goalkeeper"
+    if "left wing back" in text:
+        return "left_wing_back"
+    if "right wing back" in text:
+        return "right_wing_back"
+    if "left back" in text:
+        return "left_back"
+    if "right back" in text:
+        return "right_back"
+    if "left center back" in text or "left centre back" in text:
+        return "center_back"
+    if "right center back" in text or "right centre back" in text:
+        return "center_back"
+    if "center back" in text or "centre back" in text:
+        return "center_back"
+    if "defensive midfield" in text or "center defensive midfield" in text or "central defensive midfield" in text:
+        return "defensive_midfield"
+    if "attacking midfield" in text or "center attacking midfield" in text or "central attacking midfield" in text:
+        return "attacking_midfield"
+    if "central midfield" in text or "center midfield" in text or "left center midfield" in text or "right center midfield" in text:
+        return "central_midfield"
+    if "left wing" in text:
+        return "left_wing"
+    if "right wing" in text:
+        return "right_wing"
+    if "center forward" in text or "centre forward" in text or "attacker" in text or "left center forward" in text or "right center forward" in text:
+        return "center_forward"
+    return None
+
+
+def get_requested_position_groups(question: Optional[str]) -> Optional[set[str]]:
+    text = normalize_search_text(question)
+    if not text:
+        return None
+
+    pattern_groups = [
+        ([r"\bno 6\b", r"\bnumber 6\b", r"\b6 numara\b", r"\bcdm\b", r"\bdefensive midfielder\b", r"\bdefensive midfield\b"], {"defensive_midfield"}),
+        ([r"\bno 8\b", r"\bnumber 8\b", r"\b8 numara\b", r"\bcm\b", r"\bcentral midfielder\b", r"\bcentral midfield\b"], {"central_midfield"}),
+        ([r"\bno 10\b", r"\bnumber 10\b", r"\b10 numara\b", r"\bcam\b", r"\battacking midfielder\b", r"\battacking midfield\b"], {"attacking_midfield"}),
+        ([r"\bright wing back\b", r"\brwb\b"], {"right_wing_back", "right_back"}),
+        ([r"\bleft wing back\b", r"\blwb\b"], {"left_wing_back", "left_back"}),
+        ([r"\bwing back\b", r"\bwingback\b"], {"left_wing_back", "right_wing_back", "left_back", "right_back"}),
+        ([r"\bfull back\b", r"\bfullback\b"], {"left_back", "right_back", "left_wing_back", "right_wing_back"}),
+        ([r"\bright back\b", r"\brb\b"], {"right_back", "right_wing_back"}),
+        ([r"\bleft back\b", r"\blb\b"], {"left_back", "left_wing_back"}),
+        ([r"\bcenter back\b", r"\bcentre back\b", r"\bcenter half\b", r"\bcentre half\b", r"\bcb\b"], {"center_back"}),
+        ([r"\bright winger\b"], {"right_wing"}),
+        ([r"\bleft winger\b"], {"left_wing"}),
+        ([r"\bwinger\b", r"\bwing\b"], {"left_wing", "right_wing"}),
+        ([r"\bcenter forward\b", r"\bcentre forward\b", r"\bcenterforward\b", r"\bcentreforward\b", r"\bstriker\b", r"\bforward\b", r"\bsantrafor\b", r"\bst\b", r"\bcf\b"], {"center_forward"}),
+        ([r"\bmidfielder\b", r"\bmidfield\b"], {"defensive_midfield", "central_midfield", "attacking_midfield"}),
+        ([r"\bgoalkeeper\b", r"\bgoal keeper\b", r"\bgk\b"], {"goalkeeper"}),
+    ]
+    for patterns, groups in pattern_groups:
+        if any(re.search(pattern, text) for pattern in patterns):
+            return groups
+    return None
+
+
+def player_matches_requested_position(
+    question: Optional[str],
+    position_name: Optional[str],
+    roles: Optional[Iterable[str]] = None,
+) -> Tuple[bool, Optional[set[str]], set[str]]:
+    requested_groups = get_requested_position_groups(question)
+    if not requested_groups:
+        return True, None, set()
+
+    player_groups: set[str] = set()
+    for role in [position_name, *(roles or [])]:
+        group = _canonical_role_group(role)
+        if group:
+            player_groups.add(group)
+
+    if not player_groups:
+        return False, requested_groups, set()
+
+    return bool(player_groups & requested_groups), requested_groups, player_groups
+
+
 
 def extract_target_team_from_question(question: Optional[str]) -> Optional[str]:
     text = (question or "").strip()
@@ -335,8 +621,8 @@ def extract_target_team_from_question(question: Optional[str]) -> Optional[str]:
         return None
 
     patterns = [
-        r"\b([A-Za-z0-9 .&'\-]+?)\s+i[cç]in\b",
-        r"\b(?:for|to)\s+([A-Za-z0-9 .&'\-]+?)(?=$|\s+(?:a|an|the|need|needs|looking|searching|want|wants|with|who)\b|[,.!?])",
+        r"\b([\w .&'’\-]+?)\s+i[cç]in\b",
+        r"\b(?:for|to)\s+([\w .&'’\-]+?)(?=$|\s+(?:a|an|the|need|needs|looking|searching|want|wants|with|who)\b|[,.!?])",
     ]
     for pattern in patterns:
         m = re.search(pattern, text, re.IGNORECASE)
@@ -346,6 +632,26 @@ def extract_target_team_from_question(question: Optional[str]) -> Optional[str]:
         if team:
             return team
     return None
+
+
+def strip_target_team_from_question(question: Optional[str], target_team: Optional[str]) -> str:
+    text = (question or "").strip()
+    if not text:
+        return ""
+    team = (target_team or "").strip()
+    if not team:
+        return text
+
+    patterns = [
+        re.compile(rf"\bfor\s+{re.escape(team)}\b", re.IGNORECASE),
+        re.compile(rf"\bto\s+{re.escape(team)}\b", re.IGNORECASE),
+        re.compile(rf"\b{re.escape(team)}\s+i[cç]in\b", re.IGNORECASE),
+    ]
+    stripped = text
+    for pattern in patterns:
+        stripped = pattern.sub(" ", stripped)
+    stripped = re.sub(r"\s+", " ", stripped).strip(" .,!?:;\"'")
+    return stripped or text
 
 def compose_selection_preamble(
     seen_players: Iterable[str],
