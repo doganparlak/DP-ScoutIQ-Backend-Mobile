@@ -524,6 +524,33 @@ def is_premium_request(question: Optional[str]) -> bool:
     return any(re.search(pattern, text) for pattern in premium_patterns)
 
 
+def is_weak_generic_suggestion_request(question: Optional[str]) -> bool:
+    text = normalize_search_text(question)
+    if not text:
+        return False
+
+    has_suggestion_intent = bool(
+        re.search(
+            r"\b(suggest|recommend|find|give me|show me|need|looking for|look for|want|i want|i need|searching for|oner|öner|istiyorum|bana)\b",
+            text,
+        )
+    )
+    has_position_or_player = bool(
+        get_requested_position_groups(text)
+        or re.search(r"\b(player|footballer|signing|transfer target|oyuncu|midfielder|defender|winger|striker|forward|goalkeeper)\b", text)
+    )
+    has_specificity = bool(
+        extract_target_team_from_question(question)
+        or re.search(r"\b(age|older|younger|between|under|over|min|max|\d+\+)\b", text)
+        or re.search(r"\b(turkish|from turkey|from turkish league|from super lig|from tff 1 lig)\b", text)
+        or re.search(r"\b(top class|elite|world class|very good|high budget|big budget|money is not an issue|unlimited budget)\b", text)
+        or re.search(r"\b(u\d{1,2}|reserve|academy|youth|b team|second team)\b", text)
+        or re.search(r"\b(for|to)\s+[a-z0-9][\w .&'’\-]+\b", text)
+    )
+
+    return has_suggestion_intent and has_position_or_player and not has_specificity
+
+
 def is_premium_allowed_club(team: Optional[str]) -> bool:
     candidate = (team or "").strip()
     if not candidate:
@@ -561,6 +588,16 @@ def get_candidate_rejection_reason(
     ):
         return "Turkish exclusion"
     return None
+
+
+def has_required_discovery_fields(
+    team_name: Optional[str],
+    position_name: Optional[str],
+) -> bool:
+    team_text = (team_name or "").strip()
+    position_text = (position_name or "").strip()
+    invalid_values = {"", "unknown", "n/a", "na", "none", "null", "-"}
+    return team_text.lower() not in invalid_values and position_text.lower() not in invalid_values
 
 
 def _canonical_role_group(role: Optional[str]) -> Optional[str]:
