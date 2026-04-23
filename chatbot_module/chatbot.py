@@ -41,6 +41,7 @@ from chatbot_module.tools import (
     request_allows_non_senior_squads,
     is_premium_request,
     is_weak_generic_suggestion_request,
+    is_direct_player_lookup_request,
     is_premium_allowed_club,
     is_transfer_fallback_club,
     is_generic_alternative_request,
@@ -85,42 +86,6 @@ SHARED_RETRIEVER = get_retriever(k=12, filter=None)
 CANDIDATE_RETRIEVER = get_retriever(k=40, filter=None)
 BROAD_CANDIDATE_RETRIEVER = get_retriever(k=60, filter=None)
 FILTERED_CONTEXT_DOCS = 10
-CHARS_TO_TOKENS = 0.3
-DEEPSEEK_INPUT_COST_PER_MTOK = 0.28
-DEEPSEEK_OUTPUT_COST_PER_MTOK = 0.42
-EMBEDDING_INPUT_COST_PER_MTOK = 0.02
-INTERPRETATION_OUTPUT_CHARS = 800
-
-
-def _estimate_tokens_from_text(*parts: Optional[str]) -> float:
-    total_chars = sum(len(part or "") for part in parts)
-    return total_chars * CHARS_TO_TOKENS
-
-
-def _estimate_input_cost_usd(tokens: float) -> float:
-    return (tokens / 1_000_000.0) * DEEPSEEK_INPUT_COST_PER_MTOK
-
-
-def _estimate_output_cost_usd(tokens: float) -> float:
-    return (tokens / 1_000_000.0) * DEEPSEEK_OUTPUT_COST_PER_MTOK
-
-
-def _estimate_embedding_cost_usd(text: Optional[str]) -> float:
-    tokens = _estimate_tokens_from_text(text)
-    return (tokens / 1_000_000.0) * EMBEDDING_INPUT_COST_PER_MTOK
-
-
-def _log_cost_step(
-    cost_tracker: Dict[str, float],
-    step: str,
-    amount_usd: float,
-    note: str,
-) -> None:
-    cost_tracker["total_usd"] = cost_tracker.get("total_usd", 0.0) + amount_usd
-    print(
-        f"[cost] step='{step}', est_usd='{amount_usd:.6f}', running_total_usd='{cost_tracker['total_usd']:.6f}', {note}",
-        flush=True,
-    )
 
 
 class StaticDocsRetriever(BaseRetriever):
@@ -138,7 +103,6 @@ def build_filtered_retriever(
     *,
     prefer_fallback_clubs: bool = False,
     require_complete_discovery_fields: bool = False,
-    cost_tracker: Optional[Dict[str, float]] = None,
 ) -> BaseRetriever:
     allow_turkish = request_allows_turkish_entities(query)
     allow_non_senior = request_allows_non_senior_squads(query)
@@ -229,13 +193,6 @@ def build_filtered_retriever(
         return filtered_docs
 
     raw_docs = CANDIDATE_RETRIEVER.invoke(query or "")
-    if cost_tracker is not None:
-        _log_cost_step(
-            cost_tracker,
-            "retrieval_pass1",
-            _estimate_embedding_cost_usd(query),
-            f"query_chars='{len(query or '')}', retriever_k='40'",
-        )
     filtered_docs = _filter_docs(
         raw_docs,
         query,
@@ -263,13 +220,6 @@ def build_filtered_retriever(
             #     flush=True,
             # )
             alt_docs = CANDIDATE_RETRIEVER.invoke(pass2_query)
-            if cost_tracker is not None:
-                _log_cost_step(
-                    cost_tracker,
-                    "retrieval_pass2",
-                    _estimate_embedding_cost_usd(pass2_query),
-                    f"query_chars='{len(pass2_query or '')}', retriever_k='40'",
-                )
             filtered_docs = _filter_docs(alt_docs, pass2_query, "pass2")
             if filtered_docs:
                 success_pass_label = "pass2"
@@ -283,13 +233,6 @@ def build_filtered_retriever(
                 allow_non_senior=allow_non_senior,
             )
             fallback_docs = CANDIDATE_RETRIEVER.invoke(pass3_query)
-            if cost_tracker is not None:
-                _log_cost_step(
-                    cost_tracker,
-                    "retrieval_pass3",
-                    _estimate_embedding_cost_usd(pass3_query),
-                    f"query_chars='{len(pass3_query or '')}', retriever_k='40'",
-                )
             filtered_docs = _filter_docs(
                 fallback_docs,
                 pass3_query,
@@ -302,13 +245,6 @@ def build_filtered_retriever(
     if not filtered_docs:
         broad_query = pass3_query if target_team else query
         broad_docs = BROAD_CANDIDATE_RETRIEVER.invoke(broad_query)
-        if cost_tracker is not None:
-            _log_cost_step(
-                cost_tracker,
-                "retrieval_pass4",
-                _estimate_embedding_cost_usd(broad_query),
-                f"query_chars='{len(broad_query or '')}', retriever_k='60'",
-            )
         filtered_docs = _filter_docs(
             broad_docs,
             broad_query,
@@ -458,7 +394,6 @@ def answer_question(
 
     # A) get lang + history first
     lang, history_rows = get_session_state(session_id)
-    cost_tracker: Dict[str, float] = {"total_usd": 0.0}
     # B) build a temporary memory for “seen players” from history_rows
     ai_msgs: List[AIMessage] = []
     for row in history_rows:
@@ -474,15 +409,7 @@ def answer_question(
     original_question = question or ""
     translated_question_raw = translate_to_english_if_needed(original_question, lang)
     translated_question = rewrite_position_reference_phrases(translated_question_raw)
-    if is_turkish(lang):
-        translation_input_tokens = _estimate_tokens_from_text(translate_tr_to_en_system_message, original_question)
-        translation_output_tokens = _estimate_tokens_from_text(translated_question_raw)
-        _log_cost_step(
-            cost_tracker,
-            "translate_tr_to_en",
-            _estimate_input_cost_usd(translation_input_tokens) + _estimate_output_cost_usd(translation_output_tokens),
-            f"input_chars='{len(original_question)}', output_chars='{len(translated_question_raw)}'",
-        )
+    direct_player_lookup_mode = is_direct_player_lookup_request(original_question)
     generic_alternative_request = is_generic_alternative_request(translated_question)
     # print(
     #     f"[answer] session='{session_id}', lang='{lang}', original_question='{question}', translated_question='{translated_question}'",
@@ -565,7 +492,7 @@ def answer_question(
             f'Initial target-club rule: because the scouting club "{target_team}" belongs to the approved strong-club fallback set, '
             "the first suggested player should also come from that same strong-club fallback set before considering broader options.\n\n"
         )
-    discovery_mode = not mentions_seen_by_name
+    discovery_mode = not mentions_seen_by_name and not direct_player_lookup_mode
     if discovery_mode:
         intent_nudge += (
             "Discovery rule: when suggesting a player, choose only candidates whose current team and playing position are both clearly available; "
@@ -580,13 +507,15 @@ def answer_question(
             f"{constraints_block}\n"
             "Follow-up request: suggest another different player with the same criteria."
         )
-    runtime_retriever = build_filtered_retriever(
-        retrieval_query,
-        target_team,
-        prefer_fallback_clubs=initial_strong_club_default,
-        require_complete_discovery_fields=discovery_mode,
-        cost_tracker=cost_tracker,
-    )
+    if direct_player_lookup_mode:
+        runtime_retriever = SHARED_RETRIEVER
+    else:
+        runtime_retriever = build_filtered_retriever(
+            retrieval_query,
+            target_team,
+            prefer_fallback_clubs=initial_strong_club_default,
+            require_complete_discovery_fields=discovery_mode,
+        )
     # print(
     #     f"[answer] target_team='{target_team}', mentions_seen_by_name='{mentions_seen_by_name}', "
     #     f"generic_alternative_request='{generic_alternative_request}', retrieval_query='{retrieval_query}', "
@@ -604,26 +533,9 @@ def answer_question(
     inputs = {
         "question": retrieval_query,
     }
-    history_chars = sum(len((row.get("content") or "")) for row in history_rows)
-    context_chars = sum(len(doc.page_content or "") for doc in getattr(runtime_retriever, "docs", []))
     try:
         result = qa_chain.invoke(inputs)
         base_answer = (result.get("answer") or "").strip()
-        qa_input_tokens = _estimate_tokens_from_text(
-            system_message,
-            strategy or "",
-            preamble_text,
-            retrieval_query,
-            " ".join(row.get("content") or "" for row in history_rows),
-            "".join(doc.page_content or "" for doc in getattr(runtime_retriever, "docs", [])),
-        )
-        qa_output_tokens = _estimate_tokens_from_text(base_answer)
-        _log_cost_step(
-            cost_tracker,
-            "recommendation_attempt1",
-            _estimate_input_cost_usd(qa_input_tokens) + _estimate_output_cost_usd(qa_output_tokens),
-            f"history_chars='{history_chars}', context_chars='{context_chars}', output_chars='{len(base_answer)}'",
-        )
         # print(f"[answer] initial_llm_answer={base_answer}", flush=True)
     except Exception as e:
         # print(e, flush=True)
@@ -652,7 +564,7 @@ def answer_question(
 
             # Hard same-club safeguard: if the model suggests a player already at the
             # destination club, retry with an explicit exclusion preamble.
-            if target_team and players:
+            if not direct_player_lookup_mode and target_team and players:
                 suggested_name = (players[0] or {}).get("name")
                 suggested_team = (players[0] or {}).get("team")
                 # print(suggested_team, flush=True)
@@ -675,21 +587,6 @@ def answer_question(
                     )
                     retry_result = retry_chain.invoke(inputs)
                     base_answer = (retry_result.get("answer") or "").strip()
-                    retry_input_tokens = _estimate_tokens_from_text(
-                        system_message,
-                        strategy or "",
-                        retry_preamble,
-                        retrieval_query,
-                        " ".join(row.get("content") or "" for row in history_rows),
-                        "".join(doc.page_content or "" for doc in getattr(runtime_retriever, "docs", [])),
-                    )
-                    retry_output_tokens = _estimate_tokens_from_text(base_answer)
-                    _log_cost_step(
-                        cost_tracker,
-                        f"recommendation_retry_attempt{attempt_idx + 1}",
-                        _estimate_input_cost_usd(retry_input_tokens) + _estimate_output_cost_usd(retry_output_tokens),
-                        f"reason='same target club', output_chars='{len(base_answer)}'",
-                    )
                     out = base_answer
                     continue
 
@@ -699,7 +596,7 @@ def answer_question(
             payload = build_player_payload_new(meta_new) if new_names else {"players": []}
             # print(f"[answer] new_names={sorted(new_names) if new_names else []}", flush=True)
 
-            if generic_alternative_request and players and not new_names:
+            if not direct_player_lookup_mode and generic_alternative_request and players and not new_names:
                 duplicate_name = (players[0] or {}).get("name")
                 # print(
                 #     f"[answer] duplicate alternative suggestion detected for seen player='{duplicate_name}'. Retrying.",
@@ -720,21 +617,6 @@ def answer_question(
                 )
                 retry_result = retry_chain.invoke(inputs)
                 base_answer = (retry_result.get("answer") or "").strip()
-                retry_input_tokens = _estimate_tokens_from_text(
-                    system_message,
-                    strategy or "",
-                    retry_preamble,
-                    retrieval_query,
-                    " ".join(row.get("content") or "" for row in history_rows),
-                    "".join(doc.page_content or "" for doc in getattr(runtime_retriever, "docs", [])),
-                )
-                retry_output_tokens = _estimate_tokens_from_text(base_answer)
-                _log_cost_step(
-                    cost_tracker,
-                    f"recommendation_retry_attempt{attempt_idx + 1}",
-                    _estimate_input_cost_usd(retry_input_tokens) + _estimate_output_cost_usd(retry_output_tokens),
-                    f"reason='duplicate alternative suggestion', output_chars='{len(base_answer)}'",
-                )
                 # print(f"[answer] retry_llm_answer={base_answer}", flush=True)
                 out = base_answer
                 continue
@@ -769,13 +651,13 @@ def answer_question(
                     allow_non_senior=False,
                     premium_only=is_premium_request(translated_question),
                 )
-                if new_names else None
+                if new_names and not direct_player_lookup_mode else None
             )
-            if new_names and not position_match_ok:
+            if new_names and not direct_player_lookup_mode and not position_match_ok:
                 resolved_rejection_reason = "position mismatch"
-            if new_names and initial_strong_club_default and not is_transfer_fallback_club(resolved_team):
+            if new_names and not direct_player_lookup_mode and initial_strong_club_default and not is_transfer_fallback_club(resolved_team):
                 resolved_rejection_reason = "initial strong-club restriction"
-            if new_names and discovery_mode and not has_required_discovery_fields(resolved_team, resolved_position_name):
+            if new_names and not direct_player_lookup_mode and discovery_mode and not has_required_discovery_fields(resolved_team, resolved_position_name):
                 resolved_rejection_reason = "missing discovery fields"
 
             if resolved_rejection_reason:
@@ -812,21 +694,6 @@ def answer_question(
                 )
                 retry_result = retry_chain.invoke(inputs)
                 base_answer = (retry_result.get("answer") or "").strip()
-                retry_input_tokens = _estimate_tokens_from_text(
-                    system_message,
-                    strategy or "",
-                    retry_preamble,
-                    retrieval_query,
-                    " ".join(row.get("content") or "" for row in history_rows),
-                    "".join(doc.page_content or "" for doc in getattr(runtime_retriever, "docs", [])),
-                )
-                retry_output_tokens = _estimate_tokens_from_text(base_answer)
-                _log_cost_step(
-                    cost_tracker,
-                    f"recommendation_retry_attempt{attempt_idx + 1}",
-                    _estimate_input_cost_usd(retry_input_tokens) + _estimate_output_cost_usd(retry_output_tokens),
-                    f"reason='{resolved_rejection_reason}', output_chars='{len(base_answer)}'",
-                )
                 # print(f"[answer] retry_llm_answer={base_answer}", flush=True)
                 out = base_answer
                 continue
@@ -860,34 +727,12 @@ def answer_question(
                 "profile_json": profile_json,
                 "stats_json": stats_json,
             }).strip()
-            interpretation_input_tokens = _estimate_tokens_from_text(
-                interpretation_system_prompt,
-                translated_question,
-                strategy or "",
-                profile_json,
-                stats_json,
-            )
-            interpretation_output_tokens = _estimate_tokens_from_text("x" * INTERPRETATION_OUTPUT_CHARS)
-            _log_cost_step(
-                cost_tracker,
-                "interpretation",
-                _estimate_input_cost_usd(interpretation_input_tokens) + _estimate_output_cost_usd(interpretation_output_tokens),
-                f"assumed_output_chars='{INTERPRETATION_OUTPUT_CHARS}'",
-            )
         memory_out = out
         if is_turkish(lang):
             try:
                 translated_out = output_tr_translate_chain.invoke({"text": memory_out}).strip()
                 if translated_out:
                     out = translated_out
-                tr_output_input_tokens = _estimate_tokens_from_text(translate_en_to_tr_system_message, memory_out)
-                tr_output_output_tokens = _estimate_tokens_from_text(translated_out if translated_out else memory_out)
-                _log_cost_step(
-                    cost_tracker,
-                    "translate_en_to_tr",
-                    _estimate_input_cost_usd(tr_output_input_tokens) + _estimate_output_cost_usd(tr_output_output_tokens),
-                    f"input_chars='{len(memory_out)}', output_chars='{len(translated_out if translated_out else memory_out)}'",
-                )
             except Exception as e:
                 pass
         

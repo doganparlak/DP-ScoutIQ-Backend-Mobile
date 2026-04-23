@@ -551,6 +551,33 @@ def is_weak_generic_suggestion_request(question: Optional[str]) -> bool:
     return has_suggestion_intent and has_position_or_player and not has_specificity
 
 
+def is_direct_player_lookup_request(question: Optional[str]) -> bool:
+    raw_text = (question or "").strip()
+    text = normalize_search_text(question)
+    if not text:
+        return False
+    if is_generic_alternative_request(question):
+        return False
+    if get_requested_position_groups(question):
+        return False
+    if extract_target_team_from_question(question):
+        return False
+    if any(
+        re.search(pattern, text)
+        for pattern in [
+            r"\b(suggest|recommend|find|need|looking for|look for|want|searching for|good fit|fit for|for|to)\b",
+            r"\b(top class|elite|world class|very good|high budget|big budget|money is not an issue|unlimited budget)\b",
+            r"\b(age|older|younger|between|under|over|min|max|\d+\+)\b",
+        ]
+    ):
+        return False
+
+    tokens = [tok for tok in re.split(r"[^A-Za-zÀ-ÿ]+", raw_text) if tok]
+    if len(tokens) < 2 or len(tokens) > 5:
+        return False
+    return all(len(tok) >= 2 for tok in tokens)
+
+
 def is_premium_allowed_club(team: Optional[str]) -> bool:
     candidate = (team or "").strip()
     if not candidate:

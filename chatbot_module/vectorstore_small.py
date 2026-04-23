@@ -65,7 +65,6 @@ class SupabaseRPCRetriever(BaseRetriever):
                 },
             ).execute()
         except Exception as e:
-            print(e)
             log.exception("Retriever failed: %s", e)
             return []
 
