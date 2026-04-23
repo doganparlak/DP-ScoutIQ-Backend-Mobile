@@ -1,6 +1,6 @@
 # api_module/main.py
 from typing import Optional, Dict, Any, List
-from fastapi import FastAPI, HTTPException, Depends, Header, status, Response, Body
+from fastapi import FastAPI, HTTPException, Depends, Header, status, Response, Body, BackgroundTasks
 from fastapi.middleware.cors import CORSMiddleware
 from dotenv import load_dotenv
 
@@ -21,7 +21,7 @@ from api_module.utilities import (
 from api_module.payment_utilities import(
      verify_ios_subscription, verify_android_subscription, run_subscription_sync,
 )
-from api_module.database import get_db
+from api_module.database import get_db, SessionLocal
 from api_module.models import (
     SignUpIn, LoginIn, LoginOut, ProfileOut, ProfilePatch, SetNewPasswordIn,
     PasswordResetRequestIn, VerifyResetIn, VerifySignupIn, SignupCodeRequestIn, ChatIn,
@@ -834,10 +834,78 @@ def activate_subscription(
         "subscriptionEndAt": expires_at.isoformat(),
     }
 
+def _generate_report_background(
+    report_id: str,
+    favorite_id: str,
+    user_id: int,
+    lang: str,
+    version: int,
+    player_payload: dict,
+) -> None:
+    db = SessionLocal()
+    try:
+        generated = generate_report_content(
+            db,
+            favorite_id=favorite_id,
+            lang=lang,
+            version=version,
+            player_identity=player_payload,
+        )
+
+        db.execute(
+            text("""
+                UPDATE scouting_reports
+                SET status = 'ready',
+                    content = :content,
+                    content_json = CAST(:content_json AS jsonb),
+                    error = NULL,
+                    ready_at = NOW(),
+                    updated_at = NOW()
+                WHERE id = :id
+                  AND user_id = :uid
+                  AND favorite_player_id = :fid
+            """),
+            {
+                "id": report_id,
+                "uid": user_id,
+                "fid": favorite_id,
+                "content": generated["content"],
+                "content_json": json.dumps(
+                    generated["content_json"],
+                    ensure_ascii=False,
+                    default=str,
+                ),
+            },
+        )
+        db.commit()
+
+    except Exception as e:
+        print(f"[report_generation_failed] report_id={report_id} favorite_id={favorite_id} error={e}")
+        db.execute(
+            text("""
+                UPDATE scouting_reports
+                SET status = 'failed',
+                    error = :err,
+                    updated_at = NOW()
+                WHERE id = :id
+                  AND user_id = :uid
+                  AND favorite_player_id = :fid
+            """),
+            {
+                "id": report_id,
+                "uid": user_id,
+                "fid": favorite_id,
+                "err": str(e),
+            },
+        )
+        db.commit()
+    finally:
+        db.close()
 
 @app.post("/me/favorites/{favorite_id}/report", response_model=ScoutingReportOut)
 def get_or_create_report(
     favorite_id: str,
+    background_tasks: BackgroundTasks,
     payload: ScoutingReportIn = Body(default=ScoutingReportIn()),
     user_id: int = Depends(require_auth),
     accept_language: str | None = Header(default=None),
@@ -893,48 +961,27 @@ def get_or_create_report(
     db.commit()
 
     # Generate synchronously (DeepSeek) and update cache
-    try:
-        generated = generate_report_content(
-            db,
-            favorite_id=favorite_id,
-            lang=lang,
-            version=version,
-            player_identity=payload.model_dump(exclude_none=True),  # NEW
-        )
-        db.execute(text("""
-            UPDATE scouting_reports
-            SET status = 'ready',
-                content = :content,
-                content_json = CAST(:content_json AS jsonb),
-                error = NULL,
-                ready_at = NOW(),
-                updated_at = NOW()
-            WHERE id = :id
-        """), {
-            "id": rid,
-            "content": generated["content"],
-            "content_json": json.dumps(generated["content_json"], ensure_ascii=False, default=str),
-        })
-        db.commit()
-        return {
-            "favorite_player_id": favorite_id,
-            "status": "ready",
-            "content": generated["content"],
-            "content_json": generated["content_json"],
-            "language": lang,
-            "version": version,
-            "player": payload,  # NEW
-        }
+    player_payload = payload.model_dump(exclude_none=True)
 
-    except Exception as e:
-        db.execute(text("""
-            UPDATE scouting_reports
-            SET status = 'failed',
-                error = :err,
-                updated_at = NOW()
-            WHERE id = :id
-        """), {"id": rid, "err": str(e)})
-        db.commit()
-        raise HTTPException(status_code=500, detail="Failed to generate scouting report")
+    background_tasks.add_task(
+        _generate_report_background,
+        rid,
+        favorite_id,
+        user_id,
+        lang,
+        version,
+        player_payload,
+    )
+
+    return {
+        "favorite_player_id": favorite_id,
+        "status": "processing",
+        "content": None,
+        "content_json": None,
+        "language": lang,
+        "version": version,
+        "player": payload,
+    }
+
 
 
