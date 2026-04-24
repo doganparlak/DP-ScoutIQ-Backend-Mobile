@@ -26,8 +26,10 @@ from api_module.models import (
     SignUpIn, LoginIn, LoginOut, ProfileOut, ProfilePatch, SetNewPasswordIn,
     PasswordResetRequestIn, VerifyResetIn, VerifySignupIn, SignupCodeRequestIn, ChatIn,
     FavoritePlayerIn, FavoritePlayerOut, ReachOutIn, PlanUpdateIn, IAPActivateIn, 
-    ScoutingReportIn, ScoutingReportOut, ConsentPatch
+    ScoutingReportIn, ScoutingReportOut, ConsentPatch, PlayerPoolSearchIn,
+    PlayerPoolSearchRow, PlayerPoolFilterOptionsOut,
 )
+from player_pool_module.player_pool import search_players, get_player_pool_filter_options
 
 import hmac, uuid, json, re, os
 import datetime as dt
@@ -523,6 +525,32 @@ async def reset(session_id: str, db: Session = Depends(get_db)) -> Dict[str, Any
 
     return {"ok": True, "session_id": session_id, "reset": True}
 
+
+@app.post("/player-pool/search", response_model=List[PlayerPoolSearchRow])
+def player_pool_search(
+    payload: PlayerPoolSearchIn,
+    user_id: int = Depends(require_auth),
+    db: Session = Depends(get_db),
+):
+    if payload.minAge is not None and payload.maxAge is not None and payload.minAge > payload.maxAge:
+        raise HTTPException(status_code=400, detail="minAge cannot be greater than maxAge")
+    if payload.minHeight is not None and payload.maxHeight is not None and payload.minHeight > payload.maxHeight:
+        raise HTTPException(status_code=400, detail="minHeight cannot be greater than maxHeight")
+    if payload.minWeight is not None and payload.maxWeight is not None and payload.minWeight > payload.maxWeight:
+        raise HTTPException(status_code=400, detail="minWeight cannot be greater than maxWeight")
+
+    _ = user_id  # authenticated route by design
+    return search_players(db, payload.model_dump(exclude_none=True))
+
+
+@app.get("/player-pool/options", response_model=PlayerPoolFilterOptionsOut)
+def player_pool_options(
+    user_id: int = Depends(require_auth),
+    db: Session = Depends(get_db),
+):
+    _ = user_id  # authenticated route by design
+    return get_player_pool_filter_options(db)
+
 # --- favorite players ---
 @app.get("/me/favorites", response_model=List[FavoritePlayerOut])
 def list_favorites(user_id: int = Depends(require_auth), db: Session = Depends(get_db)):
@@ -982,6 +1010,5 @@ def get_or_create_report(
         "version": version,
         "player": payload,
     }
-
 
 

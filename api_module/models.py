@@ -131,3 +131,31 @@ class Query(BaseModel):
     question: str
     strategy: Optional[str] = None
     session_id: str  # required for session tracking
+
+
+class PlayerPoolSearchIn(BaseModel):
+    name: Optional[str] = None
+    gender: Optional[Literal["male", "female"]] = None
+    nationality: Optional[str] = None
+    nationalityExact: Optional[bool] = False
+    team: Optional[str] = None
+    teamExact: Optional[bool] = False
+    minAge: Optional[float] = Field(default=None, ge=0)
+    maxAge: Optional[float] = Field(default=None, ge=0)
+    minHeight: Optional[float] = Field(default=None, ge=0)
+    maxHeight: Optional[float] = Field(default=None, ge=0)
+    minWeight: Optional[float] = Field(default=None, ge=0)
+    maxWeight: Optional[float] = Field(default=None, ge=0)
+    position: Optional[str] = None
+    limit: Optional[int] = Field(default=100, ge=1, le=200)
+
+
+class PlayerPoolSearchRow(BaseModel):
+    id: str | int
+    content: Dict[str, Any]
+
+
+class PlayerPoolFilterOptionsOut(BaseModel):
+    teams: List[str]
+    nationalities: List[str]
+    positions: List[str]
