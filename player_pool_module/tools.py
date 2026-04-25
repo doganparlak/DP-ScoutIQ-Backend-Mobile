@@ -75,3 +75,39 @@ def clean_metadata_for_potential(metadata: Dict[str, Any]) -> Dict[str, Any]:
         for key, value in metadata.items()
         if not is_missing_value(value)
     }
+
+
+def get_cached_player_pool_potential(metadata: Dict[str, Any]) -> int | None:
+    raw_value = metadata.get("potential")
+    if raw_value is None:
+        return None
+
+    if isinstance(raw_value, (int, float)):
+        value = clamp_potential(int(raw_value))
+        return value if value > 0 else None
+
+    if isinstance(raw_value, str):
+        match = re.search(r"\b(\d{1,3})\b", raw_value)
+        if not match:
+            return None
+        value = clamp_potential(int(match.group(1)))
+        return value if value > 0 else None
+
+    return None
+
+
+def save_player_pool_potential(db: Session, player_id: int | str, potential: int) -> None:
+    db.execute(
+        text("""
+            UPDATE player_data
+            SET metadata = jsonb_set(
+                COALESCE(metadata::jsonb, '{}'::jsonb),
+                '{potential}',
+                to_jsonb(CAST(:potential AS integer)),
+                true
+            )
+            WHERE id = :id
+        """),
+        {"id": player_id, "potential": int(potential)},
+    )
+    db.commit()

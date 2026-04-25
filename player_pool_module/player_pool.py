@@ -8,20 +8,17 @@ from langchain_core.prompts import ChatPromptTemplate
 from sqlalchemy import text
 from sqlalchemy.orm import Session
 
-from chatbot_module.cost_approximation import (
-    DEEPSEEK_INPUT_PRICE_PER_TOKEN,
-    DEEPSEEK_OUTPUT_PRICE_PER_TOKEN,
-    estimate_tokens,
-)
 from report_module.utilities import norm_name
 from player_pool_module.prompts import player_pool_potential_system_prompt
 from player_pool_module.tools import (
     clean_metadata_for_potential,
     clean_str,
     folded_text_sql,
+    get_cached_player_pool_potential,
     get_player_metadata_by_id,
     numeric_filter_sql,
     parse_potential_value,
+    save_player_pool_potential,
 )
 
 
@@ -146,36 +143,40 @@ def get_player_pool_filter_options(db: Session) -> Dict[str, List[str]]:
 
 
 def reveal_player_potential(db: Session, player_id: int | str) -> Dict[str, Any]:
-    metadata = clean_metadata_for_potential(get_player_metadata_by_id(db, player_id))
+    full_metadata = get_player_metadata_by_id(db, player_id)
+    cached_potential = get_cached_player_pool_potential(full_metadata)
+
+    if cached_potential is not None:
+        print(json.dumps({
+            "event": "player_pool_potential_source",
+            "player_id": str(player_id),
+            "source": "db",
+            "potential": cached_potential,
+        }, ensure_ascii=False))
+        return {
+            "player_id": str(player_id),
+            "status": "ready",
+            "potential": cached_potential,
+            "source": "db",
+        }
+
+    metadata = clean_metadata_for_potential(full_metadata)
     metadata_json = json.dumps(metadata, ensure_ascii=False, default=str)
     prompt_messages = _potential_prompt.format_messages(player_metadata_json=metadata_json)
-    prompt_text = "\n".join(getattr(msg, "content", "") or "" for msg in prompt_messages)
 
     raw_msg = CHAT_LLM.invoke(prompt_messages)
     raw_output = getattr(raw_msg, "content", "") or ""
     potential = parse_potential_value(raw_output)
-    input_tokens = estimate_tokens(prompt_text)
-    output_tokens = estimate_tokens(raw_output)
-    approx_cost = (
-        input_tokens * DEEPSEEK_INPUT_PRICE_PER_TOKEN
-        + output_tokens * DEEPSEEK_OUTPUT_PRICE_PER_TOKEN
-    )
-    print(
-        "[player_pool_potential_cost]",
-        json.dumps(
-            {
-                "player_id": str(player_id),
-                "input_tokens_approx": input_tokens,
-                "output_tokens_approx": output_tokens,
-                "cost_usd_approx": round(approx_cost, 8),
-                "potential": potential,
-            },
-            ensure_ascii=False,
-            default=str,
-        ),
-    )
+    save_player_pool_potential(db, player_id, potential)
+    print(json.dumps({
+        "event": "player_pool_potential_source",
+        "player_id": str(player_id),
+        "source": "model",
+        "potential": potential,
+    }, ensure_ascii=False))
     return {
         "player_id": str(player_id),
         "status": "ready",
         "potential": potential,
+        "source": "model",
     }

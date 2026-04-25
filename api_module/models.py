@@ -165,3 +165,4 @@ class PlayerPoolPotentialOut(BaseModel):
     player_id: str
     status: Literal["ready"]
     potential: int = Field(ge=0, le=100)
+    source: Literal["db", "model"]
