@@ -159,3 +159,9 @@ class PlayerPoolFilterOptionsOut(BaseModel):
     teams: List[str]
     nationalities: List[str]
     positions: List[str]
+
+
+class PlayerPoolPotentialOut(BaseModel):
+    player_id: str
+    status: Literal["ready"]
+    potential: int = Field(ge=0, le=100)

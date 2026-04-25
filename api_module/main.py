@@ -27,9 +27,13 @@ from api_module.models import (
     PasswordResetRequestIn, VerifyResetIn, VerifySignupIn, SignupCodeRequestIn, ChatIn,
     FavoritePlayerIn, FavoritePlayerOut, ReachOutIn, PlanUpdateIn, IAPActivateIn, 
     ScoutingReportIn, ScoutingReportOut, ConsentPatch, PlayerPoolSearchIn,
-    PlayerPoolSearchRow, PlayerPoolFilterOptionsOut,
+    PlayerPoolSearchRow, PlayerPoolFilterOptionsOut, PlayerPoolPotentialOut,
 )
-from player_pool_module.player_pool import search_players, get_player_pool_filter_options
+from player_pool_module.player_pool import (
+    get_player_pool_filter_options,
+    reveal_player_potential,
+    search_players,
+)
 
 import hmac, uuid, json, re, os
 import datetime as dt
@@ -551,6 +555,21 @@ def player_pool_options(
     _ = user_id  # authenticated route by design
     return get_player_pool_filter_options(db)
 
+
+@app.post("/player-pool/{player_id}/potential", response_model=PlayerPoolPotentialOut)
+def player_pool_reveal_potential(
+    player_id: str,
+    user_id: int = Depends(require_auth),
+    db: Session = Depends(get_db),
+):
+    _ = user_id  # authenticated route by design
+    try:
+        return reveal_player_potential(db, player_id)
+    except ValueError as exc:
+        raise HTTPException(status_code=404, detail=str(exc))
+    except RuntimeError as exc:
+        raise HTTPException(status_code=500, detail=str(exc))
+
 # --- favorite players ---
 @app.get("/me/favorites", response_model=List[FavoritePlayerOut])
 def list_favorites(user_id: int = Depends(require_auth), db: Session = Depends(get_db)):
@@ -1010,5 +1029,3 @@ def get_or_create_report(
         "version": version,
         "player": payload,
     }
-
-
