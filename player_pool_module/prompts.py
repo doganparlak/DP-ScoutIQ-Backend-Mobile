@@ -13,45 +13,43 @@ Rating Interpretation:
   8.0-8.9 = Excellent
   9.0-10.0 = World Class / Man of the Match Level
 - Rating is supporting evidence only. Do NOT use Rating as the sole determinant of Potential.
-- If Rating exists, you may use it as one signal while computing Potential, but it must not override age, role fit, and role-relevant metrics.
+- If Rating exists, you may use it as one signal while computing Potential, but it must not override age and role-relevant performance metrics.
 
 Potential Computation Policy:
 - Output must be an integer from 0 to 100.
-- Compute Potential as: clamp(round(AgeUpside + RoleFit + MetricsUpside + Variance + AntiStick), 0, 100).
+- Compute Potential as: clamp(round(AgeUpside + MetricsUpside + Variance + AntiStick), 0, 100).
+- Do not include any separate RoleFit component. Use position/role only to decide which metrics are relevant.
+- Use league_name and team_name as contextual evidence for the level and credibility of the player's metrics.
+  They are not separate scoring components, but they may influence where you pick within AgeUpside and MetricsUpside ranges.
+  Strong metrics from a stronger league/team context should be treated more generously; weaker or unknown context should not collapse the score.
 
 Component guidance (aim for wider spread; avoid clustering):
 - AgeUpside (dominant driver; 16-24 highest): choose a value from this table (do NOT interpolate):
-  16: 36-40
-  17: 35-39
-  18: 34-38
-  19: 33-37
-  20: 32-36
-  21: 31-35
-  22: 30-34
-  23: 28-33
-  24: 26-32
-  25: 24-30
-  26: 22-28
-  27: 20-26
-  28: 18-24
-  29: 16-22
-  30+: 12-20
-  Pick within the range based on role demand + athletic indicators in the provided info.
+  16: 46-50
+  17: 45-49
+  18: 44-48
+  19: 43-47
+  20: 42-46
+  21: 41-45
+  22: 40-44
+  23: 38-43
+  24: 36-42
+  25: 34-40
+  26: 32-38
+  27: 30-36
+  28: 28-34
+  29: 26-32
+  30+: 22-30
+  Pick within the range based on athletic indicators and performance evidence in the provided info.
 
-- RoleFit (0-22): pick ONE tier only (discrete tiers, no in-betweens):
-  0-4 = weak fit
-  5-9 = partial fit
-  10-14 = solid fit
-  15-18 = strong fit
-  19-22 = elite or clear fit
-
-- MetricsUpside (0-30): score using discrete tiers based on how many role-relevant metrics are clearly strong vs weak:
-  0-6 = thin or neutral
-  7-12 = some positives
-  13-18 = clearly positive
-  19-24 = standout
-  25-30 = exceptional
-  Use trend/consistency cues if available, but never mention sample size.
+- MetricsUpside (10-42): score using discrete tiers based on how many role-relevant metrics are clearly strong vs weak:
+  10-15 = thin or neutral, but still valid football evidence
+  16-23 = some positives
+  24-31 = clearly positive
+  32-37 = standout
+  38-42 = exceptional
+  Never score MetricsUpside below 10 for a valid player record.
+  Use trend/consistency cues, league_name, and team_name if available, but never mention sample size.
 
 - Variance & Anti-stick:
   - Variance (-6 to +6): MUST be non-zero for most players; choose based on uncertainty/ceiling:
