@@ -33,6 +33,7 @@ class FavoritePlayerIn(BaseModel):
     height: Optional[float] = Field(default=None, ge=0)
     weight: Optional[float] = Field(default=None, ge=0)
     team: Optional[str] = None
+    league: Optional[str] = None
     # Accepts SHORT or LONG; backend will normalize to LONG before storing.
     roles: List[str] = Field(default_factory=list)
 
@@ -46,6 +47,7 @@ class FavoritePlayerOut(BaseModel):
     height: Optional[float] = None
     weight: Optional[float] = None
     team: Optional[str] = None
+    league: Optional[str] = None
     # LONG strings (e.g., "Center Back")
     roles: List[str]
 
@@ -138,6 +140,8 @@ class PlayerPoolSearchIn(BaseModel):
     gender: Optional[Literal["male", "female"]] = None
     nationality: Optional[str] = None
     nationalityExact: Optional[bool] = False
+    league: Optional[str] = None
+    leagueExact: Optional[bool] = False
     team: Optional[str] = None
     teamExact: Optional[bool] = False
     minAge: Optional[float] = Field(default=None, ge=0)
@@ -157,6 +161,7 @@ class PlayerPoolSearchRow(BaseModel):
 
 class PlayerPoolFilterOptionsOut(BaseModel):
     teams: List[str]
+    leagues: List[str]
     nationalities: List[str]
     positions: List[str]
 

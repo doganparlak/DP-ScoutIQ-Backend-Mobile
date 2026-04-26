@@ -63,6 +63,16 @@ app.add_middleware(
 )
 
 
+@app.on_event("startup")
+def ensure_favorite_players_league_column() -> None:
+    db = SessionLocal()
+    try:
+        db.execute(text("ALTER TABLE favorite_players ADD COLUMN IF NOT EXISTS league TEXT"))
+        db.commit()
+    finally:
+        db.close()
+
+
 # ---------- endpoints ----------
 @app.get("/health")
 async def health() -> Dict[str, Any]:
@@ -584,6 +594,7 @@ def list_favorites(user_id: int = Depends(require_auth), db: Session = Depends(g
                height,
                weight,
                team,
+               league,
                roles_json
         FROM favorite_players
         WHERE user_id = :uid
@@ -620,6 +631,7 @@ def list_favorites(user_id: int = Depends(require_auth), db: Session = Depends(g
             height=r["height"],
             weight=r["weight"],
             team=r["team"],
+            league=r["league"],
             roles=roles,
         ))
     return out
@@ -635,7 +647,7 @@ def add_favorite(
 
     existing = db.execute(
         text("""
-        SELECT id, name, nationality, age, potential, gender, height, weight, team, roles_json
+        SELECT id, name, nationality, age, potential, gender, height, weight, team, league, roles_json
         FROM favorite_players
         WHERE user_id = :uid
           AND lower(name) = lower(:name)
@@ -652,6 +664,20 @@ def add_favorite(
     ).mappings().first()
 
     if existing:
+        league = existing["league"]
+        if not league and payload.league:
+            db.execute(
+                text("""
+                UPDATE favorite_players
+                SET league = :league
+                WHERE id = :id
+                  AND user_id = :uid
+                """),
+                {"league": payload.league, "id": existing["id"], "uid": user_id},
+            )
+            db.commit()
+            league = payload.league
+
         try:
             existing_roles = json.loads(existing["roles_json"]) or []
         except Exception:
@@ -668,6 +694,7 @@ def add_favorite(
             height=existing["height"],
             weight=existing["weight"],
             team=existing["team"],
+            league=league,
             roles=existing_roles,
         )
 
@@ -687,6 +714,7 @@ def add_favorite(
             height,
             weight,
             team,
+            league,
             roles_json,
             created_at
         )
@@ -701,6 +729,7 @@ def add_favorite(
             :height,
             :weight,
             :team,
+            :league,
             :roles,
             :ts
         )
@@ -716,6 +745,7 @@ def add_favorite(
             "height": payload.height,
             "weight": payload.weight,
             "team": payload.team,
+            "league": payload.league,
             "roles": json.dumps(roles_long, ensure_ascii=False),
             "ts": created_at,
         }
@@ -732,6 +762,7 @@ def add_favorite(
         height=payload.height,
         weight=payload.weight,
         team=payload.team,
+        league=payload.league,
         roles=roles_long,
     )
 

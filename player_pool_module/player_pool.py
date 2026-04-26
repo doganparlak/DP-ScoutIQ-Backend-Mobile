@@ -38,10 +38,12 @@ def search_players(db: Session, filters: Dict[str, Any]) -> List[Dict[str, Any]]
     name = clean_str(filters.get("name"))
     gender = clean_str(filters.get("gender"))
     nationality = clean_str(filters.get("nationality"))
+    league = clean_str(filters.get("league"))
     team = clean_str(filters.get("team"))
     position = clean_str(filters.get("position"))
     name_norm = norm_name(name) if name else None
     team_norm = norm_name(team) if team else None
+    league_norm = norm_name(league) if league else None
     nationality_norm = norm_name(nationality) if nationality else None
     position_norm = norm_name(position) if position else None
 
@@ -61,6 +63,12 @@ def search_players(db: Session, filters: Dict[str, Any]) -> List[Dict[str, Any]]
                 :nationality IS NULL
                 OR LOWER(COALESCE(metadata->>'nationality_name', '')) = LOWER(:nationality)
                 OR {folded_text_sql("nationality_name")} = :nationality_folded
+              )
+          AND (
+                :league IS NULL
+                OR LOWER(COALESCE(metadata->>'league_name', '')) = LOWER(:league)
+                OR LOWER(COALESCE(metadata->>'league_name_norm', '')) = LOWER(:league_norm)
+                OR {folded_text_sql("league_name")} = :league_folded
               )
           AND (
                 :team IS NULL
@@ -95,6 +103,9 @@ def search_players(db: Session, filters: Dict[str, Any]) -> List[Dict[str, Any]]
             "gender": gender,
             "nationality": nationality,
             "nationality_folded": nationality_norm,
+            "league": league,
+            "league_norm": league_norm,
+            "league_folded": league_norm,
             "team": team,
             "team_norm": team_norm,
             "team_folded": team_norm,
@@ -128,6 +139,13 @@ def get_player_pool_filter_options(db: Session) -> Dict[str, List[str]]:
         ORDER BY value
     """)).scalars().all()
 
+    leagues = db.execute(text("""
+        SELECT DISTINCT metadata->>'league_name' AS value
+        FROM player_data
+        WHERE COALESCE(metadata->>'league_name', '') <> ''
+        ORDER BY value
+    """)).scalars().all()
+
     positions = db.execute(text("""
         SELECT DISTINCT metadata->>'position_name' AS value
         FROM player_data
@@ -137,6 +155,7 @@ def get_player_pool_filter_options(db: Session) -> Dict[str, List[str]]:
 
     return {
         "teams": [value for value in teams if value],
+        "leagues": [value for value in leagues if value],
         "nationalities": [value for value in nationalities if value],
         "positions": [value for value in positions if value],
     }

@@ -235,4 +235,3 @@ def generate_report_content(
         "report_text": report_text,
     }
     return {"content": report_text, "content_json": content_json}
-
