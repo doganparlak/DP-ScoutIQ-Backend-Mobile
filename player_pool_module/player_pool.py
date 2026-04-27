@@ -166,12 +166,6 @@ def reveal_player_potential(db: Session, player_id: int | str) -> Dict[str, Any]
     cached_potential = get_cached_player_pool_potential(full_metadata)
 
     if cached_potential is not None:
-        print(json.dumps({
-            "event": "player_pool_potential_source",
-            "player_id": str(player_id),
-            "source": "db",
-            "potential": cached_potential,
-        }, ensure_ascii=False))
         return {
             "player_id": str(player_id),
             "status": "ready",
@@ -187,12 +181,6 @@ def reveal_player_potential(db: Session, player_id: int | str) -> Dict[str, Any]
     raw_output = getattr(raw_msg, "content", "") or ""
     potential = parse_potential_value(raw_output)
     save_player_pool_potential(db, player_id, potential)
-    print(json.dumps({
-        "event": "player_pool_potential_source",
-        "player_id": str(player_id),
-        "source": "model",
-        "potential": potential,
-    }, ensure_ascii=False))
     return {
         "player_id": str(player_id),
         "status": "ready",
