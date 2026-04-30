@@ -96,6 +96,7 @@ class ProfilePatch(BaseModel):
     country: Optional[str] = None
     plan: Optional[str] = None
     favorite_players: Optional[List[Dict[str, Any]]] = None
+    uiLanguage: Optional[Literal["en", "tr"]] = None
     consent: Optional[bool] = None
 
 class PlanUpdateIn(BaseModel):

@@ -278,12 +278,27 @@ def update_me(patch: ProfilePatch, user_id: int = Depends(require_auth), db: Ses
     dob = patch.dob if patch.dob is not None else row["dob"]
     country = patch.country if patch.country is not None else row["country"]
     plan = patch.plan if patch.plan is not None else row["plan"]
-    favs = json.dumps(patch.favorite_players) if patch.favorite_players is not None else row["favorites_json"]
+    favs_source = patch.favorite_players if patch.favorite_players is not None else row["favorites_json"]
+    favs = favs_source if isinstance(favs_source, str) else json.dumps(favs_source or [], ensure_ascii=False)
+    language = normalize_lang(patch.uiLanguage) if patch.uiLanguage is not None else normalize_lang(row["language"])
 
     db.execute(
-        text("UPDATE users SET dob = CAST(:dob AS date), country = :country, plan = :plan, favorites_json = :favs WHERE id = :id"),
-        {"dob": dob, "country": country, "plan": plan, "favs": favs, "id": user_id}
+        text("""
+            UPDATE users
+            SET dob = CAST(:dob AS date),
+                country = :country,
+                plan = :plan,
+                favorites_json = :favs,
+                language = :language
+            WHERE id = :id
+        """),
+        {"dob": dob, "country": country, "plan": plan, "favs": favs, "language": language, "id": user_id}
     )
+    if patch.uiLanguage is not None:
+        db.execute(
+            text("UPDATE sessions SET language = :language WHERE user_id = :id AND ended_at IS NULL"),
+            {"language": language, "id": user_id},
+        )
     db.commit()
 
     row2 = db.execute(text("SELECT * FROM users WHERE id = :id"), {"id": user_id}).mappings().first()
@@ -485,8 +500,8 @@ async def chat(body: ChatIn,
                db: Session = Depends(get_db)) -> Dict[str, Any]:
     session_id = body.session_id or "default"
     header_lang = normalize_lang(accept_language)
-    #user_lang = normalize_lang(get_user_language(db, user_id))
-    lang = header_lang or "en" #or user_lang 
+    user_lang = normalize_lang(get_user_language(db, user_id))
+    lang = header_lang or user_lang or "en"
     try:
         if not session_exists_and_active(db, session_id):
             # emulate SQLite INSERT OR REPLACE with UPSERT
@@ -1022,7 +1037,7 @@ def get_or_create_report(
     accept_language: str | None = Header(default=None),
     db: Session = Depends(get_db),
 ):
-    lang = normalize_lang(accept_language) or "en"
+    lang = normalize_lang(accept_language) or normalize_lang(get_user_language(db, user_id)) or "en"
     version = 2
     player_payload = payload.model_dump(exclude_none=True)
 
