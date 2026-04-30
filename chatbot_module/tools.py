@@ -44,6 +44,7 @@ META_LINE_RE = re.compile(
         |Secondary\s*Roles?
         |Roles?
         |Potential
+        |Form
     )\*\*:\s*.+$""",
     re.IGNORECASE | re.VERBOSE,
 )
@@ -60,6 +61,7 @@ BUL_NAT_RE  = re.compile(r"^\s*-\s*Nationality\s*:\s*(?P<val>.+?)\s*$", re.IGNOR
 BUL_AGE_RE  = re.compile(r"^\s*-\s*Age(?:\s*\(.*?\))?\s*:\s*(?P<val>\d{1,3})\s*$", re.IGNORECASE)
 BUL_ROLE_RE = re.compile(r"^\s*-\s*Roles?\s*:\s*(?P<val>.+?)\s*$", re.IGNORECASE)
 BUL_POT_RE  = re.compile(r"^\s*-\s*Potential\s*:\s*(?P<val>\d{1,3})\s*$", re.IGNORECASE)
+BUL_FORM_RE = re.compile(r"^\s*-\s*Form\s*:\s*(?P<val>\d{1,3})\s*$", re.IGNORECASE)
 
 DISALLOWED_TURKISH_CLUBS = [
     "Galatasaray", "Fenerbahce", "Fenerbahçe", "Besiktas", "Beşiktaş", "Trabzonspor",

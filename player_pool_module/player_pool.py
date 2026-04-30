@@ -5,6 +5,7 @@ from typing import Any, Dict, List
 from sqlalchemy import text
 from sqlalchemy.orm import Session
 
+from potential_form_module.form import reveal_player_form
 from potential_form_module.potential import reveal_player_potential
 from report_module.utilities import norm_name
 from player_pool_module.utilities import (

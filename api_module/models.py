@@ -12,6 +12,8 @@ class ScoutingReportIn(BaseModel):
     age: Optional[float] = None
     height: Optional[float] = None
     weight: Optional[float] = None
+    potential: Optional[int] = Field(default=None, ge=0, le=100)
+    form: Optional[int] = Field(default=None, ge=0, le=100)
 
 class ScoutingReportOut(BaseModel):
     favorite_player_id: str
@@ -29,6 +31,7 @@ class FavoritePlayerIn(BaseModel):
     nationality: Optional[str] = None
     age: Optional[int] = Field(default=None, ge=0)
     potential: Optional[int] = Field(default=None, ge=0, le=100)
+    form: Optional[int] = Field(default=None, ge=0, le=100)
     gender: Optional[str] = None
     height: Optional[float] = Field(default=None, ge=0)
     weight: Optional[float] = Field(default=None, ge=0)
@@ -43,6 +46,7 @@ class FavoritePlayerOut(BaseModel):
     nationality: Optional[str] = None
     age: Optional[int] = None
     potential: Optional[int] = None
+    form: Optional[int] = None
     gender: Optional[str] = None
     height: Optional[float] = None
     weight: Optional[float] = None
@@ -170,4 +174,11 @@ class PlayerPoolPotentialOut(BaseModel):
     player_id: str
     status: Literal["ready"]
     potential: int = Field(ge=0, le=100)
+    source: Literal["db", "model"]
+
+
+class PlayerPoolFormOut(BaseModel):
+    player_id: str
+    status: Literal["ready"]
+    form: int = Field(ge=0, le=100)
     source: Literal["db", "model"]

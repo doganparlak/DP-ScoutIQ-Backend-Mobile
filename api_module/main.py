@@ -28,9 +28,11 @@ from api_module.models import (
     FavoritePlayerIn, FavoritePlayerOut, ReachOutIn, PlanUpdateIn, IAPActivateIn, 
     ScoutingReportIn, ScoutingReportOut, ConsentPatch, PlayerPoolSearchIn,
     PlayerPoolSearchRow, PlayerPoolFilterOptionsOut, PlayerPoolPotentialOut,
+    PlayerPoolFormOut,
 )
 from player_pool_module.player_pool import (
     get_player_pool_filter_options,
+    reveal_player_form,
     reveal_player_potential,
     search_players,
 )
@@ -64,10 +66,11 @@ app.add_middleware(
 
 
 @app.on_event("startup")
-def ensure_favorite_players_league_column() -> None:
+def ensure_favorite_players_columns() -> None:
     db = SessionLocal()
     try:
         db.execute(text("ALTER TABLE favorite_players ADD COLUMN IF NOT EXISTS league TEXT"))
+        db.execute(text("ALTER TABLE favorite_players ADD COLUMN IF NOT EXISTS form INTEGER CHECK (form BETWEEN 0 AND 100)"))
         db.commit()
     finally:
         db.close()
@@ -580,6 +583,21 @@ def player_pool_reveal_potential(
     except RuntimeError as exc:
         raise HTTPException(status_code=500, detail=str(exc))
 
+
+@app.post("/player-pool/{player_id}/form", response_model=PlayerPoolFormOut)
+def player_pool_reveal_form(
+    player_id: str,
+    user_id: int = Depends(require_auth),
+    db: Session = Depends(get_db),
+):
+    _ = user_id  # authenticated route by design
+    try:
+        return reveal_player_form(db, player_id)
+    except ValueError as exc:
+        raise HTTPException(status_code=404, detail=str(exc))
+    except RuntimeError as exc:
+        raise HTTPException(status_code=500, detail=str(exc))
+
 # --- favorite players ---
 @app.get("/me/favorites", response_model=List[FavoritePlayerOut])
 def list_favorites(user_id: int = Depends(require_auth), db: Session = Depends(get_db)):
@@ -590,6 +608,7 @@ def list_favorites(user_id: int = Depends(require_auth), db: Session = Depends(g
                nationality,
                age,
                potential,
+               form,
                gender,
                height,
                weight,
@@ -627,6 +646,7 @@ def list_favorites(user_id: int = Depends(require_auth), db: Session = Depends(g
             nationality=r["nationality"],
             age=r["age"],
             potential=r["potential"],
+            form=r["form"],
             gender=r["gender"],
             height=r["height"],
             weight=r["weight"],
@@ -647,7 +667,7 @@ def add_favorite(
 
     existing = db.execute(
         text("""
-        SELECT id, name, nationality, age, potential, gender, height, weight, team, league, roles_json
+        SELECT id, name, nationality, age, potential, form, gender, height, weight, team, league, roles_json
         FROM favorite_players
         WHERE user_id = :uid
           AND lower(name) = lower(:name)
@@ -665,18 +685,26 @@ def add_favorite(
 
     if existing:
         league = existing["league"]
+        form = existing["form"]
+        updates: Dict[str, Any] = {}
         if not league and payload.league:
+            updates["league"] = payload.league
+            league = payload.league
+        if form is None and payload.form is not None:
+            updates["form"] = payload.form
+            form = payload.form
+        if updates:
+            set_clause = ", ".join(f"{key} = :{key}" for key in updates)
             db.execute(
-                text("""
+                text(f"""
                 UPDATE favorite_players
-                SET league = :league
+                SET {set_clause}
                 WHERE id = :id
                   AND user_id = :uid
                 """),
-                {"league": payload.league, "id": existing["id"], "uid": user_id},
+                {**updates, "id": existing["id"], "uid": user_id},
             )
             db.commit()
-            league = payload.league
 
         try:
             existing_roles = json.loads(existing["roles_json"]) or []
@@ -690,6 +718,7 @@ def add_favorite(
             nationality=existing["nationality"],
             age=existing["age"],
             potential=existing["potential"],
+            form=form,
             gender=existing["gender"],
             height=existing["height"],
             weight=existing["weight"],
@@ -710,6 +739,7 @@ def add_favorite(
             nationality,
             age,
             potential,
+            form,
             gender,
             height,
             weight,
@@ -725,6 +755,7 @@ def add_favorite(
             :nat,
             :age,
             :pot,
+            :form,
             :gender,
             :height,
             :weight,
@@ -741,6 +772,7 @@ def add_favorite(
             "nat": payload.nationality,
             "age": payload.age,
             "pot": payload.potential,
+            "form": payload.form,
             "gender": payload.gender,
             "height": payload.height,
             "weight": payload.weight,
@@ -758,6 +790,7 @@ def add_favorite(
         nationality=payload.nationality,
         age=payload.age,
         potential=payload.potential,
+        form=payload.form,
         gender=payload.gender,
         height=payload.height,
         weight=payload.weight,
@@ -990,7 +1023,8 @@ def get_or_create_report(
     db: Session = Depends(get_db),
 ):
     lang = normalize_lang(accept_language) or "en"
-    version = 1
+    version = 2
+    player_payload = payload.model_dump(exclude_none=True)
 
     # Ensure favorite belongs to user
     owned = db.execute(
@@ -1019,6 +1053,31 @@ def get_or_create_report(
             )
             db.commit()
             row = None  # continue into regeneration flow
+        elif row["status"] == "ready":
+            content_json = row["content_json"] if isinstance(row["content_json"], dict) else {}
+            player_card = content_json.get("player_card") if isinstance(content_json, dict) else {}
+            player_card = player_card if isinstance(player_card, dict) else {}
+            missing_requested_score = any(
+                player_payload.get(score_key) is not None and player_card.get(score_key) is None
+                for score_key in ("potential", "form")
+            )
+            if missing_requested_score:
+                db.execute(
+                    text("DELETE FROM scouting_reports WHERE id = :id"),
+                    {"id": row["id"]},
+                )
+                db.commit()
+                row = None  # regenerate with the newly available score fields
+            else:
+                return {
+                    "favorite_player_id": favorite_id,
+                    "status": row["status"],
+                    "content": row["content"],
+                    "content_json": row["content_json"],
+                    "language": row["language"],
+                    "version": row["version"],
+                    "player": payload,  # NEW
+                }
         else:
             return {
                 "favorite_player_id": favorite_id,
@@ -1039,7 +1098,6 @@ def get_or_create_report(
     db.commit()
 
     # Generate synchronously (DeepSeek) and update cache
-    player_payload = payload.model_dump(exclude_none=True)
 
     background_tasks.add_task(
         _generate_report_background,

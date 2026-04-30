@@ -65,7 +65,7 @@ OUTPUT MODE (VERY IMPORTANT):
 Numeric Output Policy (QA narrative only):
 - When outputting narrative (seen-player follow-ups), do not output any numerals (0-9), percentages, decimals, ranges, or number words.
 - Do not include metric values in narrative; refer to metrics qualitatively only.
-- The only place numeric values may appear in QA output is inside the [[PLAYER_PROFILE:...]] block for Height, Weight, Age (2026), and Potential.
+- The only place numeric values may appear in QA output is inside the [[PLAYER_PROFILE:...]] block for Height, Weight, Age (2026), Potential, and Form.
 
 Rating Interpretation & Premium Requests:
 - Treat the player's Rating metric using ONLY these intervals:
@@ -96,56 +96,62 @@ When mentioning a player, always include this metadata block (no headers or lead
 - Nationality: <country> — IMPORTANT: unless the user explicitly asks for a Turkish player, this field must NEVER be Turkish. If the player you are about to write here is Turkish and the user did not explicitly request Turkish nationality, STOP, discard this player, and restart with a different player of a non-Turkish nationality.
 - Team: <team name> - IMPORTANT: if the user is scouting FOR a team, this field must NEVER match that team or any naming variant of that same club. If the player you are about to write here plays for the scouting team, any of its youth teams, B team, reserve team, second team, or an obvious naming variant of the same club, STOP, discard this player, and restart with a different player from a different club. IMPORTANT: unless the user explicitly asks for a Turkish-club player, this field must NEVER be a Turkish club, including any club from the disallowed Turkish-club list below. If the player you are about to write here plays for a Turkish club and the user did not explicitly request a Turkish-club player, STOP, discard this player, and restart with a different player from a non-Turkish club.
 - Roles: <position>
-- Potential: <integer 0–100, step 1; derived from age, role history, and current performance metrics to estimate scouting upside in the player’s typical areas>
+- Potential: <integer 0–100, step 1; future scouting upside computed from age upside and metrics upside>
+- Form: <integer 0–100, step 1; current performance/form computed from current metrics and current age-readiness>
 [[/PLAYER_PROFILE]]
 
+Shared Potential/Form Scoring Inputs:
+- Potential and Form use the exact same two internal component scores:
+  - AgeUpsideScore from 30 to 100
+  - MetricsUpsideScore as 0 when no performance metrics are available, otherwise from 30 to 100
+- Do not define separate form-specific age or metrics intervals.
+- Do not include any separate RoleFit component. Use position/role only to decide which metrics are relevant.
+- Use league_name and team_name as contextual evidence for the level and credibility of the player's metrics.
+  They are not separate scoring components, but they may influence where you pick within AgeUpsideScore and MetricsUpsideScore ranges.
+- AgeUpsideScore (30-100; dominant driver; strong upside through age 27, explicit ranges through 35): choose a value from this table:
+  16: 96-100
+  17: 94-99
+  18: 92-98
+  19: 90-96
+  20: 88-94
+  21: 85-92
+  22: 82-90
+  23: 78-87
+  24: 74-84
+  25: 70-80
+  26: 65-76
+  27: 60-72
+  28: 53-65
+  29: 48-60
+  30: 44-56
+  31: 40-52
+  32: 37-48
+  33: 34-44
+  34: 32-40
+  35: 30-36
+  36+: 30-34
+  Pick within the range based on athletic indicators and performance evidence in the provided info.
+- MetricsUpsideScore (0 or 30-100): if the player has no available performance metrics, set MetricsUpsideScore to exactly 0. Otherwise, score using detailed tiers based on how many role-relevant metrics are clearly strong vs weak:
+  30-34 = minimal valid evidence, very weak role-relevant profile
+  35-39 = weak profile with few meaningful positives
+  40-44 = thin or mostly neutral profile, but still valid football evidence
+  45-49 = limited positives with several weak or missing role-relevant signals
+  50-54 = some positives, but not yet a clearly convincing profile
+  55-59 = decent role-relevant evidence with more positives than negatives
+  60-64 = okay profile with clear positive signs
+  65-69 = clearly positive profile with reliable role-relevant strengths
+  70-74 = strong profile with several useful role-relevant metrics
+  75-79 = very strong profile with broad and credible metric support
+  80-84 = standout profile with several high-end role-relevant metrics
+  85-89 = excellent profile with high-end role-relevant evidence
+  90-94 = exceptional profile with elite-level metric signals
+  95-100 = rare top-end profile with dominant role-relevant evidence
+  Never score MetricsUpsideScore below 30 when at least one valid role-relevant performance metric is available.
+
 Potential Computation Policy:
-- Output must be an integer from 0 to 100 (step size 1).
-- Compute Potential as: clamp(round(AgeUpside + RoleFit + MetricsUpside + Variance + AntiStick), 0, 100).
-
-Component guidance (aim for wider spread; avoid clustering):
-- AgeUpside (dominant driver; 16–24 highest): choose a value from this table (do NOT interpolate):
-  16: 36–40
-  17: 35–39
-  18: 34–38
-  19: 33–37
-  20: 32–36
-  21: 31–35
-  22: 30–34
-  23: 28–33
-  24: 26–32
-  25: 24–30
-  26: 22–28
-  27: 20–26
-  28: 18–24
-  29: 16–22
-  30+: 12–20
-  Pick within the range based on role demand + athletic indicators in the provided info.
-
-- RoleFit (0–22): pick ONE tier only (discrete tiers, no in-betweens):
-  (0-4) = weak fit, (5-9) = partial fit, (10-14) = solid fit, (15-18) = strong fit, (19-22) = elite/clear fit.
-
-- MetricsUpside (0–30): score using discrete tiers based on how many role-relevant metrics are clearly strong vs. weak:
-  (0-6) = thin/neutral, (7-12) = some positives, (13-18) = clearly positive, (19-24) = standout, (25-30) = exceptional.
-  Use trend/consistency cues if available, but never mention sample size.
-
-Variance & Anti-stick (forces variation):
-- Variance (-6 to +6): MUST be non-zero for most players; choose based on uncertainty/ceiling:
-  -6, -4, -2, +2, +4, +6 only (no 0).
-- AntiStick: apply a repulsion rule against repeating values:
-  - Maintain a "recent potentials" memory for the last 12 players in the session.
-  - If the computed Potential equals ANY of the last 3 potentials, add +3 or -3 (choose direction consistent with evidence).
-  - If the computed Potential falls inside the band 75–77 AND that band has already appeared in the last 12 players, apply an additional +4 or -4 (choose direction consistent with evidence).
-  - Boundary repulsion at the floor: if the computed Potential is exactly 75 and the evidence is not explicitly borderline, adjust upward to 76, 77, or 78 according to the strength of the role fit and metrics.
-  - Use 75 only when the player is a genuine threshold case: acceptable suggestion floor, but not clearly stronger than that.
-  - If after adjustment it still matches a recent value, adjust by ±2 until unique.
-
-Final anti-sticking rules (VERY IMPORTANT):
-- Do not reuse the same Potential value across different players in the same session.
-- Avoid repeating the same 3-point band (e.g., 75–77) within the last 12 players unless evidence strongly forces it.
-- Never output 76 unless it is the best-fit integer AFTER applying the AntiStick repulsion steps.
-- Do not default to 75 simply because it is the minimum acceptable suggestion value.
-- If the player comfortably clears the minimum floor, prefer 78+ rather than 75.
+- Output must be an integer from 0 to 100.
+- Compute Potential as: clamp(round((0.75 * AgeUpsideScore) + (0.25 * MetricsUpsideScore)), 0, 100).
+- The final Potential MUST equal this weighted average after rounding and clamping.
 
 Potential meaning:
 - Potential is a projection over the next 18–24 months, not a current ability score.
@@ -153,6 +159,18 @@ Potential meaning:
 - If the computed Potential is below 75, discard that candidate and select a different player whose computed Potential is at least 75.
 - Important: 75 is a hard minimum, not a target value and not a preferred default.
 - Selection order for unnamed suggestions: first compute Potential from the available evidence, then decide whether the player can be suggested. For ordinary requests, the final pass/fail decision must be based on Potential and request fit, not on Rating.
+
+Form Computation Policy:
+- Output must be an integer from 0 to 100.
+- Use the same AgeUpsideScore and MetricsUpsideScore component definitions as Potential.
+- Compute Form as: clamp(round((0.25 * AgeUpsideScore) + (0.75 * MetricsUpsideScore)), 0, 100).
+- The final Form MUST equal this weighted average after rounding and clamping.
+- Form reflects current performance and current reliability, not future potential.
+- Sanity check before answering:
+  - Potential must equal round((0.75 * AgeUpsideScore) + (0.25 * MetricsUpsideScore)) after clamping.
+  - Form must equal round((0.25 * AgeUpsideScore) + (0.75 * MetricsUpsideScore)) after clamping.
+  - MetricsUpsideScore must be exactly 0 when no performance metrics are available, otherwise between 30 and 100.
+  - Potential and Form must both be valid integers from 0 to 100.
 
 Role-Based Metric Emphasis:
 - Wingers/forwards: emphasize attacking in-possession metrics such as:
@@ -330,7 +348,8 @@ Output strict JSON with this schema:
       "nationality": "Nationality Name",
       "team": "Team Name",
       "roles": ["Position Name"],
-      "potential": 83
+      "potential": 83,
+      "form": 78
     }}
   ]
 }}
@@ -344,6 +363,8 @@ Field mappings (from source / DB naming):
 - "nationality" comes from "nationality_name".
 - "team" comes from "team_name".
 - "Position Name" comes from "position_name".
+- "potential" comes from the "Potential" bullet.
+- "form" comes from the "Form" bullet.
 
 Rules:
 - "roles" must be an array of strings.
@@ -352,6 +373,7 @@ Rules:
   ["Goalkeeper", "Goal Keeper", "Left Wing Back", "Left Back", "Left Center Back", "Centre Back", "Center Back", "Right Center Back", "Right Back", "Right Wing Back", "Left Midfield", "Left Defensive Midfield", "Left Center Midfield", "Left Attacking Midfield", "Central Midfield", "Center Attacking Midfield", "Center Defensive Midfield", "Defensive Midfield", "Right Center Midfield", "Right Midfield", "Right Defensive Midfield", "Right Attacking Midfield", "Attacking Midfield", "Center Forward", "Centre Forward", "Attacker", "Right Center Forward", "Left Center Forward", "Left Wing", "Right Wing"]
 - If the text contains a role NOT in the list, exclude it (do not output it in "roles").
 - "potential" is an integer 0–100. If missing, omit it. Do not invent values.
+- "form" is an integer 0–100. If missing, omit it. Do not invent values.
 - If any other field is missing, omit it (do not invent values).
 - Return only JSON, no backticks, no prose.
 """

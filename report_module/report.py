@@ -145,6 +145,7 @@ def build_player_card_from_docs(metric_docs: List[Dict[str, Any]]) -> Dict[str, 
         height = _first_non_empty(meta.get("height"), meta.get("height_cm"))
         weight = _first_non_empty(meta.get("weight"), meta.get("weight_kg"))
         potential = _first_non_empty(meta.get("potential"))
+        form = _first_non_empty(meta.get("form"))
         position_name = _first_non_empty(meta.get("position_name"), meta.get("position"))
         roles_raw = _first_non_empty(meta.get("roles"), meta.get("roles_json"), meta.get("position"), meta.get("position_name"))
 
@@ -164,6 +165,8 @@ def build_player_card_from_docs(metric_docs: List[Dict[str, Any]]) -> Dict[str, 
             card["weight"] = weight
         if "potential" not in card and potential is not None:
             card["potential"] = potential
+        if "form" not in card and form is not None:
+            card["form"] = form
 
         # ✅ NEW: set position_name once (authoritative)
         if "position_name" not in card and position_name is not None:
@@ -220,6 +223,9 @@ def generate_report_content(
         limit_docs=30
     )
     player_card = build_player_card_from_docs(docs)
+    for score_key in ("potential", "form"):
+        if score_key not in player_card and player_identity and player_identity.get(score_key) is not None:
+            player_card[score_key] = player_identity[score_key]
 
     input_text = _build_llm_input(player_card, docs)
 

@@ -18,7 +18,7 @@ META_ID_KEYS = {
     "age", "height", "weight", "match_count",
 
     # storage/other (if present)
-    "id", "content", "metadata", "vector",
+    "id", "content", "metadata", "vector", "potential", "form",
 }
 
 PROFILE_BLOCK_RE = re.compile(
@@ -59,6 +59,7 @@ def fallback_parse_profile_block_new(raw_text: str) -> Dict[str, Any]:
     team = None
     roles = []
     potential = None
+    form = None
     match_count = None
 
     for line in body.splitlines():
@@ -84,6 +85,9 @@ def fallback_parse_profile_block_new(raw_text: str) -> Dict[str, Any]:
         elif ln.lower().startswith("- potential"):
             try: potential = int(ln.split(":", 1)[1])
             except: pass
+        elif ln.lower().startswith("- form"):
+            try: form = int(ln.split(":", 1)[1])
+            except: pass
         elif ln.lower().startswith("- match_count"):
             try: match_count = int(ln.split(":", 1)[1])
             except: pass
@@ -101,6 +105,7 @@ def fallback_parse_profile_block_new(raw_text: str) -> Dict[str, Any]:
                 "match_count": match_count,
                 "roles": roles,
                 "potential": potential,
+                "form": form,
             }
         ]
     }
@@ -136,18 +141,21 @@ def parse_player_meta_new(meta_parser_chain, raw_text: str) -> Dict[str, Any]:
             "team": p.get("team"),
             "match_count": p.get("match_count"),
             "roles": p.get("roles") or [],
-            "potential": None
+            "potential": None,
+            "form": None,
         }
 
-        # normalize potential
-        pot = p.get("potential")
-        if pot is not None:
+        # normalize potential/form
+        for score_key in ("potential", "form"):
+            score = p.get(score_key)
+            if score is None:
+                continue
             try:
-                pot = int(float(pot))
-                pot = max(0, min(100, pot))
+                score = int(float(score))
+                score = max(0, min(100, score))
             except:
-                pot = None
-        out["potential"] = pot
+                score = None
+            out[score_key] = score
 
         # ensure roles always => list
         if not isinstance(out["roles"], list):
@@ -423,6 +431,7 @@ def build_player_payload_new(meta: Dict[str, Any]) -> Dict[str, Any]:
                     "age": age_final,
                     "roles": roles_final,
                     "potential": m.get("potential"),
+                    "form": m.get("form"),
                 },
                 "stats": stats or []
             })
