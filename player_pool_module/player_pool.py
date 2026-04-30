@@ -1,37 +1,20 @@
 from __future__ import annotations
 
 from typing import Any, Dict, List
-import json
 
-from langchain_deepseek import ChatDeepSeek
-from langchain_core.prompts import ChatPromptTemplate
 from sqlalchemy import text
 from sqlalchemy.orm import Session
 
+from potential_form_module.potential import reveal_player_potential
 from report_module.utilities import norm_name
-from player_pool_module.prompts import player_pool_potential_system_prompt
-from player_pool_module.tools import (
-    clean_metadata_for_potential,
+from player_pool_module.utilities import (
     clean_str,
     folded_text_sql,
-    get_cached_player_pool_potential,
-    get_player_metadata_by_id,
     numeric_filter_sql,
-    parse_potential_value,
-    save_player_pool_potential,
 )
 
 
 SEARCH_LIMIT = 100
-CHAT_LLM = ChatDeepSeek(
-    model="deepseek-chat",
-    temperature=0.3,
-)
-
-_potential_prompt = ChatPromptTemplate.from_messages([
-    ("system", player_pool_potential_system_prompt),
-    ("human", "PLAYER_METADATA_JSON:\n{player_metadata_json}"),
-])
 
 
 def search_players(db: Session, filters: Dict[str, Any]) -> List[Dict[str, Any]]:
@@ -158,32 +141,4 @@ def get_player_pool_filter_options(db: Session) -> Dict[str, List[str]]:
         "leagues": [value for value in leagues if value],
         "nationalities": [value for value in nationalities if value],
         "positions": [value for value in positions if value],
-    }
-
-
-def reveal_player_potential(db: Session, player_id: int | str) -> Dict[str, Any]:
-    full_metadata = get_player_metadata_by_id(db, player_id)
-    cached_potential = get_cached_player_pool_potential(full_metadata)
-
-    if cached_potential is not None:
-        return {
-            "player_id": str(player_id),
-            "status": "ready",
-            "potential": cached_potential,
-            "source": "db",
-        }
-
-    metadata = clean_metadata_for_potential(full_metadata)
-    metadata_json = json.dumps(metadata, ensure_ascii=False, default=str)
-    prompt_messages = _potential_prompt.format_messages(player_metadata_json=metadata_json)
-
-    raw_msg = CHAT_LLM.invoke(prompt_messages)
-    raw_output = getattr(raw_msg, "content", "") or ""
-    potential = parse_potential_value(raw_output)
-    save_player_pool_potential(db, player_id, potential)
-    return {
-        "player_id": str(player_id),
-        "status": "ready",
-        "potential": potential,
-        "source": "model",
     }
