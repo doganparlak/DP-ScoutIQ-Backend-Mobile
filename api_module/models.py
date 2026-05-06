@@ -164,6 +164,10 @@ class PlayerPoolSearchRow(BaseModel):
     content: Dict[str, Any]
 
 
+class PlayerPoolWeeklyPopularIn(BaseModel):
+    limit: Optional[int] = Field(default=10, ge=1, le=10)
+
+
 class PlayerPoolFilterOptionsOut(BaseModel):
     teams: List[str]
     leagues: List[str]

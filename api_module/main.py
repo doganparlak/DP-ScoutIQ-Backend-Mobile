@@ -28,13 +28,18 @@ from api_module.models import (
     FavoritePlayerIn, FavoritePlayerOut, ReachOutIn, PlanUpdateIn, IAPActivateIn, 
     ScoutingReportIn, ScoutingReportOut, ConsentPatch, PlayerPoolSearchIn,
     PlayerPoolSearchRow, PlayerPoolFilterOptionsOut, PlayerPoolPotentialOut,
-    PlayerPoolFormOut,
+    PlayerPoolFormOut, PlayerPoolWeeklyPopularIn,
 )
 from player_pool_module.player_pool import (
     get_player_pool_filter_options,
     reveal_player_form,
     reveal_player_potential,
     search_players,
+)
+from player_pool_module.weekly_popular import (
+    get_weekly_popular_players,
+    record_player_search,
+    record_weekly_popular_reveal,
 )
 
 import hmac, uuid, json, re, os
@@ -573,6 +578,33 @@ def player_pool_search(
 
     _ = user_id  # authenticated route by design
     return search_players(db, payload.model_dump(exclude_none=True))
+
+
+@app.post("/player-pool/{player_id}/search-hit")
+def player_pool_record_search_hit(
+    player_id: str,
+    user_id: int = Depends(require_auth),
+    db: Session = Depends(get_db),
+):
+    _ = user_id  # authenticated route by design
+    try:
+        record_player_search(db, player_id)
+    except (TypeError, ValueError):
+        raise HTTPException(status_code=400, detail="Invalid player_id")
+    db.commit()
+    return {"ok": True}
+
+
+@app.post("/player-pool/weekly-popular", response_model=List[PlayerPoolSearchRow])
+def player_pool_weekly_popular(
+    payload: PlayerPoolWeeklyPopularIn = Body(default=PlayerPoolWeeklyPopularIn()),
+    user_id: int = Depends(require_auth),
+    db: Session = Depends(get_db),
+):
+    record_weekly_popular_reveal(db, user_id)
+    rows = get_weekly_popular_players(db, payload.limit or 10)
+    db.commit()
+    return rows
 
 
 @app.get("/player-pool/options", response_model=PlayerPoolFilterOptionsOut)
