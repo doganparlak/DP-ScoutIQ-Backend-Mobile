@@ -19,11 +19,14 @@ def parse_score_value(raw_output: str, score_name: str) -> int:
 
 
 def clamp_potential(value: int) -> int:
-    return clamp_score(value)
+    return max(30, clamp_score(value))
 
 
 def parse_potential_value(raw_output: str) -> int:
-    return parse_score_value(raw_output, "Potential")
+    match = re.search(r"\b(\d{1,3})\b", raw_output or "")
+    if not match:
+        raise RuntimeError("Potential model did not return a valid integer")
+    return clamp_potential(int(match.group(1)))
 
 
 def parse_form_value(raw_output: str) -> int:
@@ -91,7 +94,8 @@ def get_cached_player_pool_score(metadata: Dict[str, Any], field_name: str) -> i
 
 
 def get_cached_player_pool_potential(metadata: Dict[str, Any]) -> int | None:
-    return get_cached_player_pool_score(metadata, "potential")
+    value = get_cached_player_pool_score(metadata, "potential")
+    return clamp_potential(value) if value is not None else None
 
 
 def get_cached_player_pool_form(metadata: Dict[str, Any]) -> int | None:
@@ -124,7 +128,7 @@ def save_player_pool_score(
 
 
 def save_player_pool_potential(db: Session, player_id: int | str, potential: int) -> None:
-    save_player_pool_score(db, player_id, "potential", potential)
+    save_player_pool_score(db, player_id, "potential", clamp_potential(potential))
 
 
 def save_player_pool_form(db: Session, player_id: int | str, form: int) -> None:

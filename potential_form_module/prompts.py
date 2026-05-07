@@ -7,15 +7,15 @@ Component guidance (aim for wider spread; avoid clustering):
   19: 90-96
   20: 88-94
   21: 85-92
-  22: 82-90
-  23: 78-87
-  24: 74-84
-  25: 70-80
-  26: 65-76
-  27: 60-72
-  28: 53-65
-  29: 48-60
-  30: 44-56
+  22: 85-90
+  23: 81-87
+  24: 77-84
+  25: 73-80
+  26: 68-76
+  27: 63-72
+  28: 56-65
+  29: 51-60
+  30: 47-56
   31: 40-52
   32: 37-48
   33: 34-44
@@ -29,16 +29,16 @@ Component guidance (aim for wider spread; avoid clustering):
   35-39 = weak profile with few meaningful positives
   40-44 = thin or mostly neutral profile, but still valid football evidence
   45-49 = limited positives with several weak or missing role-relevant signals
-  50-54 = some positives, but not yet a clearly convincing profile
-  55-59 = decent role-relevant evidence with more positives than negatives
-  60-64 = okay profile with clear positive signs
-  65-69 = clearly positive profile with reliable role-relevant strengths
-  70-74 = strong profile with several useful role-relevant metrics
-  75-79 = very strong profile with broad and credible metric support
-  80-84 = standout profile with several high-end role-relevant metrics
-  85-89 = excellent profile with high-end role-relevant evidence
-  90-94 = exceptional profile with elite-level metric signals
-  95-100 = rare top-end profile with dominant role-relevant evidence
+  54-58 = some positives, but not yet a clearly convincing profile
+  59-63 = decent role-relevant evidence with more positives than negatives
+  64-68 = okay profile with clear positive signs
+  69-73 = clearly positive profile with reliable role-relevant strengths
+  74-78 = strong profile with several useful role-relevant metrics
+  79-83 = very strong profile with broad and credible metric support
+  84-88 = standout profile with several high-end role-relevant metrics
+  89-93 = excellent profile with high-end role-relevant evidence
+  94-98 = exceptional profile with elite-level metric signals
+  99-100 = rare top-end profile with dominant role-relevant evidence
   Never score MetricsUpsideScore below 30 when at least one valid role-relevant performance metric is available.
   Use trend/consistency cues, league_name, and team_name if available, but never mention sample size.
 """
@@ -48,11 +48,11 @@ player_pool_potential_system_prompt = f"""
 You are a football scouting evaluator computing a single player's Potential from the provided player metadata.
 
 Potential Computation Policy:
-- Output must be an integer from 0 to 100.
+- Output must be an integer from 30 to 100.
 - Assign two internal upside scores:
   - AgeUpsideScore from 30 to 100
   - MetricsUpsideScore as 0 when no performance metrics are available, otherwise from 30 to 100
-- Compute Potential as: clamp(round((0.75 * AgeUpsideScore) + (0.25 * MetricsUpsideScore)), 0, 100).
+- Compute Potential as: clamp(round((0.80 * AgeUpsideScore) + (0.20 * MetricsUpsideScore)), 30, 100).
 - The final Potential MUST equal this weighted average after rounding and clamping.
 - Do not include any separate RoleFit component. Use position/role only to decide which metrics are relevant.
 - Use league_name and team_name as contextual evidence for the level and credibility of the player's metrics.
@@ -100,14 +100,15 @@ Rules:
 - Do not invent missing metadata fields.
 - Use only the provided metadata.
 - Never output 0 for a valid player record.
+- Never output any Potential below 30.
 - A senior player can have lower upside than a young player, but still must receive a non-zero football potential score if the metadata is valid.
 - Sanity check before answering:
   - explicitly verify that AgeUpsideScore is between 30 and 100
   - explicitly verify that MetricsUpsideScore is exactly 0 when no performance metrics are available, otherwise between 30 and 100
-  - explicitly verify that final Potential equals round((0.75 * AgeUpsideScore) + (0.25 * MetricsUpsideScore)) after clamping
+  - explicitly verify that final Potential equals round((0.80 * AgeUpsideScore) + (0.20 * MetricsUpsideScore)) after clamping to the 30-100 range
   - if your first answer does not match the weighted average formula, discard it and return the corrected weighted average integer
   - if the player has a valid age and multiple real performance metrics, the answer must not be 0
-  - if the first pass gives 0, recompute using the formula carefully and return the corrected integer
+  - if the first pass gives any value below 30, recompute using the formula carefully and return the corrected integer of at least 30
   - for established first-team players with meaningful metrics, a 0 output is invalid
 - If age or position is missing, still infer the best possible Potential from the available evidence rather than collapsing to 0.
 - If position_name is null, infer the most likely role bucket from the metric profile and compute Potential accordingly.
@@ -126,7 +127,7 @@ Form Computation Policy:
 - Assign two internal scores using exactly the same intervals and scoring definitions as Potential:
   - AgeUpsideScore from 30 to 100
   - MetricsUpsideScore as 0 when no performance metrics are available, otherwise from 30 to 100
-- Compute Form as: clamp(round((0.25 * AgeUpsideScore) + (0.75 * MetricsUpsideScore)), 0, 100).
+- Compute Form as: clamp(round((0.20 * AgeUpsideScore) + (0.80 * MetricsUpsideScore)), 0, 100).
 - The final Form MUST equal this weighted average after rounding and clamping.
 - Form reflects current performance and current reliability, not future potential.
 - Do not include any separate RoleFit component. Use position/role only to decide which metrics are relevant.
@@ -180,7 +181,7 @@ Rules:
 - Sanity check before answering:
   - explicitly verify that AgeUpsideScore is between 30 and 100
   - explicitly verify that MetricsUpsideScore is exactly 0 when no performance metrics are available, otherwise between 30 and 100
-  - explicitly verify that final Form equals round((0.25 * AgeUpsideScore) + (0.75 * MetricsUpsideScore)) after clamping
+  - explicitly verify that final Form equals round((0.20 * AgeUpsideScore) + (0.80 * MetricsUpsideScore)) after clamping
   - if your first answer does not match the weighted average formula, discard it and return the corrected weighted average integer
   - if the player has a valid age and multiple real performance metrics, the answer must not be 0
   - if the first pass gives 0, recompute using the formula carefully and return the corrected integer
