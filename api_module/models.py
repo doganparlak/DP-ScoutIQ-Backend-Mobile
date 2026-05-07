@@ -187,3 +187,18 @@ class PlayerPoolFormOut(BaseModel):
     status: Literal["ready"]
     form: int = Field(ge=0, le=100)
     source: Literal["db", "model"]
+
+
+class MatchupComparisonIn(BaseModel):
+    player1Id: str
+    player2Id: str
+
+
+class MatchupComparisonPlayer(BaseModel):
+    id: str | int
+    content: Dict[str, Any]
+
+
+class MatchupComparisonOut(BaseModel):
+    player1: MatchupComparisonPlayer
+    player2: MatchupComparisonPlayer

@@ -28,7 +28,8 @@ from api_module.models import (
     FavoritePlayerIn, FavoritePlayerOut, ReachOutIn, PlanUpdateIn, IAPActivateIn, 
     ScoutingReportIn, ScoutingReportOut, ConsentPatch, PlayerPoolSearchIn,
     PlayerPoolSearchRow, PlayerPoolFilterOptionsOut, PlayerPoolPotentialOut,
-    PlayerPoolFormOut, PlayerPoolWeeklyPopularIn,
+    PlayerPoolFormOut, PlayerPoolWeeklyPopularIn, MatchupComparisonIn,
+    MatchupComparisonOut,
 )
 from player_pool_module.player_pool import (
     get_player_pool_filter_options,
@@ -41,6 +42,7 @@ from player_pool_module.weekly_popular import (
     record_player_search,
     record_weekly_popular_reveal,
 )
+from matchup_module.comparison import get_matchup_comparison
 
 import hmac, uuid, json, re, os
 import datetime as dt
@@ -605,6 +607,19 @@ def player_pool_weekly_popular(
     rows = get_weekly_popular_players(db, payload.limit or 10)
     db.commit()
     return rows
+
+
+@app.post("/player-pool/matchup/comparison", response_model=MatchupComparisonOut)
+def player_pool_matchup_comparison(
+    payload: MatchupComparisonIn,
+    user_id: int = Depends(require_auth),
+    db: Session = Depends(get_db),
+):
+    _ = user_id  # authenticated route by design
+    try:
+        return get_matchup_comparison(db, payload.player1Id, payload.player2Id)
+    except ValueError as exc:
+        raise HTTPException(status_code=404, detail=str(exc))
 
 
 @app.get("/player-pool/options", response_model=PlayerPoolFilterOptionsOut)
