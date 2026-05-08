@@ -172,6 +172,7 @@ def user_row_to_dict(row: any) -> dict:
         "subscriptionPlatform": get("subscription_platform"),
         "subscriptionAutoRenew": get("subscription_auto_renew"),
         "consent": bool(get("consent", False)),
+        "tutorialCompleted": bool(get("tutorial_completed", False)),
     }
 
 # ----- deletion helpers -----

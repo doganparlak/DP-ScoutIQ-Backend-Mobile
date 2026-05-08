@@ -88,9 +88,14 @@ class ProfileOut(BaseModel):
     subscriptionAutoRenew: Optional[bool] = None
 
     consent: bool = False
+    tutorialCompleted: bool = False
 
 class ConsentPatch(BaseModel):
     consent: bool
+
+class TutorialPatch(BaseModel):
+    tutorialCompleted: bool = True
+
 class ProfilePatch(BaseModel):
     dob: Optional[str] = None
     country: Optional[str] = None
@@ -133,6 +138,7 @@ class ChatIn(BaseModel):
     message: str
     session_id: Optional[str] = "default"
     strategy: Optional[str] = None
+    tutorial_mode: Optional[bool] = False
 
 class Query(BaseModel):
     question: str

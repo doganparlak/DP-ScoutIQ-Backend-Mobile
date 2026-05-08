@@ -29,7 +29,7 @@ from api_module.models import (
     ScoutingReportIn, ScoutingReportOut, ConsentPatch, PlayerPoolSearchIn,
     PlayerPoolSearchRow, PlayerPoolFilterOptionsOut, PlayerPoolPotentialOut,
     PlayerPoolFormOut, PlayerPoolWeeklyPopularIn, MatchupComparisonIn,
-    MatchupComparisonOut,
+    MatchupComparisonOut, TutorialPatch,
 )
 from player_pool_module.player_pool import (
     get_player_pool_filter_options,
@@ -43,6 +43,7 @@ from player_pool_module.weekly_popular import (
     record_weekly_popular_reveal,
 )
 from matchup_module.comparison import get_matchup_comparison
+from tutorial_module.tutorial import tutorial_chat_response
 
 import hmac, uuid, json, re, os
 import datetime as dt
@@ -76,6 +77,7 @@ app.add_middleware(
 def ensure_favorite_players_columns() -> None:
     db = SessionLocal()
     try:
+        db.execute(text("ALTER TABLE users ADD COLUMN IF NOT EXISTS tutorial_completed BOOLEAN NOT NULL DEFAULT FALSE"))
         db.execute(text("ALTER TABLE favorite_players ADD COLUMN IF NOT EXISTS league TEXT"))
         db.execute(text("ALTER TABLE favorite_players ADD COLUMN IF NOT EXISTS form INTEGER CHECK (form BETWEEN 0 AND 100)"))
         db.commit()
@@ -340,6 +342,35 @@ def update_consent(
 
     return user_row_to_dict(row)
 
+@app.patch("/me/tutorial", response_model=ProfileOut)
+def update_tutorial_completion(
+    body: TutorialPatch,
+    user_id: int = Depends(require_auth),
+    db: Session = Depends(get_db),
+):
+    db.execute(
+        text("""
+            UPDATE users
+            SET tutorial_completed = :tutorial_completed
+            WHERE id = :id
+        """),
+        {
+            "tutorial_completed": body.tutorialCompleted,
+            "id": user_id,
+        },
+    )
+    db.commit()
+
+    row = db.execute(
+        text("SELECT * FROM users WHERE id = :id"),
+        {"id": user_id},
+    ).mappings().first()
+
+    if not row:
+        raise HTTPException(status_code=404, detail="User not found")
+
+    return user_row_to_dict(row)
+
 @app.post("/logout_all")
 def logout_all(user_id: int = Depends(require_auth), db: Session = Depends(get_db)):
     db.execute(text("DELETE FROM sessions WHERE user_id = :id"), {"id": user_id})
@@ -533,6 +564,9 @@ async def chat(body: ChatIn,
             db.commit()
     finally:
         pass
+    if body.tutorial_mode:
+        return tutorial_chat_response(db)
+
     result = answer_question(
         body.message,
         session_id=session_id,
