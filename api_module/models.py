@@ -14,6 +14,7 @@ class ScoutingReportIn(BaseModel):
     weight: Optional[float] = None
     potential: Optional[int] = Field(default=None, ge=0, le=100)
     form: Optional[int] = Field(default=None, ge=0, le=100)
+    tutorial_mode: Optional[bool] = False
 
 class ScoutingReportOut(BaseModel):
     favorite_player_id: str

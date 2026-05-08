@@ -43,7 +43,7 @@ from player_pool_module.weekly_popular import (
     record_weekly_popular_reveal,
 )
 from matchup_module.comparison import get_matchup_comparison
-from tutorial_module.tutorial import tutorial_chat_response
+from tutorial_module.tutorial import tutorial_chat_response, tutorial_yamal_scouting_report
 
 import hmac, uuid, json, re, os
 import datetime as dt
@@ -1121,6 +1121,7 @@ def get_or_create_report(
     lang = normalize_lang(accept_language) or normalize_lang(get_user_language(db, user_id)) or "en"
     version = 2
     player_payload = payload.model_dump(exclude_none=True)
+    tutorial_mode = bool(player_payload.pop("tutorial_mode", False))
 
     # Ensure favorite belongs to user
     owned = db.execute(
@@ -1129,6 +1130,16 @@ def get_or_create_report(
     ).first()
     if not owned:
         raise HTTPException(status_code=404, detail="Favorite not found")
+
+    if tutorial_mode:
+        name = str(player_payload.get("name") or "").strip().lower()
+        if "lamine" in name and "yamal" in name:
+            return tutorial_yamal_scouting_report(
+                db,
+                favorite_id=favorite_id,
+                lang=lang,
+                player_identity=player_payload,
+            )
 
     # Check cache
     row = db.execute(text("""
