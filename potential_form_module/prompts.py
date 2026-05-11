@@ -1,44 +1,42 @@
 player_pool_shared_scoring_guidance = """
 Component guidance (aim for wider spread; avoid clustering):
 - AgeUpsideScore (30-100; dominant driver; strong upside through age 27, explicit ranges through 35): choose a value from this table (do NOT interpolate):
-  16: 96-100
-  17: 94-99
-  18: 92-98
-  19: 90-96
-  20: 88-94
-  21: 85-92
-  22: 85-90
-  23: 81-87
-  24: 77-84
-  25: 73-80
-  26: 68-76
-  27: 63-72
-  28: 56-65
-  29: 51-60
-  30: 47-56
-  31: 40-52
-  32: 37-48
-  33: 34-44
-  34: 32-40
-  35: 30-36
-  36+: 30-34
+  16: 99-100
+  17: 98-99
+  18: 96-98
+  19: 94-96
+  20: 92-94
+  21: 89-92
+  22: 89-90
+  23: 85-87
+  24: 81-84
+  25: 77-80
+  26: 72-76
+  27: 67-72
+  28: 60-65
+  29: 55-60
+  30: 51-56
+  31: 44-52
+  32: 41-48
+  33: 38-44
+  34: 36-40
+  35: 34-36
+  36+: 34-38
   Pick within the range based on athletic indicators and performance evidence in the provided info.
 
 - MetricsUpsideScore (0 or 30-100): if the player has no available performance metrics, set MetricsUpsideScore to exactly 0. Otherwise, score using detailed tiers based on how many role-relevant metrics are clearly strong vs weak:
-  30-34 = minimal valid evidence, very weak role-relevant profile
-  35-39 = weak profile with few meaningful positives
-  40-44 = thin or mostly neutral profile, but still valid football evidence
-  45-49 = limited positives with several weak or missing role-relevant signals
-  54-58 = some positives, but not yet a clearly convincing profile
-  59-63 = decent role-relevant evidence with more positives than negatives
-  64-68 = okay profile with clear positive signs
-  69-73 = clearly positive profile with reliable role-relevant strengths
-  74-78 = strong profile with several useful role-relevant metrics
-  79-83 = very strong profile with broad and credible metric support
-  84-88 = standout profile with several high-end role-relevant metrics
-  89-93 = excellent profile with high-end role-relevant evidence
-  94-98 = exceptional profile with elite-level metric signals
-  99-100 = rare top-end profile with dominant role-relevant evidence
+  36-40 = minimal valid evidence, very weak role-relevant profile
+  41-45 = weak profile with few meaningful positives
+  46-50 = thin or mostly neutral profile, but still valid football evidence
+  51-55 = limited positives with several weak or missing role-relevant signals
+  60-64 = some positives, but not yet a clearly convincing profile
+  65-69 = decent role-relevant evidence with more positives than negatives
+  70-74 = okay profile with clear positive signs
+  75-79 = clearly positive profile with reliable role-relevant strengths
+  80-84 = strong profile with several useful role-relevant metrics
+  85-89 = very strong profile with broad and credible metric support
+  90-94 = standout profile with several high-end role-relevant metrics
+  95-99 = excellent profile with high-end role-relevant evidence
   Never score MetricsUpsideScore below 30 when at least one valid role-relevant performance metric is available.
   Use trend/consistency cues, league_name, and team_name if available, but never mention sample size.
 """
