@@ -351,6 +351,7 @@ def fetch_player_nonzero_stats(
         "nationality": doc_meta.get("nationality_name") or doc_meta.get("nationality"),
         "gender": doc_meta.get("gender"),
         "position_name": doc_meta.get("position_name"),
+        "league_name": doc_meta.get("league_name") or doc_meta.get("league"),
         "match_count": _num(doc_meta.get("match_count")),
         "id": doc.get("id"),
     }
@@ -375,7 +376,7 @@ def fetch_player_nonzero_stats(
 
 def build_player_payload_new(meta: Dict[str, Any]) -> Dict[str, Any]:
     """
-    Build payload and overwrite team/age/height/weight (and optionally gender/nationality/match_count)
+    Build payload and overwrite team/age/height/weight (and optionally gender/nationality/league/match_count)
     from the winning DB row, if present.
     """
     meta_by = {(p["name"]).strip(): p for p in meta.get("players", []) if p.get("name")}
@@ -409,6 +410,7 @@ def build_player_payload_new(meta: Dict[str, Any]) -> Dict[str, Any]:
             gender_final     = resolved.get("gender", m.get("gender"))
             match_count_final= resolved.get("match_count", m.get("match_count"))
             pos_final = resolved.get("position_name", m.get("position_name"))
+            league_final = resolved.get("league_name", m.get("league_name"))
 
             # Prefer DB position -> roles (frontend consumes roles)
             roles_final = m.get("roles") or []
@@ -427,6 +429,8 @@ def build_player_payload_new(meta: Dict[str, Any]) -> Dict[str, Any]:
                     "nationality": nat_final,
                     "position_name": pos_final,
                     "team": team_final,
+                    "league": league_final,
+                    "league_name": league_final,
                     "match_count": match_count_final,
                     "age": age_final,
                     "roles": roles_final,

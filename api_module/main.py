@@ -9,7 +9,7 @@ load_dotenv()
 from sqlalchemy.orm import Session
 from sqlalchemy import text
 
-from chatbot_module.chatbot import answer_question
+from chatbot_module.chatbot_agentic import answer_question
 from report_module.report import generate_report_content
 # import our refactored pieces
 from api_module.utilities import (
