@@ -184,7 +184,7 @@ followup_chain = followup_prompt | CHAT_LLM | StrOutputParser()
 
 DEEPSEEK_INPUT_PRICE_PER_M = float(os.getenv("DEEPSEEK_INPUT_PRICE_PER_M", "0.14"))
 DEEPSEEK_OUTPUT_PRICE_PER_M = float(os.getenv("DEEPSEEK_OUTPUT_PRICE_PER_M", "0.28"))
-AGENTIC_FLOW_LOG = os.getenv("AGENTIC_FLOW_LOG", "1").lower() not in {"0", "false", "no", "off"}
+AGENTIC_FLOW_LOG = os.getenv("AGENTIC_FLOW_LOG", "0").lower() in {"1", "true", "yes", "on"}
 
 
 def _estimate_tokens(text: Any) -> int:
