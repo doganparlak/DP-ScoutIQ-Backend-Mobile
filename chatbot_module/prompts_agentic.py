@@ -267,6 +267,7 @@ Rules:
 - If the user says "start over", "reset", "forget previous", "new search", or "completely different", ignore carried constraints and extract only the new request.
 - Gender may only be "male", "female", or "unknown"; use null if the user does not mention gender.
 - Position may be a full role or a short role code such as GK, CB, RB, LB, CDM, CM, CAM, LW, RW, or CF.
+- Extract height and weight bounds from natural language, for example "over 185 cm", "under 180", "at least 80 kg", or "lighter than 75kg".
 - If the user explicitly asks for a known league outside the default eligible league list, the tool layer may extend league eligibility for that requested league only.
 - Keep preferred_stats short: at most 4 metrics.
 - Only use metric names from the allowed metrics list.

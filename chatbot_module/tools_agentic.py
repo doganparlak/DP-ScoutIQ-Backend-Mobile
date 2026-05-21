@@ -1141,17 +1141,70 @@ def fetch_selection_suggestion_docs_from_db(
     limit: int = SELECTOR_CANDIDATE_LIMIT,
     enforce_allowed_leagues: bool = True,
 ) -> List[Document]:
+    constraints = clean_constraints(ctx.constraints)
+    relaxation_level = int(ctx.constraint_relaxation_level or 0)
+    where_parts = [
+        "(metadata->>'position_name') IS NOT NULL",
+        "(metadata->>'league_name') IS NOT NULL",
+    ]
+    params: Dict[str, Any] = {"lim": 1200}
+    sql_filters_applied: List[str] = []
+
+    def add_text_filter(field: str, param: str, value: Any) -> None:
+        if value is None:
+            return
+        where_parts.append(f"LOWER(metadata->>'{field}') = :{param}")
+        params[param] = str(value).lower()
+        sql_filters_applied.append(param)
+
+    def add_numeric_min(field: str, param: str, value: Any) -> None:
+        numeric_value = _num(value)
+        if numeric_value is None:
+            return
+        where_parts.append(
+            f"(metadata->>'{field}') ~ '^-?[0-9]+(\\.[0-9]+)?$' "
+            f"AND (metadata->>'{field}')::numeric >= :{param}"
+        )
+        params[param] = numeric_value
+        sql_filters_applied.append(param)
+
+    def add_numeric_max(field: str, param: str, value: Any) -> None:
+        numeric_value = _num(value)
+        if numeric_value is None:
+            return
+        where_parts.append(
+            f"(metadata->>'{field}') ~ '^-?[0-9]+(\\.[0-9]+)?$' "
+            f"AND (metadata->>'{field}')::numeric <= :{param}"
+        )
+        params[param] = numeric_value
+        sql_filters_applied.append(param)
+
+    if relaxation_level < 5:
+        add_text_filter("gender", "gender", constraints.get("gender"))
+        add_text_filter("nationality_name", "nationality", constraints.get("nationality"))
+    if relaxation_level < 4:
+        add_text_filter("league_name", "league", constraints.get("league"))
+        add_text_filter("team_name", "team", constraints.get("team"))
+    if relaxation_level < 3:
+        add_numeric_min("age", "age_min", constraints.get("age_min"))
+        add_numeric_max("age", "age_max", constraints.get("age_max"))
+    if relaxation_level < 2:
+        add_numeric_min("height", "height_min", constraints.get("height_min"))
+        add_numeric_max("height", "height_max", constraints.get("height_max"))
+        add_numeric_min("weight", "weight_min", constraints.get("weight_min"))
+        add_numeric_max("weight", "weight_max", constraints.get("weight_max"))
+
+    where_sql = "\n                AND ".join(where_parts)
     db = get_db()
     try:
-        rows = db.execute(text("""
+        rows = db.execute(text(f"""
             SELECT id, metadata, content
             FROM player_data
             WHERE
-                (metadata->>'position_name') IS NOT NULL
-                AND (metadata->>'league_name') IS NOT NULL
+                {where_sql}
             ORDER BY COALESCE((metadata->>'Rating')::numeric, 0) DESC
             LIMIT :lim
-        """), {"lim": 1200}).mappings().all()
+        """), params).mappings().all()
     finally:
         db.close()
 
@@ -1216,6 +1269,7 @@ def fetch_selection_suggestion_docs_from_db(
         "pass": (
             f"db_selection_pass:{constraint_relaxation_label(ctx.constraint_relaxation_level)}"
             f":{'allowed_leagues' if enforce_allowed_leagues else 'all_leagues'}"
+            f":sql={','.join(sql_filters_applied) or 'none'}"
         ),
         "raw_count": len(rows or []),
         "accepted_count": len(docs),

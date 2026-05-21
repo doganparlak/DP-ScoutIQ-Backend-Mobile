@@ -38,6 +38,10 @@ from chatbot_module.prompts_agentic import (
     AGENTIC_SCORING_PROMPT,
     AGENTIC_SELECTOR_PROMPT,
 )
+from chatbot_module.prompts import (
+    translate_en_to_tr_system_message,
+    translate_tr_to_en_system_message,
+)
 from chatbot_module.tools import (
     collect_recent_human_constraints,
     get_seen_players_from_history,
@@ -226,6 +230,23 @@ def _trace_cost_usd(trace: Dict[str, Any]) -> float:
     )
 
 
+def _trace_translation_cost(
+    trace: Optional[Dict[str, Any]],
+    *,
+    source_text: str,
+    translated_text: str,
+    direction: str,
+) -> None:
+    if trace is None:
+        return
+    system_prompt = (
+        translate_tr_to_en_system_message
+        if direction == "to_english"
+        else translate_en_to_tr_system_message
+    )
+    _trace_llm_cost(trace, system_prompt + (source_text or ""), translated_text or "")
+
+
 def _candidate_option_log(candidates: List[Dict[str, Any]], limit: int = 24) -> List[str]:
     options: List[str] = []
     for candidate in (candidates or [])[:limit]:
@@ -287,8 +308,7 @@ def _log_trace(trace: Dict[str, Any], *, session_id: str, outcome: str) -> None:
         f"form={selected.get('form', 'n/a')} "
         f"retrieval_debug=[{reject_text}] "
         f"flow={' -> '.join(flow_parts) or 'none'} "
-        f"llm_tokens_in={trace['input_tokens']} llm_tokens_out={trace['output_tokens']} "
-        f"est_llm_cost_usd={_trace_cost_usd(trace):.6f} ",
+        f"total_search_cost_usd={_trace_cost_usd(trace):.6f} ",
         flush=True,
     )
     if constraints:
@@ -450,11 +470,19 @@ def _merge_turn_constraints(previous: Dict[str, Any], current: Dict[str, Any], q
     return clean_constraints(merged)
 
 
-def _translate_output_if_needed(text: str, lang: str) -> str:
+def _translate_output_if_needed(text: str, lang: str, trace: Optional[Dict[str, Any]] = None) -> str:
     if not is_turkish(lang):
         return text
     try:
         translated = output_tr_translate_chain.invoke({"text": text}).strip()
+        if trace is not None:
+            _trace_step(trace, "agent", "translate_to_user_language")
+            _trace_translation_cost(
+                trace,
+                source_text=text,
+                translated_text=translated or text,
+                direction="to_user_language",
+            )
         return translated or text
     except Exception:
         return text
@@ -683,7 +711,7 @@ def _answer_named_comparison(
     raw = named_comparison_chain.invoke(payload).strip()
     if trace is not None:
         _trace_llm_cost(trace, AGENTIC_NAMED_COMPARISON_PROMPT + json.dumps(payload, ensure_ascii=False), raw)
-    answer = _translate_output_if_needed(raw, lang)
+    answer = _translate_output_if_needed(raw, lang, trace)
     _persist_turn(session_id, translated_question, raw, {"players": []})
     if trace is not None:
         _trace_step(trace, "tool", "persist_memory")
@@ -829,7 +857,7 @@ def _answer_seen_or_comparison(
         raw = comparison_chain.invoke(payload).strip()
         if trace is not None:
             _trace_llm_cost(trace, AGENTIC_COMPARISON_PROMPT + json.dumps(payload, ensure_ascii=False), raw)
-        answer = _translate_output_if_needed(raw, lang)
+        answer = _translate_output_if_needed(raw, lang, trace)
         _persist_turn(session_id, translated_question, raw, {"players": []})
         if trace is not None:
             _trace_step(trace, "tool", "persist_memory")
@@ -847,7 +875,7 @@ def _answer_seen_or_comparison(
     raw = followup_chain.invoke(payload).strip()
     if trace is not None:
         _trace_llm_cost(trace, AGENTIC_FOLLOWUP_PROMPT + json.dumps(payload, ensure_ascii=False), raw)
-    answer = _translate_output_if_needed(raw, lang)
+    answer = _translate_output_if_needed(raw, lang, trace)
     _persist_turn(session_id, translated_question, raw, {"players": []})
     if trace is not None:
         _trace_step(trace, "tool", "persist_memory")
@@ -875,7 +903,12 @@ def answer_question(
     translated_raw = translate_to_english_if_needed(original_question, lang)
     if is_turkish(lang):
         _trace_step(trace, "agent", "translate_to_english")
-        _trace_llm_cost(trace, original_question, translated_raw)
+        _trace_translation_cost(
+            trace,
+            source_text=original_question,
+            translated_text=translated_raw,
+            direction="to_english",
+        )
 
     if is_greeting_or_offtopic(translated_raw):
         answer = short_offtopic_response(lang)
@@ -1156,7 +1189,7 @@ def answer_question(
         if not candidate_docs and not candidates:
             if ctx.quality_discovery_mode:
                 answer = "I could not find a player who satisfies the quality thresholds for that request."
-                answer = _translate_output_if_needed(answer, lang)
+                answer = _translate_output_if_needed(answer, lang, trace)
                 _persist_turn(session_id, ctx.translated_question, answer, {"players": []})
                 _trace_step(trace, "tool", "persist_memory")
                 _log_trace(trace, session_id=session_id, outcome="no_quality_candidates")
@@ -1217,7 +1250,7 @@ def answer_question(
         if not selected:
             if ctx.quality_discovery_mode:
                 answer = "I could not find a player who satisfies the quality thresholds for that request."
-                answer = _translate_output_if_needed(answer, lang)
+                answer = _translate_output_if_needed(answer, lang, trace)
                 _persist_turn(session_id, ctx.translated_question, answer, {"players": []})
                 _trace_step(trace, "tool", "persist_memory")
                 _log_trace(trace, session_id=session_id, outcome="no_valid_quality_candidate")
@@ -1242,7 +1275,7 @@ def answer_question(
         if not new_names and not ctx.direct_player_lookup:
             if ctx.quality_discovery_mode:
                 answer = "I could not find a different player who satisfies the quality thresholds for that request."
-                answer = _translate_output_if_needed(answer, lang)
+                answer = _translate_output_if_needed(answer, lang, trace)
                 _persist_turn(session_id, ctx.translated_question, answer, {"players": []})
                 _trace_step(trace, "tool", "persist_memory")
                 _log_trace(trace, session_id=session_id, outcome="no_new_quality_candidate")
@@ -1268,10 +1301,7 @@ def answer_question(
         _trace_step(trace, "agent", "final_narrative")
         memory_out = narrative_chain.invoke(narrative_payload).strip()
         _trace_llm_cost(trace, AGENTIC_NARRATIVE_PROMPT + json.dumps(narrative_payload, ensure_ascii=False), memory_out)
-        answer = _translate_output_if_needed(memory_out, lang)
-        if is_turkish(lang):
-            _trace_step(trace, "agent", "translate_to_user_language")
-            _trace_llm_cost(trace, memory_out, answer)
+        answer = _translate_output_if_needed(memory_out, lang, trace)
         _persist_turn(session_id, ctx.translated_question, memory_out, payload)
         _trace_step(trace, "tool", "persist_memory")
         _log_trace(trace, session_id=session_id, outcome="agentic_success")
