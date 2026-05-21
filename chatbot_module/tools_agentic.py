@@ -1,5 +1,6 @@
 import json
 import os
+import random
 import re
 from collections import Counter
 from dataclasses import dataclass, field
@@ -10,7 +11,7 @@ from langchain_core.documents import Document
 from langchain_core.retrievers import BaseRetriever
 from sqlalchemy import text
 
-from api_module.utilities import get_db
+from api_module.utilities import ROLE_SHORT_TO_LONG, get_db
 from chatbot_module.tools import (
     collect_recent_human_constraints,
     extract_target_team_from_question,
@@ -19,12 +20,9 @@ from chatbot_module.tools import (
     has_required_discovery_fields,
     is_direct_player_lookup_request,
     is_generic_alternative_request,
-    is_premium_allowed_club,
     is_premium_request,
     is_same_club,
-    is_transfer_fallback_club,
     is_turkish,
-    is_weak_generic_suggestion_request,
     player_matches_requested_position,
     request_allows_non_senior_squads,
     request_allows_turkish_entities,
@@ -40,6 +38,7 @@ from report_module.utilities import norm_name
 AGENTIC_LOOKUP_DEBUG = os.getenv("AGENTIC_LOOKUP_DEBUG", "1").lower() not in {"0", "false", "no", "off"}
 AGENTIC_LOOKUP_VERBOSE = os.getenv("AGENTIC_LOOKUP_VERBOSE", "0").lower() in {"1", "true", "yes", "on"}
 AGENTIC_QUALITY_DEBUG = os.getenv("AGENTIC_QUALITY_DEBUG", "1").lower() not in {"0", "false", "no", "off"}
+SELECTOR_CANDIDATE_LIMIT = 24
 
 
 def _lookup_debug(event: str, payload: Dict[str, Any]) -> None:
@@ -157,6 +156,64 @@ ROLE_METRICS = {
     },
 }
 
+ALLOWED_SELECTION_LEAGUES = [
+    "Championship",
+    "Eerste Divisie",
+    "La Liga",
+    "Stars League",
+    "Primera Division",
+    "Admiral Bundesliga",
+    "Bundesliga",
+    "2. Bundesliga",
+    "Premier League",
+    "1. Lig",
+    "La Liga 2",
+    "Liga Profesional de Fútbol",
+    "Serie B",
+    "First Division",
+    "Major League Soccer",
+    "Chance Liga",
+    "Veikkausliiga",
+    "FNL",
+    "Ekstraklasa",
+    "Eliteserien",
+    "Premiership",
+    "First League",
+    "Eredivisie",
+    "Allsvenskan",
+    "Enterprise National League",
+    "Liga Portugal",
+    "Challenger Pro League",
+    "Superliga",
+    "Botola Pro",
+    "Super League",
+    "Liga MX",
+    "League One",
+    "Ligue 2",
+    "League Two",
+    "1. HNL",
+    "Serie A",
+    "Super Lig",
+    "Ligue 1",
+]
+ALLOWED_SELECTION_LEAGUE_KEYS = {norm_name(league) for league in ALLOWED_SELECTION_LEAGUES}
+CANONICAL_LEAGUES = {
+    "Championship", "Eerste Divisie", "UAE Pro League", "La Liga", "V-League", "Stars League",
+    "Primera Division", "Admiral Bundesliga", "Bundesliga", "2. Bundesliga", "Premier League",
+    "1. Lig", "A-League Women", "La Liga 2", "Liga Profesional de Fútbol", "Indian Super League",
+    "Serie B", "First Division", "Major League Soccer", "Chance Liga", "Veikkausliiga",
+    "Women's Super League", "FNL", "Ekstraklasa", "Eliteserien", "Premiership", "First League",
+    "Ligat ha'Al", "Eredivisie", "Allsvenskan", "Brasileiro Women", "Enterprise National League",
+    "Liga Portugal", "Challenger Pro League", "Persian Gulf Pro League", "Superliga", "Botola Pro",
+    "Super League", "Liga MX", "League One", "A-League Men", "K League 1", "Pro League",
+    "Ligue 2", "League Two", "1. HNL", "Serie A", "Super Lig", "Ligue 1",
+}
+LEAGUE_BY_KEY = {norm_name(league): league for league in CANONICAL_LEAGUES}
+LEAGUE_COMPACT_BY_KEY = {
+    re.sub(r"[^a-z0-9]+", "", norm_name(league)): league
+    for league in CANONICAL_LEAGUES
+}
+
 
 @dataclass
 class AgenticContext:
@@ -179,6 +236,10 @@ class AgenticContext:
     allow_non_senior: bool = False
     premium_only: bool = False
     quality_discovery_mode: bool = False
+    allow_all_selection_leagues: bool = False
+    retrieval_debug: List[Dict[str, Any]] = field(default_factory=list)
+    constraints: Dict[str, Any] = field(default_factory=dict)
+    constraint_relaxation_level: int = 0
 
 
 class StaticDocsRetriever(BaseRetriever):
@@ -250,18 +311,381 @@ def is_narrow_filtered_suggestion_request(question: Optional[str], strategy: Opt
     return any(re.search(pattern, normalized) for pattern in narrow_patterns)
 
 
+def is_constraint_modification_request(question: Optional[str]) -> bool:
+    normalized = re.sub(r"\s+", " ", norm_name(question or "")).strip()
+    if not normalized:
+        return False
+    return bool(re.search(
+        r"\b(also|with|having|add|include|instead of|rather than|without|remove|no longer|not anymore|any nationality|any league|any team|any age|any height|any weight)\b",
+        normalized,
+    ))
+
+
 def _stats_count_from_metadata(metadata: Dict[str, Any]) -> int:
     return len(extract_allowed_stats_from_metadata(metadata or {}))
 
 
+MIN_SELECTION_STATS = 3
+
+
+def _league_from_metadata(metadata: Dict[str, Any]) -> str:
+    return str((metadata or {}).get("league_name") or (metadata or {}).get("league") or "").strip()
+
+
+def _is_allowed_selection_league(league_name: Optional[str]) -> bool:
+    return norm_name(league_name or "") in ALLOWED_SELECTION_LEAGUE_KEYS
+
+
+def _is_requested_constraint_league(league_name: Optional[str], ctx: Optional[AgenticContext]) -> bool:
+    if not ctx:
+        return False
+    requested = canonical_league((ctx.constraints or {}).get("league"))
+    return bool(requested and norm_name(league_name or "") == norm_name(requested))
+
+
+def _is_selectable_league(league_name: Optional[str], ctx: Optional[AgenticContext]) -> bool:
+    return _is_allowed_selection_league(league_name) or _is_requested_constraint_league(league_name, ctx)
+
+
+def canonical_league(value: Optional[Any]) -> Optional[str]:
+    key = norm_name(str(value or ""))
+    compact = re.sub(r"[^a-z0-9]+", "", key)
+    return LEAGUE_BY_KEY.get(key) or LEAGUE_COMPACT_BY_KEY.get(compact)
+
+
+def infer_league_from_text(*texts: Optional[str]) -> Optional[str]:
+    raw = " ".join(text or "" for text in texts)
+    normalized = norm_name(raw)
+    compact_text = re.sub(r"[^a-z0-9]+", "", normalized)
+    if not normalized:
+        return None
+    for key, league in sorted(LEAGUE_BY_KEY.items(), key=lambda item: len(item[0]), reverse=True):
+        if re.search(rf"\b{re.escape(key)}\b", normalized):
+            return league
+    for compact, league in sorted(LEAGUE_COMPACT_BY_KEY.items(), key=lambda item: len(item[0]), reverse=True):
+        if compact and compact in compact_text:
+            return league
+    return None
+
+
+ROLE_CODE_BY_KEY = {norm_name(code): long_name for code, long_name in ROLE_SHORT_TO_LONG.items()}
+ROLE_LONG_BY_KEY = {norm_name(long_name): long_name for long_name in ROLE_SHORT_TO_LONG.values()}
+
+
+def canonical_position(value: Optional[Any]) -> Optional[str]:
+    text = str(value or "").strip()
+    if not text:
+        return None
+    key = norm_name(text)
+    return ROLE_CODE_BY_KEY.get(key) or ROLE_LONG_BY_KEY.get(key) or text
+
+
+def infer_position_from_text(*texts: Optional[str]) -> Optional[str]:
+    raw = " ".join(text or "" for text in texts)
+    normalized = norm_name(raw)
+    if not normalized:
+        return None
+    for code, long_name in sorted(ROLE_SHORT_TO_LONG.items(), key=lambda item: len(item[0]), reverse=True):
+        if re.search(rf"\b{re.escape(code.lower())}\b", raw.lower()):
+            return long_name
+    for key, long_name in sorted(ROLE_LONG_BY_KEY.items(), key=lambda item: len(item[0]), reverse=True):
+        if re.search(rf"\b{re.escape(key)}\b", normalized):
+            return long_name
+    return None
+
+
+CANONICAL_NATIONALITIES = {
+    "Afghanistan", "Albania", "Algeria", "Andorra", "Angola", "Antigua and Barbuda",
+    "Argentina", "Armenia", "Aruba", "Australia", "Austria", "Azerbaijan", "Bahrain",
+    "Bangladesh", "Barbados", "Belarus", "Belgium", "Belize", "Benin", "Bermuda",
+    "Bhutan", "Bolivia", "Bosnia and Herzegovina", "Botswana", "Brazil", "British Virgin Islands",
+    "Brunei", "Bulgaria", "Burkina Faso", "Burundi", "Cambodia", "Cameroon", "Canada",
+    "Cape Verde", "Caribbean Netherlands", "Central African Republic", "Chad", "Chile", "China",
+    "Colombia", "Comoros", "Cook Islands", "Costa Rica", "Croatia", "Cuba", "Curaçao",
+    "Cyprus", "Czech Republic", "Denmark", "Dominican Republic", "DR Congo", "Ecuador",
+    "Egypt", "El Salvador", "England", "Equatorial Guinea", "Eritrea", "Estonia", "Ethiopia",
+    "Faroe Islands", "Fiji", "Finland", "France", "French Guiana", "Gabon", "Gambia",
+    "Georgia", "Germany", "Ghana", "Gibraltar", "Greece", "Grenada", "Guadeloupe", "Guatemala",
+    "Guinea", "Guinea-Bissau", "Guyana", "Haiti", "Honduras", "Hong Kong", "Hungary",
+    "Iceland", "India", "Indonesia", "Iran", "Iraq", "Israel", "Italy", "Ivory Coast",
+    "Jamaica", "Japan", "Jordan", "Kazakhstan", "Kenya", "Korea DPR", "Kosovo", "Kuwait",
+    "Kyrgyz Republic", "Kyrgyzstan", "Laos", "Latvia", "Lebanon", "Lesotho", "Liberia",
+    "Libya", "Liechtenstein", "Lithuania", "Luxembourg", "Macau", "Macedonia", "Madagascar",
+    "Malawi", "Malaysia", "Maldives", "Mali", "Malta", "Martinique", "Mauritania", "Mauritius",
+    "Mexico", "Moldova", "Mongolia", "Montenegro", "Montserrat", "Morocco", "Mozambique",
+    "Namibia", "Nepal", "Netherlands", "New Caledonia", "New Zealand", "Nicaragua", "Niger",
+    "Nigeria", "North & Central America", "Northern Ireland", "Norway", "Oman", "Pakistan",
+    "Palestine", "Panama", "Papua New Guinea", "Paraguay", "Peru", "Philippines", "Poland",
+    "Portugal", "Puerto Rico", "Qatar", "Republic of Ireland", "Republic of the Congo",
+    "Romania", "Russia", "Rwanda", "Saint Kitts and Nevis", "Saint Lucia",
+    "Saint Vincent and the Grenadines", "San Marino", "São Tomé and Príncipe", "Saudi Arabia",
+    "Scotland", "Senegal", "Serbia", "Sierra Leone", "Singapore", "Sint Maarten", "Slovakia",
+    "Slovenia", "Solomon Islands", "Somalia", "South Africa", "South America", "South Korea",
+    "South Sudan", "Spain", "Sri Lanka", "Sudan", "Suriname", "Sweden", "Switzerland",
+    "Syria", "Taiwan", "Tajikistan", "Tanzania", "Thailand", "Togo", "Trinidad and Tobago",
+    "Tunisia", "Turkmenistan", "Türkiye", "Uganda", "Ukraine", "United Arab Emirates",
+    "United States", "Uruguay", "Uzbekistan", "Vanuatu", "Venezuela", "Vietnam", "Wales",
+    "Yemen", "Zambia", "Zimbabwe",
+}
+NATIONALITY_BY_KEY = {norm_name(name): name for name in CANONICAL_NATIONALITIES}
+NATIONALITY_ALIASES = {
+    "american": "United States", "usa": "United States", "us": "United States",
+    "spanish": "Spain", "french": "France", "german": "Germany", "italian": "Italy",
+    "english": "England", "british": "England", "welsh": "Wales", "scottish": "Scotland",
+    "irish": "Republic of Ireland", "portuguese": "Portugal", "dutch": "Netherlands",
+    "argentinian": "Argentina", "argentine": "Argentina", "brazilian": "Brazil",
+    "uruguayan": "Uruguay", "turkish": "Türkiye", "turk": "Türkiye",
+    "moroccan": "Morocco", "nigerian": "Nigeria", "croatian": "Croatia",
+    "polish": "Poland", "swedish": "Sweden", "norwegian": "Norway", "danish": "Denmark",
+    "belgian": "Belgium", "austrian": "Austria", "swiss": "Switzerland",
+    "mexican": "Mexico", "colombian": "Colombia", "chilean": "Chile", "paraguayan": "Paraguay",
+    "peruvian": "Peru", "venezuelan": "Venezuela", "japanese": "Japan", "korean": "South Korea",
+    "senegalese": "Senegal", "ghanaian": "Ghana", "cameroonian": "Cameroon",
+    "egyptian": "Egypt", "algerian": "Algeria", "tunisian": "Tunisia",
+}
+NATIONALITY_ALIAS_KEYS = {norm_name(key): value for key, value in NATIONALITY_ALIASES.items()}
+
+
+def normalize_constraint_value(value: Optional[Any]) -> str:
+    key = norm_name(str(value or ""))
+    canonical = NATIONALITY_BY_KEY.get(key) or NATIONALITY_ALIAS_KEYS.get(key)
+    return norm_name(canonical or key)
+
+
+def canonical_nationality(value: Optional[Any]) -> Optional[str]:
+    key = norm_name(str(value or ""))
+    if not key:
+        return None
+    return NATIONALITY_BY_KEY.get(key) or NATIONALITY_ALIAS_KEYS.get(key)
+
+
+def infer_nationality_from_text(*texts: Optional[str]) -> Optional[str]:
+    normalized = norm_name(" ".join(text or "" for text in texts))
+    if not normalized:
+        return None
+    padded = f" {normalized} "
+    for alias_key, canonical in sorted(NATIONALITY_ALIAS_KEYS.items(), key=lambda item: len(item[0]), reverse=True):
+        if re.search(rf"\b{re.escape(alias_key)}\b", normalized):
+            return canonical
+    for nat_key, canonical in sorted(NATIONALITY_BY_KEY.items(), key=lambda item: len(item[0]), reverse=True):
+        if f" {nat_key} " in padded:
+            return canonical
+    return None
+
+
+STAT_PREFERENCE_PATTERNS: List[Tuple[str, List[str]]] = [
+    (r"\b(pass|passing|build.?up|distribution|playmaker|tempo)\b", ["Passes", "Accurate Passes", "Key Passes", "Passes In Final Third"]),
+    (r"\b(creativ|chance|vision|final ball)\b", ["Chances Created", "Big Chances Created", "Key Passes", "Assists"]),
+    (r"\b(shoot|shot|finishing|finish|scor|goal)\b", ["Goals", "Shots On Target", "Shots Total", "Big Chances Created"]),
+    (r"\b(dribbl|carry|take.?on|1v1)\b", ["Successful Dribbles", "Dribble Attempts", "Dispossessed"]),
+    (r"\b(cross|crossing|wide delivery)\b", ["Accurate Crosses", "Total Crosses", "Successful Crosses (%)"]),
+    (r"\b(defend|tackl|ball.?win|press|intercept)\b", ["Tackles", "Tackles Won", "Interceptions", "Ball Recovery"]),
+    (r"\b(aerial|header|duel|physical)\b", ["Aerials Won", "Aerials Won (%)", "Duels Won", "Total Duels"]),
+    (r"\b(goal.?keep|keeper|save|shot.?stop|claim)\b", ["Saves", "Saves Insidebox", "Good High Claim", "Penalties Saved"]),
+]
+
+
+def infer_preferred_stats_from_text(*texts: Optional[str], limit: int = 4) -> List[str]:
+    normalized = norm_name(" ".join(text or "" for text in texts))
+    if not normalized:
+        return []
+    stats: List[str] = []
+    for pattern, metrics in STAT_PREFERENCE_PATTERNS:
+        if re.search(pattern, normalized):
+            for metric in metrics:
+                if metric in ALLOWED_METRICS and metric not in stats:
+                    stats.append(metric)
+                if len(stats) >= limit:
+                    return stats
+    return stats
+
+
+def clean_constraints(raw: Optional[Dict[str, Any]]) -> Dict[str, Any]:
+    if not isinstance(raw, dict):
+        return {}
+    cleaned: Dict[str, Any] = {}
+    for key in [
+        "gender", "position", "nationality", "league", "team",
+        "age_min", "age_max", "height_min", "height_max", "weight_min", "weight_max",
+    ]:
+        value = raw.get(key)
+        if isinstance(value, str) and value.strip() in {"", "null", "None", "none"}:
+            value = None
+        if key == "gender":
+            gender_key = norm_name(str(value or ""))
+            value = gender_key if gender_key in {"male", "female", "unknown"} else "male"
+        if key == "position" and value:
+            value = canonical_position(value) or value
+        if key == "nationality" and value:
+            value = canonical_nationality(value) or value
+        if key == "league" and value:
+            value = canonical_league(value)
+        cleaned[key] = value
+
+    preferred_stats = []
+    for metric in raw.get("preferred_stats") or []:
+        if metric in ALLOWED_METRICS and metric not in preferred_stats:
+            preferred_stats.append(metric)
+        if len(preferred_stats) >= 4:
+            break
+    cleaned["preferred_stats"] = preferred_stats
+
+    requirements = []
+    for item in raw.get("stat_requirements") or []:
+        if not isinstance(item, dict):
+            continue
+        metric = item.get("metric")
+        op = item.get("operator")
+        value = _num(item.get("value"))
+        if metric not in ALLOWED_METRICS or op not in {">", ">=", "<", "<=", "="} or value is None:
+            continue
+        requirements.append({"metric": metric, "operator": op, "value": value})
+        if len(requirements) >= 3:
+            break
+    cleaned["stat_requirements"] = requirements
+    cleaned["notes"] = str(raw.get("notes") or "").strip()[:160]
+    return cleaned
+
+
+def _constraint_text_match(candidate_value: Optional[Any], requested_value: Optional[Any], *, nationality: bool = False) -> bool:
+    requested = normalize_constraint_value(requested_value) if nationality else norm_name(str(requested_value or ""))
+    candidate = normalize_constraint_value(candidate_value) if nationality else norm_name(str(candidate_value or ""))
+    if not requested:
+        return True
+    if not candidate:
+        return False
+    return requested == candidate or requested in candidate or candidate in requested
+
+
+def _constraint_exact_match(candidate_value: Optional[Any], requested_value: Optional[Any]) -> bool:
+    requested = norm_name(str(requested_value or ""))
+    candidate = norm_name(str(candidate_value or ""))
+    return bool(requested and candidate and requested == candidate)
+
+
+def _passes_numeric_bound(value: Optional[float], min_value: Optional[Any], max_value: Optional[Any]) -> bool:
+    numeric = _num(value)
+    min_num = _num(min_value)
+    max_num = _num(max_value)
+    if numeric is None and (min_num is not None or max_num is not None):
+        return False
+    if min_num is not None and numeric < min_num:
+        return False
+    if max_num is not None and numeric > max_num:
+        return False
+    return True
+
+
+def _passes_stat_requirement(candidate_stats: Dict[str, float], requirement: Dict[str, Any]) -> bool:
+    value = candidate_stats.get(requirement.get("metric"))
+    target = _num(requirement.get("value"))
+    if value is None or target is None:
+        return False
+    op = requirement.get("operator")
+    if op == ">":
+        return value > target
+    if op == ">=":
+        return value >= target
+    if op == "<":
+        return value < target
+    if op == "<=":
+        return value <= target
+    if op == "=":
+        return abs(value - target) <= 0.05
+    return False
+
+
+def candidate_constraint_rejection(candidate: Dict[str, Any], ctx: Optional[AgenticContext]) -> Optional[str]:
+    if not ctx or ctx.direct_player_lookup:
+        return None
+    constraints = clean_constraints(ctx.constraints)
+    if not constraints:
+        return None
+    level = int(getattr(ctx, "constraint_relaxation_level", 0) or 0)
+
+    if level < 5:
+        if constraints.get("gender") and not _constraint_exact_match(candidate.get("gender"), constraints.get("gender")):
+            return "constraint gender"
+        if constraints.get("nationality") and not _constraint_text_match(
+            candidate.get("nationality"),
+            constraints.get("nationality"),
+            nationality=True,
+        ):
+            return "constraint nationality"
+
+    if constraints.get("position"):
+        position_ok, _, _ = player_matches_requested_position(
+            constraints.get("position"),
+            candidate.get("position_name"),
+            [candidate.get("position_name")] if candidate.get("position_name") else [],
+        )
+        if not position_ok:
+            return "constraint position"
+
+    if level < 4:
+        if constraints.get("league") and not _constraint_text_match(candidate.get("league_name"), constraints.get("league")):
+            return "constraint league"
+        if constraints.get("team") and not _constraint_text_match(candidate.get("team"), constraints.get("team")):
+            return "constraint team"
+
+    if level < 3 and not _passes_numeric_bound(candidate.get("age"), constraints.get("age_min"), constraints.get("age_max")):
+        return "constraint age"
+
+    if level < 2:
+        if not _passes_numeric_bound(candidate.get("height"), constraints.get("height_min"), constraints.get("height_max")):
+            return "constraint height"
+        if not _passes_numeric_bound(candidate.get("weight"), constraints.get("weight_min"), constraints.get("weight_max")):
+            return "constraint weight"
+
+    if level < 1:
+        candidate_stats = {
+            stat.get("metric"): _num(stat.get("value"))
+            for stat in candidate.get("stats") or []
+            if stat.get("metric") and _num(stat.get("value")) is not None
+        }
+        for requirement in constraints.get("stat_requirements") or []:
+            if not _passes_stat_requirement(candidate_stats, requirement):
+                return "constraint stat requirement"
+        preferred_stats = constraints.get("preferred_stats") or []
+        if preferred_stats and not any(metric in candidate_stats for metric in preferred_stats):
+            return "constraint preferred stats"
+
+    return None
+
+
+def metadata_constraint_rejection(metadata: Dict[str, Any], ctx: Optional[AgenticContext]) -> Optional[str]:
+    md = metadata or {}
+    age = _num(md.get("age"))
+    return candidate_constraint_rejection({
+        "gender": md.get("gender"),
+        "height": _num(md.get("height")),
+        "weight": _num(md.get("weight")),
+        "age": int(round(age)) if age is not None else None,
+        "nationality": md.get("nationality_name") or md.get("nationality") or md.get("country"),
+        "team": md.get("team_name") or md.get("team") or md.get("club"),
+        "league_name": _league_from_metadata(md),
+        "position_name": md.get("position_name") or md.get("position"),
+        "stats": extract_allowed_stats_from_metadata(md),
+    }, ctx)
+
+
+def constraint_relaxation_label(level: int) -> str:
+    labels = {
+        0: "strict",
+        1: "relaxed_stats",
+        2: "relaxed_physical",
+        3: "relaxed_age",
+        4: "relaxed_league_team",
+        5: "relaxed_nationality_gender",
+    }
+    return labels.get(int(level or 0), "relaxed_all")
+
+
 def _quality_thresholds(ctx: Optional[AgenticContext]) -> Dict[str, int]:
-    strong_target = bool(ctx and ctx.initial_strong_club_default)
     return {
         "min_age": 20,
-        "max_age": 30 if strong_target else 32,
+        "max_age": 30,
         "min_match_count": 15,
-        "min_potential": 70 if strong_target else 65,
-        "min_form": 70 if strong_target else 65,
     }
 
 
@@ -273,7 +697,7 @@ def _passes_quality_discovery_metadata(metadata: Dict[str, Any], ctx: Optional[A
         return False
     if match_count is None or match_count < thresholds["min_match_count"]:
         return False
-    return _stats_count_from_metadata(metadata or {}) > 0
+    return _stats_count_from_metadata(metadata or {}) >= MIN_SELECTION_STATS
 
 
 def _is_transfer_fallback_club_strict(team_name: Optional[str]) -> bool:
@@ -283,34 +707,6 @@ def _is_transfer_fallback_club_strict(team_name: Optional[str]) -> bool:
     return any(team_norm == norm_name(club_name) for club_name in TRANSFER_FALLBACK_CLUBS)
 
 
-STRONG_TARGET_TRANSFER_TEAMS = {
-    norm_name(name)
-    for name in [
-        "Real Madrid", "Manchester City", "Arsenal", "Paris Saint-Germain", "Paris Saint Germain",
-        "PSG", "Barcelona", "FC Barcelona", "Liverpool", "Bayern Munich", "FC Bayern Munich",
-        "Chelsea", "Manchester United", "Tottenham Hotspur", "Tottenham", "Spurs",
-        "Newcastle United", "Newcastle", "Aston Villa", "Inter Milan", "Inter",
-        "Internazionale", "AC Milan", "Milan", "Juventus", "Juve", "Juventus FC",
-        "Atletico Madrid", "Atletico de Madrid", "Borussia Dortmund", "Dortmund", "BVB",
-        "Bayer Leverkusen", "Leverkusen", "RB Leipzig", "Napoli", "Benfica", "SL Benfica",
-        "Sporting CP", "Sporting", "Porto", "FC Porto", "Ajax", "AFC Ajax",
-        "PSV Eindhoven", "PSV", "Feyenoord", "West Ham United", "West Ham",
-        "Brighton & Hove Albion", "Brighton", "Everton", "Roma", "AS Roma", "Lazio",
-        "Atalanta", "Marseille", "Olympique Marseille", "Olympique de Marseille",
-        "Monaco", "AS Monaco", "Lille", "Lille OSC", "Lyon", "Olympique Lyonnais",
-        "Sevilla", "Sevilla FC", "Real Sociedad", "Villarreal", "Villarreal CF",
-        "Athletic Club", "Athletic Bilbao", "Real Betis", "Galatasaray", "Celtic",
-        "Rangers", "Fenerbahce", "Fenerbahçe", "Besiktas", "Beşiktaş", "Club Brugge",
-        "Trabzonspor",
-    ]
-}
-
-
-def _is_strong_target_transfer_team(team_name: Optional[str]) -> bool:
-    team_norm = norm_name(team_name or "")
-    return bool(team_norm and team_norm in STRONG_TARGET_TRANSFER_TEAMS)
-
-
 def _doc_identity_key(doc: Document) -> str:
     md = doc.metadata or {}
     name = md.get("player_name") or md.get("name") or ""
@@ -318,7 +714,7 @@ def _doc_identity_key(doc: Document) -> str:
     return f"{norm_name(str(name))}|{norm_name(str(team))}"
 
 
-def _merge_docs(existing: List[Document], new_docs: List[Document], *, limit: int = 24) -> List[Document]:
+def _merge_docs(existing: List[Document], new_docs: List[Document], *, limit: int = SELECTOR_CANDIDATE_LIMIT) -> List[Document]:
     merged: List[Document] = []
     seen = set()
     for doc in [*(existing or []), *(new_docs or [])]:
@@ -330,6 +726,39 @@ def _merge_docs(existing: List[Document], new_docs: List[Document], *, limit: in
         if len(merged) >= limit:
             break
     return merged
+
+
+def _diverse_doc_cap(docs: List[Document], *, limit: int = SELECTOR_CANDIDATE_LIMIT) -> List[Document]:
+    selected: List[Document] = []
+    selected_teams = set()
+    selected_leagues = set()
+    remaining: List[Document] = []
+
+    for doc in docs or []:
+        md = doc.metadata or {}
+        team_key = norm_name(str(md.get("team_name") or md.get("team") or md.get("club") or ""))
+        league_key = norm_name(_league_from_metadata(md))
+        if team_key and team_key in selected_teams:
+            continue
+        if league_key and league_key not in selected_leagues:
+            selected.append(doc)
+            selected_teams.add(team_key)
+            selected_leagues.add(league_key)
+            if len(selected) >= limit:
+                return selected
+        else:
+            remaining.append(doc)
+
+    for doc in remaining:
+        md = doc.metadata or {}
+        team_key = norm_name(str(md.get("team_name") or md.get("team") or md.get("club") or ""))
+        if team_key and team_key in selected_teams:
+            continue
+        selected.append(doc)
+        selected_teams.add(team_key)
+        if len(selected) >= limit:
+            break
+    return selected
 
 
 def _needs_more_quality_docs(docs: List[Document], ctx: AgenticContext, *, minimum: int = 8) -> bool:
@@ -349,11 +778,7 @@ def _transfer_target_query(ctx: AgenticContext, base_query: Optional[str] = None
         f"{stripped}\n"
         f"Find a realistic transfer target for {ctx.target_team}. "
         f"Do not retrieve players currently at {ctx.target_team} or any same-club variant. "
-        + (
-            "Prefer strong senior first-team players from strong clubs."
-            if ctx.initial_strong_club_default
-            else "Prefer players whose current level is realistic for this target club, not top-tier names beyond the club's level."
-        )
+        "Prefer senior first-team players with reliable recent performance evidence."
     )
 
 
@@ -366,6 +791,7 @@ def build_agentic_context(
     seen_players: set[str],
     strategy: Optional[str],
     planner_data: Optional[Dict[str, Any]] = None,
+    constraints: Optional[Dict[str, Any]] = None,
 ) -> AgenticContext:
     translated = rewrite_position_reference_phrases(translated_question)
     planner_data = planner_data or {}
@@ -423,31 +849,24 @@ def build_agentic_context(
         "seen_player_followup" if mentions_seen else
         "new_recommendation"
     )
+    if (
+        intent == "seen_player_followup"
+        and not mentions_seen
+        and is_constraint_modification_request(translated)
+    ):
+        intent = "alternative_recommendation"
     if len(comparison_players) >= 2:
         intent = "comparison"
     if intent != "direct_player_lookup":
         direct_lookup = False
 
-    initial_high_quality_default = (
-        not seen_players
-        and not mentions_seen
-        and not generic_alternative
-        and is_weak_generic_suggestion_request(translated)
-    )
-    initial_fallback_club_target_default = (
-        not seen_players
-        and not mentions_seen
-        and not generic_alternative
-        and bool(target_team)
-        and _is_strong_target_transfer_team(target_team)
-    )
-
+    premium_only = is_premium_request(translated)
     discovery_mode = not mentions_seen and not direct_lookup
     quality_discovery_mode = (
         discovery_mode
         and intent in {"new_recommendation", "alternative_recommendation"}
         and not is_narrow_filtered_suggestion_request(translated, strategy)
-        and not is_premium_request(translated)
+        and premium_only
     )
     return AgenticContext(
         original_question=original_question,
@@ -463,12 +882,13 @@ def build_agentic_context(
         comparison_players=comparison_players,
         generic_alternative=generic_alternative,
         recent_constraints=recent_constraints,
-        initial_strong_club_default=initial_high_quality_default or initial_fallback_club_target_default,
+        initial_strong_club_default=False,
         discovery_mode=discovery_mode,
         allow_turkish=request_allows_turkish_entities(translated),
         allow_non_senior=request_allows_non_senior_squads(translated),
-        premium_only=is_premium_request(translated),
+        premium_only=premium_only,
         quality_discovery_mode=quality_discovery_mode,
+        constraints=clean_constraints(constraints),
     )
 
 
@@ -495,6 +915,7 @@ def filter_candidate_docs(
         team_name = str(md.get("team_name") or md.get("team") or md.get("club") or "").strip()
         nationality = str(md.get("nationality_name") or md.get("nationality") or md.get("country") or "").strip()
         position_name = str(md.get("position_name") or md.get("position") or "").strip()
+        league_name = _league_from_metadata(md)
         if player_name.lower() in seen_names_norm and ctx.intent in {"new_recommendation", "alternative_recommendation"}:
             rejection_counts["already_seen"] += 1
             continue
@@ -505,10 +926,13 @@ def filter_candidate_docs(
             target_team=ctx.target_team,
             allow_turkish=ctx.allow_turkish,
             allow_non_senior=ctx.allow_non_senior,
-            premium_only=ctx.premium_only,
+            premium_only=False,
         )
         if rejection_reason:
             rejection_counts[rejection_reason] += 1
+            continue
+        if not ctx.direct_player_lookup and not _is_selectable_league(league_name, ctx):
+            rejection_counts["league_restriction"] += 1
             continue
         if restrict_to_fallback_clubs and not _is_transfer_fallback_club_strict(team_name):
             rejection_counts["fallback_club_restriction"] += 1
@@ -518,6 +942,13 @@ def filter_candidate_docs(
             continue
         if ctx.quality_discovery_mode and not _passes_quality_discovery_metadata(md, ctx):
             rejection_counts["quality_metadata_floor"] += 1
+            continue
+        if _stats_count_from_metadata(md) < MIN_SELECTION_STATS:
+            rejection_counts["stats_floor"] += 1
+            continue
+        constraint_rejection = metadata_constraint_rejection(md, ctx)
+        if constraint_rejection:
+            rejection_counts[constraint_rejection] += 1
             continue
         position_ok, _, _ = player_matches_requested_position(query, position_name, [position_name] if position_name else [])
         if not position_ok:
@@ -539,7 +970,16 @@ def filter_candidate_docs(
             ),
             reverse=True,
         )
+    else:
+        random.SystemRandom().shuffle(filtered_docs)
     docs_out = filtered_docs[:limit]
+    ctx.retrieval_debug.append({
+        "pass": pass_label,
+        "raw_count": len(raw_docs_list),
+        "accepted_count": len(filtered_docs),
+        "returned_count": len(docs_out),
+        "top_rejections": rejection_counts.most_common(5),
+    })
     if ctx.quality_discovery_mode:
         _quality_debug("retriever_pass", {
             "pass": pass_label,
@@ -566,7 +1006,7 @@ def filter_candidate_docs(
     return docs_out
 
 
-def fetch_quality_suggestion_docs_from_db(ctx: AgenticContext, *, limit: int = 24) -> List[Document]:
+def fetch_quality_suggestion_docs_from_db(ctx: AgenticContext, *, limit: int = SELECTOR_CANDIDATE_LIMIT) -> List[Document]:
     thresholds = _quality_thresholds(ctx)
     db = get_db()
     try:
@@ -601,6 +1041,7 @@ def fetch_quality_suggestion_docs_from_db(ctx: AgenticContext, *, limit: int = 2
         team_name = str(md.get("team_name") or md.get("team") or md.get("club") or "").strip()
         nationality = str(md.get("nationality_name") or md.get("nationality") or md.get("country") or "").strip()
         position_name = str(md.get("position_name") or md.get("position") or "").strip()
+        league_name = _league_from_metadata(md)
         if not player_name or player_name.lower() in seen_names_norm:
             rejection_counts["missing_name_or_seen"] += 1
             continue
@@ -611,10 +1052,13 @@ def fetch_quality_suggestion_docs_from_db(ctx: AgenticContext, *, limit: int = 2
             target_team=ctx.target_team,
             allow_turkish=ctx.allow_turkish,
             allow_non_senior=ctx.allow_non_senior,
-            premium_only=ctx.premium_only,
+            premium_only=False,
         )
         if rejection_reason:
             rejection_counts[rejection_reason] += 1
+            continue
+        if not _is_selectable_league(league_name, ctx):
+            rejection_counts["league_restriction"] += 1
             continue
         if ctx.initial_strong_club_default and not _is_transfer_fallback_club_strict(team_name):
             rejection_counts["fallback_club_restriction"] += 1
@@ -624,6 +1068,13 @@ def fetch_quality_suggestion_docs_from_db(ctx: AgenticContext, *, limit: int = 2
             continue
         if not _passes_quality_discovery_metadata(md, ctx):
             rejection_counts["quality_metadata_floor"] += 1
+            continue
+        if _stats_count_from_metadata(md) < MIN_SELECTION_STATS:
+            rejection_counts["stats_floor"] += 1
+            continue
+        constraint_rejection = metadata_constraint_rejection(md, ctx)
+        if constraint_rejection:
+            rejection_counts[constraint_rejection] += 1
             continue
         position_ok, _, _ = player_matches_requested_position(
             ctx.effective_query,
@@ -649,6 +1100,13 @@ def fetch_quality_suggestion_docs_from_db(ctx: AgenticContext, *, limit: int = 2
         reverse=True,
     )
     docs_out = docs[:limit]
+    ctx.retrieval_debug.append({
+        "pass": "db_quality_pass",
+        "raw_count": len(rows or []),
+        "accepted_count": len(docs),
+        "returned_count": len(docs_out),
+        "top_rejections": rejection_counts.most_common(5),
+    })
     _quality_debug("db_quality_pass", {
         "raw_count": len(rows or []),
         "accepted_count": len(docs),
@@ -671,66 +1129,140 @@ def fetch_quality_suggestion_docs_from_db(ctx: AgenticContext, *, limit: int = 2
     return docs_out
 
 
+def fetch_selection_suggestion_docs_from_db(
+    ctx: AgenticContext,
+    *,
+    limit: int = SELECTOR_CANDIDATE_LIMIT,
+    enforce_allowed_leagues: bool = True,
+) -> List[Document]:
+    db = get_db()
+    try:
+        rows = db.execute(text("""
+            SELECT id, metadata, content
+            FROM player_data
+            WHERE
+                (metadata->>'position_name') IS NOT NULL
+                AND (metadata->>'league_name') IS NOT NULL
+            ORDER BY COALESCE((metadata->>'Rating')::numeric, 0) DESC
+            LIMIT :lim
+        """), {"lim": 1200}).mappings().all()
+    finally:
+        db.close()
+
+    docs: List[Document] = []
+    seen_doc_keys = set()
+    seen_names_norm = {(name or "").strip().lower() for name in ctx.seen_players}
+    rejection_counts: Counter[str] = Counter()
+    for row in rows or []:
+        md = dict(row.get("metadata") or {})
+        md.setdefault("id", row.get("id"))
+        player_name = str(md.get("player_name") or md.get("name") or "").strip()
+        team_name = str(md.get("team_name") or md.get("team") or md.get("club") or "").strip()
+        nationality = str(md.get("nationality_name") or md.get("nationality") or md.get("country") or "").strip()
+        position_name = str(md.get("position_name") or md.get("position") or "").strip()
+        league_name = _league_from_metadata(md)
+        if not player_name or player_name.lower() in seen_names_norm:
+            rejection_counts["missing_name_or_seen"] += 1
+            continue
+        rejection_reason = get_candidate_rejection_reason(
+            player_name,
+            team_name,
+            nationality,
+            target_team=ctx.target_team,
+            allow_turkish=ctx.allow_turkish,
+            allow_non_senior=ctx.allow_non_senior,
+            premium_only=False,
+        )
+        if rejection_reason:
+            rejection_counts[rejection_reason] += 1
+            continue
+        if enforce_allowed_leagues and not _is_selectable_league(league_name, ctx):
+            rejection_counts["league_restriction"] += 1
+            continue
+        if not has_required_discovery_fields(team_name, position_name):
+            rejection_counts["missing_discovery_fields"] += 1
+            continue
+        if _stats_count_from_metadata(md) < MIN_SELECTION_STATS:
+            rejection_counts["stats_floor"] += 1
+            continue
+        constraint_rejection = metadata_constraint_rejection(md, ctx)
+        if constraint_rejection:
+            rejection_counts[constraint_rejection] += 1
+            continue
+        position_ok, _, _ = player_matches_requested_position(
+            ctx.effective_query,
+            position_name,
+            [position_name] if position_name else [],
+        )
+        if not position_ok:
+            rejection_counts["position_mismatch"] += 1
+            continue
+        doc_key = player_name.lower()
+        if doc_key in seen_doc_keys:
+            rejection_counts["duplicate_name"] += 1
+            continue
+        seen_doc_keys.add(doc_key)
+        docs.append(Document(page_content=row.get("content") or "", metadata=md))
+
+    random.SystemRandom().shuffle(docs)
+    docs_out = _diverse_doc_cap(docs, limit=limit)
+    ctx.retrieval_debug.append({
+        "pass": (
+            f"db_selection_pass:{constraint_relaxation_label(ctx.constraint_relaxation_level)}"
+            f":{'allowed_leagues' if enforce_allowed_leagues else 'all_leagues'}"
+        ),
+        "raw_count": len(rows or []),
+        "accepted_count": len(docs),
+        "returned_count": len(docs_out),
+        "top_rejections": rejection_counts.most_common(5),
+    })
+    return docs_out
+
+
 def build_filtered_retriever_agentic(
     ctx: AgenticContext,
     candidate_retriever: BaseRetriever,
     broad_candidate_retriever: BaseRetriever,
 ) -> Tuple[BaseRetriever, List[Document]]:
-    initial_query = _transfer_target_query(ctx) if ctx.target_team and ctx.intent in {"new_recommendation", "alternative_recommendation"} else (ctx.effective_query or "")
-    raw_docs = candidate_retriever.invoke(initial_query)
-    docs = filter_candidate_docs(
-        raw_docs,
-        ctx,
-        initial_query,
-        restrict_to_fallback_clubs=ctx.initial_strong_club_default,
-        require_complete_discovery_fields=ctx.discovery_mode,
-        pass_label="candidate_retriever_initial",
-    )
-    alt_query = ctx.effective_query
-    pass3_query = ctx.effective_query
+    docs: List[Document] = []
+    if ctx.discovery_mode and not ctx.direct_player_lookup:
+        original_level = int(ctx.constraint_relaxation_level or 0)
+        if ctx.quality_discovery_mode:
+            docs = fetch_quality_suggestion_docs_from_db(ctx)
+        else:
+            for level in range(original_level, 5):
+                ctx.constraint_relaxation_level = level
+                db_docs = fetch_selection_suggestion_docs_from_db(ctx, enforce_allowed_leagues=True)
+                docs = _merge_docs(docs, db_docs)
+                docs = _diverse_doc_cap(docs, limit=SELECTOR_CANDIDATE_LIMIT)
+                if len(docs or []) >= SELECTOR_CANDIDATE_LIMIT or docs:
+                    break
+            if not docs:
+                ctx.allow_all_selection_leagues = True
+                for level in range(original_level, 5):
+                    ctx.constraint_relaxation_level = level
+                    db_docs = fetch_selection_suggestion_docs_from_db(ctx, enforce_allowed_leagues=False)
+                    docs = _merge_docs(docs, db_docs)
+                    docs = _diverse_doc_cap(docs, limit=SELECTOR_CANDIDATE_LIMIT)
+                    if len(docs or []) >= SELECTOR_CANDIDATE_LIMIT or docs:
+                        break
+            if not docs:
+                ctx.constraint_relaxation_level = 5
+                db_docs = fetch_selection_suggestion_docs_from_db(ctx, enforce_allowed_leagues=False)
+                docs = _merge_docs(docs, db_docs)
+                docs = _diverse_doc_cap(docs, limit=SELECTOR_CANDIDATE_LIMIT)
 
-    if (not docs or _needs_more_quality_docs(docs, ctx)) and ctx.target_team:
-        alt_query = strip_target_team_from_question(ctx.effective_query, ctx.target_team)
-        if alt_query != ctx.effective_query:
-            pass2_query = _transfer_target_query(ctx, alt_query)
-            pass2_docs = filter_candidate_docs(
-                candidate_retriever.invoke(pass2_query),
-                ctx,
-                pass2_query,
-                restrict_to_fallback_clubs=ctx.initial_strong_club_default,
-                pass_label="candidate_retriever_target_stripped",
-            )
-            docs = _merge_docs(docs, pass2_docs)
-
-        if not docs or _needs_more_quality_docs(docs, ctx):
-            pass3_query = (
-                f"{alt_query}\nSearch strong European first-team transfer targets for {ctx.target_team}; "
-                "exclude the target club, youth/reserve squads, and Turkish entities unless explicitly requested."
-            )
-            pass3_docs = filter_candidate_docs(
-                candidate_retriever.invoke(pass3_query),
-                ctx,
-                pass3_query,
-                restrict_to_fallback_clubs=True,
-                pass_label="candidate_retriever_strong_transfer",
-            )
-            docs = _merge_docs(docs, pass3_docs)
-
-    if not docs or _needs_more_quality_docs(docs, ctx):
-        broad_query = _transfer_target_query(ctx, pass3_query) if ctx.target_team else ctx.effective_query
-        broad_docs = filter_candidate_docs(
-            broad_candidate_retriever.invoke(broad_query),
+    if not docs:
+        fallback_query = _transfer_target_query(ctx) if ctx.target_team and ctx.intent in {"new_recommendation", "alternative_recommendation"} else (ctx.effective_query or "")
+        fallback_docs = filter_candidate_docs(
+            broad_candidate_retriever.invoke(fallback_query),
             ctx,
-            broad_query,
-            restrict_to_fallback_clubs=ctx.initial_strong_club_default,
+            fallback_query,
+            restrict_to_fallback_clubs=False,
             require_complete_discovery_fields=ctx.discovery_mode,
-            pass_label="broad_retriever",
+            pass_label="emergency_vector_fallback",
         )
-        docs = _merge_docs(docs, broad_docs)
-
-    if (not docs or _needs_more_quality_docs(docs, ctx)) and ctx.quality_discovery_mode:
-        db_docs = fetch_quality_suggestion_docs_from_db(ctx)
-        docs = _merge_docs(docs, db_docs)
+        docs = _merge_docs(docs, fallback_docs)
 
     return StaticDocsRetriever(docs=docs), docs
 
@@ -1242,48 +1774,45 @@ def validate_candidate(candidate: Dict[str, Any], ctx: AgenticContext) -> Option
         target_team=ctx.target_team,
         allow_turkish=ctx.allow_turkish,
         allow_non_senior=ctx.allow_non_senior,
-        premium_only=ctx.premium_only,
+        premium_only=False,
     )
     if reason and not ctx.direct_player_lookup:
         return reason
     if ctx.target_team and is_same_club(ctx.target_team, candidate.get("team")) and not ctx.direct_player_lookup:
         return "same target club"
-    if (
-        ctx.target_team
-        and ctx.quality_discovery_mode
-        and not ctx.initial_strong_club_default
-        and _is_transfer_fallback_club_strict(candidate.get("team"))
-        and not ctx.direct_player_lookup
-    ):
-        return "unrealistic strong source club for target level"
     if ctx.premium_only and not ctx.direct_player_lookup:
-        if not is_premium_allowed_club(candidate.get("team")):
-            return "premium club restriction"
-        if (candidate.get("age") is not None) and int(candidate["age"]) > 30:
+        if candidate.get("age") is None or int(candidate["age"]) < 20 or int(candidate["age"]) > 30:
             return "premium age restriction"
-        if (candidate.get("rating") is not None) and float(candidate["rating"]) < 7.25:
+        if candidate.get("rating") is None or float(candidate["rating"]) <= 7:
             return "premium rating restriction"
-        if (candidate.get("potential") is not None) and int(candidate["potential"]) <= 88:
+        if candidate.get("form") is None or int(candidate["form"]) <= 80:
+            return "premium form restriction"
+        if candidate.get("potential") is None or int(candidate["potential"]) <= 80:
             return "premium potential restriction"
     if ctx.discovery_mode and not has_required_discovery_fields(candidate.get("team"), candidate.get("position_name")):
         return "missing discovery fields"
+    if (
+        not ctx.direct_player_lookup
+        and not ctx.allow_all_selection_leagues
+        and not _is_selectable_league(candidate.get("league_name"), ctx)
+    ):
+        return "league restriction"
+    if not ctx.direct_player_lookup and len(candidate.get("stats") or []) < MIN_SELECTION_STATS:
+        return "requires at least 3 available stats"
+    constraint_rejection = candidate_constraint_rejection(candidate, ctx)
+    if constraint_rejection:
+        return constraint_rejection
     if ctx.quality_discovery_mode:
         thresholds = _quality_thresholds(ctx)
         stats_count = len(candidate.get("stats") or [])
         age = candidate.get("age")
         match_count = candidate.get("match_count")
-        potential = candidate.get("potential")
-        form = candidate.get("form")
-        if stats_count < 1:
-            return "broad suggestion requires available stats"
+        if stats_count < MIN_SELECTION_STATS:
+            return "requires at least 3 available stats"
         if age is None or int(age) < thresholds["min_age"] or int(age) > thresholds["max_age"]:
             return "broad suggestion age band restriction"
         if match_count is None or float(match_count) < thresholds["min_match_count"]:
             return "broad suggestion match-count restriction"
-        if potential is None or int(potential) <= thresholds["min_potential"]:
-            return "broad suggestion potential restriction"
-        if form is None or int(form) <= thresholds["min_form"]:
-            return "broad suggestion form restriction"
     pos_ok, _, _ = player_matches_requested_position(
         ctx.effective_query,
         candidate.get("position_name"),

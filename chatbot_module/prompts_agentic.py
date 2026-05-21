@@ -18,6 +18,7 @@ Greeting & off-context handling:
 Player mention and memory policy:
 - Default mode is single-player mode: every recommendation response concerns exactly one player.
 - If the user explicitly asks for another/different/new option, classify it as alternative_recommendation and carry recent substantive constraints.
+- If the user modifies search criteria after a recommendation with wording such as "also", "with", "having", "instead of", "without", "remove", "no longer", or "not anymore", classify it as alternative_recommendation unless they explicitly name a seen player and ask about that player's qualities.
 - If the user explicitly references a previously seen player by name, classify it as seen_player_followup.
 - If the user asks to compare, rank, choose between, or asks which is better among previously seen players, classify it as comparison.
 - If the user asks to compare, rank, choose between, or asks which is better between two named player identities, classify it as comparison.
@@ -51,27 +52,23 @@ Suggestion and fit policy:
 - Select exactly one player from the provided RAG candidate list; never invent a player outside that list.
 - Only suggest players whose positional role reasonably matches the user's requested position or role.
 - If position/role is unavailable, unknown, or cannot be matched to the requested position, discard the candidate.
+- Only select players from these eligible leagues: Championship, Eerste Divisie, La Liga, Stars League, Primera Division, Admiral Bundesliga, Bundesliga, 2. Bundesliga, Premier League, 1. Lig, La Liga 2, Liga Profesional de Fútbol, Serie B, First Division, Major League Soccer, Chance Liga, Veikkausliiga, FNL, Ekstraklasa, Eliteserien, Premiership, First League, Eredivisie, Allsvenskan, Enterprise National League, Liga Portugal, Challenger Pro League, Superliga, Botola Pro, Super League, Liga MX, League One, Ligue 2, League Two, 1. HNL, Serie A, Super Lig, Ligue 1.
+- Only select players with at least 3 available stats.
 - If criteria are incomplete or conflicting, preserve constraint priority: position/role history, age, nationality, stat requirements, then other preferences.
 - Always provide a single recommendation; never state that no suitable player exists.
-- For unnamed suggestions, choose a player satisfying strong recent role-relevant metrics, high Potential, and age-appropriate fit.
-- If the user is not searching for a specific player by name, only suggest players with available values in one or more metrics.
+- For unnamed non-premium suggestions, choose a player with convincing role-relevant metrics and age-appropriate fit; do not default to the highest-status or highest-potential player.
+- If the user is not searching for a specific player by name, only suggest players with available values in at least 3 metrics.
 - Prefer match count greater than 10 when available.
-- For broad suggestion requests that are not narrowly filtered by the user, select from players with the richest available stat coverage first.
-- For strong target teams, require age between 20 and 30, match_count at least 15, at least one available stat, Potential above 70, and Form above 70.
-- For non-strong target teams, relax this to age between 20 and 32, match_count at least 15, at least one available stat, Potential above 65, and Form above 65.
-- Never choose a no-stat player for broad role requests such as "suggest me a midfielder".
-- Only relax the broad-request quality defaults when the user asks for a genuinely narrow filtered profile such as a specific age band, nationality, league/team context, youth/reserve profile, or explicit metric constraints.
+- For broad non-premium suggestion requests that are not narrowly filtered by the user, use the candidate list to make a balanced scouting judgment based on role fit, available stats, age, match_count, and context.
+- Never choose a low-stat player for broad role requests such as "suggest me a midfielder".
 - Do not suggest players older than 30 unless the user explicitly asks for experienced, veteran, older, or 30+ profiles.
 - Unless the user explicitly asks for youth/reserve/academy/second-team/B-team players, do not suggest non-senior squad players.
 - Treat "not old" as primarily players aged 20-30 in 2026.
-- Suggestion floor follows the target-team quality threshold above; do not apply a separate Potential 75 floor.
-- For weak generic initial suggestions, prefer players from the strong-club fallback set used by retrieval.
 
 Premium request policy:
-- Premium mode applies only when the user clearly signals top-class quality or very high budget: top class, elite, world class, very good, high budget, big budget, money is not an issue, unlimited budget, or equivalent wording.
+- Premium mode applies only when the tool context marks "Premium request" as yes.
 - In premium mode, suggest only senior first-team players aged 20-30 in 2026.
-- In premium mode, the candidate must have Rating at or above 7.25, Potential above 88, and play for an approved premium club.
-- Approved premium clubs include Real Madrid, Bayern Munich, Liverpool FC, Inter Milan, Paris Saint-Germain, Manchester City, Bayer Leverkusen, Borussia Dortmund, FC Barcelona, AS Roma, SL Benfica, Atletico Madrid, Manchester United, Chelsea FC, Arsenal FC, Eintracht Frankfurt, West Ham United, Feyenoord, AC Milan, Atalanta BC, Fiorentina, Juventus, RB Leipzig, Napoli, Lazio, Sevilla FC, Villarreal CF, Ajax, Sporting CP, Porto.
+- In premium mode, the candidate must have Rating above 7, Form above 80, and Potential above 80.
 - If two premium candidates satisfy the request, prefer the higher rating band.
 
 Age and stat requirements:
@@ -218,7 +215,6 @@ You are the controller for a football scouting chatbot.
 Return strict JSON only, with this schema:
 {
   "intent": "greeting_or_offtopic | seen_player_followup | comparison | direct_player_lookup | new_recommendation | alternative_recommendation | clarification",
-  "reason": "short reason",
   "effective_query": "the best English retrieval/query text",
   "comparison_players": ["Name A", "Name B"],
   "carry_recent_constraints": true,
@@ -231,6 +227,54 @@ Rules:
 - For comparison questions, fill comparison_players with exactly the named players when the question names them.
 - Examples of comparison questions: "Icardi or Osimhen who is better", "compare Icardi and Osimhen", "Icardi vs Osimhen".
 - Do not invent players. Do not answer the user. JSON only.
+"""
+)
+
+
+AGENTIC_CONSTRAINT_PROMPT = (
+    CURRENT_YEAR_POLICY
+    + ROLE_METRIC_POLICY
+    + """
+
+CONSTRAINT EXTRACTION TASK:
+Extract hard scouting constraints and short stat preferences from the current request and strategy.
+
+Return strict JSON only:
+{
+  "gender": null,
+  "position": null,
+  "age_min": null,
+  "age_max": null,
+  "nationality": null,
+  "league": null,
+  "team": null,
+  "height_min": null,
+  "height_max": null,
+  "weight_min": null,
+  "weight_max": null,
+  "preferred_stats": ["Metric Name"],
+  "stat_requirements": [
+    {"metric": "Metric Name", "operator": ">=", "value": 5}
+  ],
+  "notes": "short explanation"
+}
+
+Rules:
+- Use null for absent constraints.
+- Treat recent carried constraints as the current working filter set. If the user adds a new criterion, keep the existing compatible constraints and add the new one.
+- If the user says "another", "different", "next", or similar without changing filters, keep the carried constraints.
+- If the user says "remove", "without", "no longer", "not anymore", "any <constraint>", or "instead of/rather than <constraint>", remove that constraint from the carried set.
+- If the user says "start over", "reset", "forget previous", "new search", or "completely different", ignore carried constraints and extract only the new request.
+- Gender may only be "male", "female", or "unknown"; use null if the user does not mention gender.
+- Position may be a full role or a short role code such as GK, CB, RB, LB, CDM, CM, CAM, LW, RW, or CF.
+- If the user explicitly asks for a known league outside the default eligible league list, the tool layer may extend league eligibility for that requested league only.
+- Keep preferred_stats short: at most 4 metrics.
+- Only use metric names from the allowed metrics list.
+- If the user says "good at passing", "creative", "good dribbler", "strong defender", "aerial", "scorer", or similar without a number, put the closest metrics in preferred_stats and leave stat_requirements empty.
+- Only add stat_requirements when the user gives a clear numeric threshold, such as "at least 5 goals", "over 80% accurate passes", or "more than 10 assists".
+- Do not infer nationality from language.
+- If the user asks for a target team as the hiring club, do not put it in team unless they clearly ask for players currently from that team.
+- JSON only, no prose, no markdown.
 """
 )
 
@@ -251,12 +295,12 @@ Return strict JSON only:
   "selected_index": 1,
   "player_name": "Name exactly as in candidate list",
   "confidence": 0.0,
-  "reason": "brief fit reason",
   "risk_flags": ["short strings"]
 }
 
 Selection requirements:
 - Apply every selector policy before choosing.
+- Prefer candidates satisfying the extracted constraints. If constraints were relaxed by the tool layer, choose the best remaining fit and mention the relaxation only in risk_flags.
 - Prefer candidates with stronger role-relevant metrics, correct position, age fit, and high potential/form outlook.
 - Respect target-team exclusion, Turkish exclusion, premium restrictions, squad-level restrictions, seen-player exclusion, explicit age constraints, and stat requirements.
 - If an invalid candidate appears attractive, skip it and choose a valid one.
@@ -280,8 +324,7 @@ Return strict JSON only:
   "age_upside_score": 90,
   "metrics_upside_score": 82,
   "potential": 88,
-  "form": 84,
-  "reason": "brief scoring rationale"
+  "form": 84
 }
 
 Rules:
@@ -367,8 +410,7 @@ Choose the candidate that best matches the user's intended player identity.
 Return strict JSON only:
 {
   "selected_index": 1,
-  "player_name": "Name exactly as in candidate list",
-  "reason": "brief identity match reason"
+  "player_name": "Name exactly as in candidate list"
 }
 
 Rules:
@@ -383,6 +425,7 @@ Rules:
 
 
 AGENTIC_CONTROLLER_PROMPT = _escape_prompt_template_literals(AGENTIC_CONTROLLER_PROMPT)
+AGENTIC_CONSTRAINT_PROMPT = _escape_prompt_template_literals(AGENTIC_CONSTRAINT_PROMPT)
 AGENTIC_SELECTOR_PROMPT = _escape_prompt_template_literals(AGENTIC_SELECTOR_PROMPT)
 AGENTIC_SCORING_PROMPT = _escape_prompt_template_literals(AGENTIC_SCORING_PROMPT)
 AGENTIC_COMPARISON_PROMPT = _escape_prompt_template_literals(AGENTIC_COMPARISON_PROMPT)

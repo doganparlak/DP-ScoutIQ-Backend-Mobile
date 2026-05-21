@@ -77,6 +77,16 @@ DISALLOWED_TURKISH_CLUBS = [
     "Ümraniyespor", "Van Spor FK", "Sivasspor",
 ]
 
+ADDITIONAL_TFF_1_LIG_CLUBS = [
+    "Adanaspor", "Ankaragucu", "Ankaragücü", "Bucaspor 1928", "Erokspor", "Esenler Erokspor",
+    "Keciorengucu", "Keçiörengücü", "Ankara Keciorengucu", "Ankara Keçiörengücü",
+    "Sanliurfaspor", "Şanlıurfaspor", "Umraniyespor", "Ümraniyespor", "Istanbulspor",
+    "İstanbulspor", "Bandirmaspor", "Bandırmaspor", "Bodrum FK", "Boluspor", "Corum FK",
+    "Çorum FK", "Erzurumspor FK", "Genclerbirligi", "Gençlerbirliği", "Igdir FK", "Iğdır FK",
+    "Manisa FK", "Pendikspor", "Sakaryaspor", "Amed SK", "Kocaelispor", "Altay",
+]
+DISALLOWED_TURKISH_CLUBS = list(dict.fromkeys([*DISALLOWED_TURKISH_CLUBS, *ADDITIONAL_TFF_1_LIG_CLUBS]))
+
 PREMIUM_ALLOWED_CLUBS = [
     "Real Madrid", "Real Madrid CF",
     "Bayern Munich", "FC Bayern Munich", "Bayern Munchen", "FC Bayern Munchen",
@@ -467,6 +477,7 @@ def request_allows_turkish_entities(question: Optional[str]) -> bool:
     text = normalize_search_text(question)
     if not text:
         return False
+    compact = re.sub(r"[^a-z0-9]+", "", text)
 
     explicit_patterns = [
         r"\bturk(?:ish|iye)?\b",
@@ -474,8 +485,13 @@ def request_allows_turkish_entities(question: Optional[str]) -> bool:
         r"\bfrom turkish league\b",
         r"\bfrom super lig\b",
         r"\bfrom tff 1 lig\b",
+        r"\btff 1 lig\b",
+        r"\btff first league\b",
+        r"\b1 lig\b",
     ]
     if any(re.search(pattern, text) for pattern in explicit_patterns):
+        return True
+    if any(token in compact for token in {"tff1lig", "1lig", "tfffirstleague"}):
         return True
     return False
 

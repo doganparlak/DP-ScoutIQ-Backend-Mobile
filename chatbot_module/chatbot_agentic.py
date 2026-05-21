@@ -1,6 +1,8 @@
 from typing import Any, Dict, List, Optional
 import json
 import os
+import random
+import re
 import warnings
 
 from dotenv import load_dotenv
@@ -27,6 +29,7 @@ from chatbot_module.chatbot import (
 )
 from chatbot_module.prompts_agentic import (
     AGENTIC_COMPARISON_PROMPT,
+    AGENTIC_CONSTRAINT_PROMPT,
     AGENTIC_CONTROLLER_PROMPT,
     AGENTIC_FOLLOWUP_PROMPT,
     AGENTIC_IDENTITY_RESOLVER_PROMPT,
@@ -35,7 +38,12 @@ from chatbot_module.prompts_agentic import (
     AGENTIC_SCORING_PROMPT,
     AGENTIC_SELECTOR_PROMPT,
 )
-from chatbot_module.tools import get_seen_players_from_history, is_turkish
+from chatbot_module.tools import (
+    collect_recent_human_constraints,
+    get_seen_players_from_history,
+    is_generic_alternative_request,
+    is_turkish,
+)
 from chatbot_module.tools_agentic import (
     apply_ai_scores_to_candidate,
     build_agentic_context,
@@ -47,7 +55,12 @@ from chatbot_module.tools_agentic import (
     fetch_direct_player_candidate_by_name,
     format_candidates_for_selector,
     is_greeting_or_offtopic,
-    _is_transfer_fallback_club_strict,
+    clean_constraints,
+    constraint_relaxation_label,
+    infer_league_from_text,
+    infer_nationality_from_text,
+    infer_position_from_text,
+    infer_preferred_stats_from_text,
     _quality_debug,
     short_offtopic_response,
     validate_candidate,
@@ -69,12 +82,26 @@ controller_prompt = ChatPromptTemplate.from_messages([
 controller_chain = controller_prompt | CHAT_LLM | StrOutputParser()
 
 
+constraint_prompt = ChatPromptTemplate.from_messages([
+    ("system", AGENTIC_CONSTRAINT_PROMPT),
+    ("human",
+     "Original question:\n{original_question}\n\n"
+     "Translated English question:\n{translated_question}\n\n"
+     "Strategy:\n{strategy}\n\n"
+     "Recent carried constraints:\n{recent_constraints}\n\n"
+     "Return JSON only.")
+])
+constraint_chain = constraint_prompt | CHAT_LLM | StrOutputParser()
+
+
 selector_prompt = ChatPromptTemplate.from_messages([
     ("system", AGENTIC_SELECTOR_PROMPT),
     ("human",
      "User request:\n{question}\n\n"
      "Strategy:\n{strategy}\n\n"
      "Target team, if any:\n{target_team}\n\n"
+     "Premium request:\n{premium_only}\n\n"
+     "Extracted constraints:\n{constraints_json}\n\n"
      "Seen players:\n{seen_players}\n\n"
      "RAG candidate list:\n{candidate_list}\n\n"
      "Return JSON only.")
@@ -153,6 +180,7 @@ followup_chain = followup_prompt | CHAT_LLM | StrOutputParser()
 
 DEEPSEEK_INPUT_PRICE_PER_M = float(os.getenv("DEEPSEEK_INPUT_PRICE_PER_M", "0.14"))
 DEEPSEEK_OUTPUT_PRICE_PER_M = float(os.getenv("DEEPSEEK_OUTPUT_PRICE_PER_M", "0.28"))
+AGENTIC_FLOW_LOG = os.getenv("AGENTIC_FLOW_LOG", "1").lower() not in {"0", "false", "no", "off"}
 
 
 def _estimate_tokens(text: Any) -> int:
@@ -167,6 +195,13 @@ def _new_trace() -> Dict[str, Any]:
         "agents": [],
         "tools": [],
         "flow": [],
+        "context": {},
+        "retrieval": {},
+        "retrieval_debug": [],
+        "selector": {},
+        "selected": {},
+        "fetched_options": [],
+        "selector_options": [],
         "input_tokens": 0,
         "output_tokens": 0,
     }
@@ -191,7 +226,20 @@ def _trace_cost_usd(trace: Dict[str, Any]) -> float:
     )
 
 
+def _candidate_option_log(candidates: List[Dict[str, Any]], limit: int = 24) -> List[str]:
+    options: List[str] = []
+    for candidate in (candidates or [])[:limit]:
+        options.append(
+            f"{candidate.get('index')}:{candidate.get('name')}|"
+            f"{candidate.get('league_name') or 'n/a'}|"
+            f"{candidate.get('team') or 'n/a'}"
+        )
+    return options
+
+
 def _log_trace(trace: Dict[str, Any], *, session_id: str, outcome: str) -> None:
+    if not AGENTIC_FLOW_LOG:
+        return
     flow_parts: List[str] = []
     for step in trace["flow"]:
         if flow_parts and flow_parts[-1].startswith(step + " x"):
@@ -201,19 +249,62 @@ def _log_trace(trace: Dict[str, Any], *, session_id: str, outcome: str) -> None:
             flow_parts[-1] = f"{step} x2"
         else:
             flow_parts.append(step)
-    """
+
+    context = trace.get("context") or {}
+    retrieval = trace.get("retrieval") or {}
+    retrieval_debug = trace.get("retrieval_debug") or []
+    selector = trace.get("selector") or {}
+    selected = trace.get("selected") or {}
+    constraints = context.get("constraints") or {}
+    fetched_options = trace.get("fetched_options") or []
+    selector_options = trace.get("selector_options") or []
+    reject_parts: List[str] = []
+    for item in retrieval_debug[:4]:
+        top_rejections = ",".join(f"{name}:{count}" for name, count in (item.get("top_rejections") or [])[:3])
+        reject_parts.append(
+            f"{item.get('pass')} raw={item.get('raw_count')} accepted={item.get('accepted_count')} "
+            f"returned={item.get('returned_count')} rejects={top_rejections or 'none'}"
+        )
+    reject_text = " | ".join(reject_parts) if reject_parts else "none"
     print(
-        "[chatbot_agentic] "
+        "[agentic_flow] "
         f"session={session_id} outcome={outcome} "
+        f"intent={context.get('intent', 'unknown')} "
+        f"quality={context.get('quality_discovery_mode', False)} "
+        f"generic_high_quality={context.get('initial_strong_club_default', False)} "
+        f"premium={context.get('premium_only', False)} "
+        f"target={context.get('target_team') or 'none'} "
+        f"all_leagues={context.get('allow_all_selection_leagues', False)} "
+        f"relaxation={context.get('constraint_relaxation', 'strict')} "
+        f"fetched={retrieval.get('fetched_count', retrieval.get('candidate_count', 'n/a'))} "
+        f"sent_to_selector={retrieval.get('sent_to_selector_count', 'n/a')} "
+        f"selector_index={selector.get('selected_index', 'n/a')} "
+        f"selection_mode={trace.get('selection_mode', 'n/a')} "
+        f"selected={selected.get('name') or 'none'} "
+        f"team={selected.get('team') or 'n/a'} "
+        f"rating={selected.get('rating', 'n/a')} "
+        f"potential={selected.get('potential', 'n/a')} "
+        f"form={selected.get('form', 'n/a')} "
+        f"retrieval_debug=[{reject_text}] "
         f"flow={' -> '.join(flow_parts) or 'none'} "
-        f"agents={','.join(trace['agents']) or 'none'} "
-        f"tools={','.join(trace['tools']) or 'none'} "
-        f"est_tokens_in={trace['input_tokens']} est_tokens_out={trace['output_tokens']} "
-        f"est_cost_usd={_trace_cost_usd(trace):.6f} "
-        f"pricing=input:${DEEPSEEK_INPUT_PRICE_PER_M}/1M,output:${DEEPSEEK_OUTPUT_PRICE_PER_M}/1M",
+        f"llm_tokens_in={trace['input_tokens']} llm_tokens_out={trace['output_tokens']} "
+        f"est_llm_cost_usd={_trace_cost_usd(trace):.6f} ",
         flush=True,
     )
-    """
+    if constraints:
+        print("[agentic_flow:constraints]", flush=True)
+        for key in sorted(constraints):
+            print(f"  {key}: {json.dumps(constraints.get(key), ensure_ascii=False, default=str)}", flush=True)
+    if fetched_options:
+        print("[agentic_flow:fetched_players]", flush=True)
+        for option in fetched_options:
+            print(f"  {option}", flush=True)
+    if selector_options:
+        print("[agentic_flow:selector_players]", flush=True)
+        selected_prefix = f"{selector.get('selected_index')}:"
+        for option in selector_options:
+            marker = " <- selected" if selected_prefix != "None:" and option.startswith(selected_prefix) else ""
+            print(f"  {option}{marker}", flush=True)
 
 def _recent_memory_text(history_rows: list, limit: int = 8) -> str:
     rows = history_rows[-limit:] if history_rows else []
@@ -241,6 +332,122 @@ def _persist_turn(session_id: str, human_text: str, ai_text: str, payload: Optio
         append_chat_message(db, session_id, "ai", stored_ai_content)
     finally:
         db.close()
+
+
+def _extract_payload_json(content: str) -> Dict[str, Any]:
+    text = content or ""
+    match = re.search(r"\[\[PAYLOAD_JSON\]\]\s*(\{[\s\S]*?\})\s*\[\[/PAYLOAD_JSON\]\]", text)
+    if not match:
+        return {}
+    try:
+        return json.loads(match.group(1))
+    except Exception:
+        return {}
+
+
+def _last_agentic_constraints(history_rows: list) -> Dict[str, Any]:
+    for row in reversed(history_rows or []):
+        if row.get("role") != "ai":
+            continue
+        payload = _extract_payload_json(row.get("content") or "")
+        constraints = payload.get("agentic_constraints")
+        if isinstance(constraints, dict):
+            return clean_constraints(constraints)
+    return {}
+
+
+def _constraint_update_resets(text: str) -> bool:
+    lowered = (text or "").lower()
+    return bool(re.search(r"\b(start over|reset|forget previous|ignore previous|new search|completely different)\b", lowered))
+
+
+def _constraint_update_removes(text: str) -> bool:
+    lowered = (text or "").lower()
+    return bool(re.search(r"\b(remove|without|no longer|not anymore|instead of|rather than|any nationality|any league|any team|any age|any height|any weight)\b", lowered))
+
+
+def _mentions_gender(text: str) -> bool:
+    return bool(re.search(r"\b(male|female|woman|women|girl|girls|man|men|boy|boys|unknown gender)\b", (text or "").lower()))
+
+
+def _infer_removed_stats(text: str) -> List[str]:
+    lowered = (text or "").lower()
+    spans: List[str] = []
+    for pattern in [
+        r"\binstead of\s+(.+?)(?:\s+i want|\s+with|\s+use|\s+give|\s+find|$)",
+        r"\brather than\s+(.+?)(?:\s+i want|\s+with|\s+use|\s+give|\s+find|$)",
+        r"\bwithout\s+(.+)$",
+        r"\bremove\s+(.+)$",
+        r"\bno longer\s+(.+)$",
+    ]:
+        match = re.search(pattern, lowered)
+        if match:
+            spans.append(match.group(1))
+    stats: List[str] = []
+    for span in spans:
+        for metric in infer_preferred_stats_from_text(span):
+            if metric not in stats:
+                stats.append(metric)
+    return stats
+
+
+def _merge_turn_constraints(previous: Dict[str, Any], current: Dict[str, Any], question_text: str) -> Dict[str, Any]:
+    previous = clean_constraints(previous)
+    current = clean_constraints(current)
+    if not previous or _constraint_update_resets(question_text):
+        return current
+
+    merged = dict(previous)
+    text = question_text or ""
+    lowered = text.lower()
+
+    removable_keys = {
+        "nationality": [r"\bany nationality\b", r"\bno nationality\b", r"\bremove nationality\b", r"\bwithout nationality\b"],
+        "league": [r"\bany league\b", r"\bno league\b", r"\bremove league\b", r"\bwithout league\b"],
+        "team": [r"\bany team\b", r"\bno team\b", r"\bremove team\b", r"\bwithout team\b"],
+        "age_min": [r"\bany age\b", r"\bremove age\b", r"\bwithout age\b"],
+        "age_max": [r"\bany age\b", r"\bremove age\b", r"\bwithout age\b"],
+        "height_min": [r"\bany height\b", r"\bremove height\b", r"\bwithout height\b"],
+        "height_max": [r"\bany height\b", r"\bremove height\b", r"\bwithout height\b"],
+        "weight_min": [r"\bany weight\b", r"\bremove weight\b", r"\bwithout weight\b"],
+        "weight_max": [r"\bany weight\b", r"\bremove weight\b", r"\bwithout weight\b"],
+    }
+    cleared_keys = set()
+    for key, patterns in removable_keys.items():
+        if any(re.search(pattern, lowered) for pattern in patterns):
+            merged[key] = None
+            cleared_keys.add(key)
+
+    for key in [
+        "gender", "position", "nationality", "league", "team",
+        "age_min", "age_max", "height_min", "height_max", "weight_min", "weight_max",
+    ]:
+        if key == "gender" and not _mentions_gender(text):
+            continue
+        if key in cleared_keys:
+            continue
+        value = current.get(key)
+        if value is not None:
+            merged[key] = value
+
+    removed_stats = set(_infer_removed_stats(text))
+    preferred_stats: List[str] = []
+    for metric in previous.get("preferred_stats") or []:
+        if metric not in removed_stats and metric not in preferred_stats:
+            preferred_stats.append(metric)
+    for metric in current.get("preferred_stats") or []:
+        if metric not in removed_stats and metric not in preferred_stats:
+            preferred_stats.append(metric)
+        if len(preferred_stats) >= 4:
+            break
+    merged["preferred_stats"] = preferred_stats
+
+    current_requirements = current.get("stat_requirements") or []
+    if current_requirements or _constraint_update_removes(text):
+        merged["stat_requirements"] = current_requirements
+
+    merged["notes"] = current.get("notes") or previous.get("notes") or ""
+    return clean_constraints(merged)
 
 
 def _translate_output_if_needed(text: str, lang: str) -> str:
@@ -276,6 +483,31 @@ def _controller_decision(
         if trace is not None:
             _trace_llm_cost(trace, AGENTIC_CONTROLLER_PROMPT + json.dumps(payload, ensure_ascii=False), raw)
         return extract_json_object(raw)
+    except Exception:
+        return {}
+
+
+def _constraint_decision(
+    *,
+    original_question: str,
+    translated_question: str,
+    strategy: Optional[str],
+    recent_constraints: List[str],
+    trace: Optional[Dict[str, Any]] = None,
+) -> Dict[str, Any]:
+    try:
+        payload = {
+            "original_question": original_question,
+            "translated_question": translated_question,
+            "strategy": strategy or "",
+            "recent_constraints": "\n".join(f"- {item}" for item in recent_constraints or []) or "None",
+        }
+        if trace is not None:
+            _trace_step(trace, "agent", "constraint_extractor")
+        raw = constraint_chain.invoke(payload)
+        if trace is not None:
+            _trace_llm_cost(trace, AGENTIC_CONSTRAINT_PROMPT + json.dumps(payload, ensure_ascii=False), raw)
+        return clean_constraints(extract_json_object(raw))
     except Exception:
         return {}
 
@@ -363,7 +595,6 @@ def _resolve_direct_identity_with_ai(
                 "selected_index": selected_index,
                 "selected_name": selected.get("name"),
                 "selected_team": selected.get("team"),
-                "reason": data.get("reason"),
             }, ensure_ascii=False),
             flush=True,
         )
@@ -490,6 +721,7 @@ def _choose_scored_candidate(
         if candidate.get("index") != selected_index
     )
 
+    quality_mode = bool(getattr(ctx, "quality_discovery_mode", False) or getattr(ctx, "premium_only", False))
     valid_scored: List[Dict[str, Any]] = []
     score_rejections: Dict[str, int] = {}
     scored_samples: List[Dict[str, Any]] = []
@@ -520,6 +752,8 @@ def _choose_scored_candidate(
             scored_samples.append(sample)
         if not rejection:
             valid_scored.append(scored)
+            if not quality_mode:
+                break
         else:
             score_rejections[rejection] = score_rejections.get(rejection, 0) + 1
     if not valid_scored:
@@ -542,45 +776,11 @@ def _choose_scored_candidate(
             1 if selected_index is not None and candidate.get("index") == selected_index else 0,
         )
 
-    selection_mode = "max_quality"
-    ranked_for_log = sorted(valid_scored, key=quality_key, reverse=True)
-    if (
-        getattr(ctx, "quality_discovery_mode", False)
-        and getattr(ctx, "target_team", None)
-        and not getattr(ctx, "initial_strong_club_default", False)
-    ):
-        selection_mode = "realistic_target_varied"
-        non_strong_source = [
-            candidate
-            for candidate in valid_scored
-            if not _is_transfer_fallback_club_strict(candidate.get("team"))
-        ] or valid_scored
-        max_stats = max(len(candidate.get("stats") or []) for candidate in non_strong_source)
-        coverage_band = [
-            candidate
-            for candidate in non_strong_source
-            if len(candidate.get("stats") or []) >= max_stats - 1
-        ]
-        ranked = sorted(
-            coverage_band,
-            key=lambda candidate: (
-                candidate.get("potential") or 0,
-                candidate.get("form") or 0,
-                candidate.get("rating") or 0,
-                candidate.get("match_count") or 0,
-            ),
-        )
-        if len(ranked) <= 2:
-            selected = ranked[len(ranked) // 2]
-        else:
-            lower = max(0, len(ranked) // 3)
-            upper = max(lower + 1, (2 * len(ranked)) // 3)
-            realistic_band = ranked[lower:upper] or ranked
-            target_key = sum(ord(ch) for ch in str(getattr(ctx, "target_team", "") or "").lower())
-            selected = realistic_band[target_key % len(realistic_band)]
-        ranked_for_log = ranked
-    else:
-        selected = max(valid_scored, key=quality_key)
+    selection_mode = "max_quality" if quality_mode else "selector_first_valid"
+    ranked_for_log = sorted(valid_scored, key=quality_key, reverse=True) if quality_mode else valid_scored
+    selected = max(valid_scored, key=quality_key) if quality_mode else valid_scored[0]
+    if trace is not None:
+        trace["selection_mode"] = selection_mode
     if getattr(ctx, "quality_discovery_mode", False):
         ordered_shortlist = []
         for idx, candidate in enumerate(ranked_for_log[:8], start=1):
@@ -692,6 +892,59 @@ def answer_question(
         history_rows=history_rows,
         trace=trace,
     )
+    previous_constraints = _last_agentic_constraints(history_rows)
+    carried_constraints = collect_recent_human_constraints(
+        history_rows,
+        is_generic_alternative_fn=is_generic_alternative_request,
+        limit=3,
+    )
+    constraints = _constraint_decision(
+        original_question=original_question,
+        translated_question=planner_data.get("effective_query") or translated_raw,
+        strategy=strategy,
+        recent_constraints=carried_constraints,
+        trace=trace,
+    )
+    inferred_nationality = infer_nationality_from_text(
+        original_question,
+        translated_raw,
+        planner_data.get("effective_query") or "",
+        strategy or "",
+    )
+    if inferred_nationality and not constraints.get("nationality"):
+        constraints["nationality"] = inferred_nationality
+    inferred_position = infer_position_from_text(
+        original_question,
+        translated_raw,
+        planner_data.get("effective_query") or "",
+        strategy or "",
+    )
+    if inferred_position and not constraints.get("position"):
+        constraints["position"] = inferred_position
+    inferred_league = infer_league_from_text(
+        original_question,
+        translated_raw,
+        planner_data.get("effective_query") or "",
+        strategy or "",
+    )
+    if inferred_league and not constraints.get("league"):
+        constraints["league"] = inferred_league
+    inferred_stats = infer_preferred_stats_from_text(
+        original_question,
+        translated_raw,
+        planner_data.get("effective_query") or "",
+        strategy or "",
+        "\n".join(carried_constraints),
+    )
+    if inferred_stats:
+        merged_stats = []
+        for metric in [*(constraints.get("preferred_stats") or []), *inferred_stats]:
+            if metric not in merged_stats:
+                merged_stats.append(metric)
+            if len(merged_stats) >= 4:
+                break
+        constraints["preferred_stats"] = merged_stats
+    constraints = _merge_turn_constraints(previous_constraints, constraints, original_question)
     _trace_step(trace, "tool", "build_context")
     ctx = build_agentic_context(
         original_question=original_question,
@@ -701,7 +954,22 @@ def answer_question(
         seen_players=seen_players,
         strategy=strategy,
         planner_data=planner_data,
+        constraints=constraints,
     )
+    trace["context"] = {
+        "intent": ctx.intent,
+        "effective_query": ctx.effective_query,
+        "target_team": ctx.target_team,
+        "direct_player_lookup": ctx.direct_player_lookup,
+        "quality_discovery_mode": ctx.quality_discovery_mode,
+        "initial_strong_club_default": ctx.initial_strong_club_default,
+        "premium_only": ctx.premium_only,
+        "allow_turkish": ctx.allow_turkish,
+        "allow_non_senior": ctx.allow_non_senior,
+        "allow_all_selection_leagues": ctx.allow_all_selection_leagues,
+        "constraints": ctx.constraints,
+        "constraint_relaxation": constraint_relaxation_label(ctx.constraint_relaxation_level),
+    }
     if getattr(ctx, "quality_discovery_mode", False):
         _quality_debug("context", {
             "original_question": original_question,
@@ -778,6 +1046,11 @@ def answer_question(
             )
             """
             direct_candidates = fetch_direct_player_candidates_by_name(ctx.effective_query)
+            trace["retrieval"] = {
+                "source": "direct_candidate_lookup",
+                "fetched_count": len(direct_candidates or []),
+            }
+            trace["fetched_options"] = _candidate_option_log(direct_candidates)
             direct_candidate = _resolve_direct_identity_with_ai(
                 question=ctx.effective_query,
                 candidates=direct_candidates,
@@ -804,6 +1077,11 @@ def answer_question(
             if not direct_candidate and not direct_candidates:
                 _trace_step(trace, "tool", "direct_db_lookup")
                 direct_candidate = fetch_direct_player_candidate_by_name(ctx.effective_query)
+                trace["retrieval"] = {
+                    "source": "direct_db_lookup",
+                    "fetched_count": 1 if direct_candidate else 0,
+                }
+                trace["fetched_options"] = _candidate_option_log([direct_candidate] if direct_candidate else [])
             if direct_candidate:
                 """
                 print(
@@ -836,6 +1114,10 @@ def answer_question(
                 _trace_step(trace, "tool", "shared_retriever")
                 raw_docs = SHARED_RETRIEVER.invoke(ctx.effective_query)
                 candidate_docs = list(raw_docs or [])[:12]
+                trace["retrieval"] = {
+                    "source": "shared_retriever",
+                    "fetched_count": len(candidate_docs or []),
+                }
                 """
                 print(
                     "[chatbot_agentic_lookup] event=shared_retriever_after "
@@ -863,6 +1145,12 @@ def answer_question(
                 CANDIDATE_RETRIEVER,
                 BROAD_CANDIDATE_RETRIEVER,
             )
+            trace["retrieval"] = {
+                "source": "filtered_retriever",
+                "fetched_count": len(candidate_docs or []),
+            }
+            trace["retrieval_debug"] = list(getattr(ctx, "retrieval_debug", []) or [])
+            trace["context"]["constraint_relaxation"] = constraint_relaxation_label(ctx.constraint_relaxation_level)
             candidates = []
 
         if not candidate_docs and not candidates:
@@ -882,11 +1170,24 @@ def answer_question(
             candidates = [doc_to_candidate(doc, idx) for idx, doc in enumerate(candidate_docs, start=1)]
         else:
             _trace_step(trace, "tool", "candidate_builder")
+        if not trace.get("fetched_options"):
+            trace["fetched_options"] = _candidate_option_log(candidates)
+        if not ctx.premium_only and not ctx.direct_player_lookup:
+            random.SystemRandom().shuffle(candidates)
+            for idx, candidate in enumerate(candidates, start=1):
+                candidate["index"] = idx
+        trace["selector_options"] = _candidate_option_log(candidates)
+        trace["retrieval"]["sent_to_selector_count"] = len(candidates or [])
         candidate_list = format_candidates_for_selector(candidates)
         selector_payload = {
             "question": ctx.effective_query,
             "strategy": strategy or "",
             "target_team": ctx.target_team or "",
+            "premium_only": "yes" if ctx.premium_only else "no",
+            "constraints_json": json.dumps({
+                "constraints": ctx.constraints,
+                "relaxation": constraint_relaxation_label(ctx.constraint_relaxation_level),
+            }, ensure_ascii=False),
             "seen_players": ", ".join(sorted(seen_players)) if seen_players else "None",
             "candidate_list": candidate_list,
         }
@@ -899,6 +1200,12 @@ def answer_question(
             selected_index = int(selected_index) if selected_index is not None else None
         except Exception:
             selected_index = None
+        trace["selector"] = {
+            "selected_index": selected_index,
+            "player_name": selector_data.get("player_name"),
+            "confidence": selector_data.get("confidence"),
+            "risk_flags": selector_data.get("risk_flags") or [],
+        }
 
         selected = _choose_scored_candidate(
             selected_index=selected_index,
@@ -920,7 +1227,17 @@ def answer_question(
             return legacy_answer_question(original_question, session_id=session_id, strategy=strategy)
 
         _trace_step(trace, "tool", "payload_builder")
+        trace["selected"] = {
+            "name": selected.get("name"),
+            "team": selected.get("team"),
+            "rating": selected.get("rating"),
+            "potential": selected.get("potential"),
+            "form": selected.get("form"),
+            "match_count": selected.get("match_count"),
+            "stats_count": len(selected.get("stats") or []),
+        }
         payload, new_names = build_payload_from_candidate(selected, seen_players)
+        payload["agentic_constraints"] = ctx.constraints
 
         if not new_names and not ctx.direct_player_lookup:
             if ctx.quality_discovery_mode:
