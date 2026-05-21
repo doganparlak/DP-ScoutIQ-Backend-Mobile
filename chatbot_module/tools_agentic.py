@@ -861,6 +861,12 @@ def build_agentic_context(
         direct_lookup = False
 
     premium_only = is_premium_request(translated)
+    cleaned_constraints = clean_constraints(constraints)
+    if target_team and cleaned_constraints.get("team") and is_same_club(target_team, cleaned_constraints.get("team")):
+        cleaned_constraints["team"] = None
+        note = cleaned_constraints.get("notes") or ""
+        suffix = f" Treated {target_team} as target team, not source team."
+        cleaned_constraints["notes"] = (note + suffix).strip()[:160]
     discovery_mode = not mentions_seen and not direct_lookup
     quality_discovery_mode = (
         discovery_mode
@@ -888,7 +894,7 @@ def build_agentic_context(
         allow_non_senior=request_allows_non_senior_squads(translated),
         premium_only=premium_only,
         quality_discovery_mode=quality_discovery_mode,
-        constraints=clean_constraints(constraints),
+        constraints=cleaned_constraints,
     )
 
 
