@@ -751,8 +751,20 @@ def _choose_scored_candidate(
 
     quality_mode = bool(getattr(ctx, "quality_discovery_mode", False) or getattr(ctx, "premium_only", False))
     valid_scored: List[Dict[str, Any]] = []
+    scored_candidates: List[Dict[str, Any]] = []
     score_rejections: Dict[str, int] = {}
     scored_samples: List[Dict[str, Any]] = []
+
+    def quality_key(candidate: Dict[str, Any]) -> tuple:
+        return (
+            candidate.get("potential") or 0,
+            candidate.get("form") or 0,
+            len(candidate.get("stats") or []),
+            candidate.get("match_count") or 0,
+            candidate.get("rating") or 0,
+            1 if selected_index is not None and candidate.get("index") == selected_index else 0,
+        )
+
     for candidate in ordered:
         try:
             scored = _score_candidate_with_ai(
@@ -764,6 +776,7 @@ def _choose_scored_candidate(
         except Exception:
             score_rejections["scoring_exception"] = score_rejections.get("scoring_exception", 0) + 1
             continue
+        scored_candidates.append(scored)
         rejection = validate_candidate(scored, ctx)
         sample = {
             "name": scored.get("name"),
@@ -785,6 +798,46 @@ def _choose_scored_candidate(
         else:
             score_rejections[rejection] = score_rejections.get(rejection, 0) + 1
     if not valid_scored:
+        if getattr(ctx, "quality_discovery_mode", False) and scored_candidates:
+            selected = max(scored_candidates, key=quality_key)
+            if trace is not None:
+                trace["selection_mode"] = "quality_relaxed_best_available"
+            _quality_debug("scoring_validation", {
+                "scored_count": len(scored_samples),
+                "valid_count": 0,
+                "selection_mode": "quality_relaxed_best_available",
+                "selected": {
+                    "name": selected.get("name"),
+                    "team": selected.get("team"),
+                    "league": selected.get("league_name"),
+                    "rating": selected.get("rating"),
+                    "potential": selected.get("potential"),
+                    "form": selected.get("form"),
+                    "stats_count": len(selected.get("stats") or []),
+                },
+                "top_rejections": sorted(score_rejections.items(), key=lambda item: item[1], reverse=True)[:5],
+                "sample_scored": scored_samples,
+            })
+            return selected
+        if getattr(ctx, "quality_discovery_mode", False) and ordered:
+            selected = max(ordered, key=quality_key)
+            if trace is not None:
+                trace["selection_mode"] = "quality_relaxed_unscored_best_available"
+            _quality_debug("scoring_validation", {
+                "scored_count": len(scored_samples),
+                "valid_count": 0,
+                "selection_mode": "quality_relaxed_unscored_best_available",
+                "selected": {
+                    "name": selected.get("name"),
+                    "team": selected.get("team"),
+                    "league": selected.get("league_name"),
+                    "rating": selected.get("rating"),
+                    "stats_count": len(selected.get("stats") or []),
+                },
+                "top_rejections": sorted(score_rejections.items(), key=lambda item: item[1], reverse=True)[:5],
+                "sample_scored": scored_samples,
+            })
+            return selected
         if getattr(ctx, "quality_discovery_mode", False):
             _quality_debug("scoring_validation", {
                 "scored_count": len(scored_samples),
@@ -793,16 +846,6 @@ def _choose_scored_candidate(
                 "sample_scored": scored_samples,
             })
         return None
-
-    def quality_key(candidate: Dict[str, Any]) -> tuple:
-        return (
-            candidate.get("potential") or 0,
-            candidate.get("form") or 0,
-            len(candidate.get("stats") or []),
-            candidate.get("match_count") or 0,
-            candidate.get("rating") or 0,
-            1 if selected_index is not None and candidate.get("index") == selected_index else 0,
-        )
 
     selection_mode = "max_quality" if quality_mode else "selector_first_valid"
     ranked_for_log = sorted(valid_scored, key=quality_key, reverse=True) if quality_mode else valid_scored
@@ -1187,15 +1230,12 @@ def answer_question(
             candidates = []
 
         if not candidate_docs and not candidates:
-            if ctx.quality_discovery_mode:
-                answer = "I could not find a player who satisfies the quality thresholds for that request."
-                answer = _translate_output_if_needed(answer, lang, trace)
-                _persist_turn(session_id, ctx.translated_question, answer, {"players": []})
-                _trace_step(trace, "tool", "persist_memory")
-                _log_trace(trace, session_id=session_id, outcome="no_quality_candidates")
-                return {"answer": answer, "data": {"players": []}}
             _trace_step(trace, "tool", "legacy_fallback")
-            _log_trace(trace, session_id=session_id, outcome="fallback_no_candidates")
+            _log_trace(
+                trace,
+                session_id=session_id,
+                outcome="fallback_no_candidates_quality_relaxed" if ctx.quality_discovery_mode else "fallback_no_candidates",
+            )
             return legacy_answer_question(original_question, session_id=session_id, strategy=strategy)
 
         if not candidates:
@@ -1248,15 +1288,16 @@ def answer_question(
             trace=trace,
         )
         if not selected:
-            if ctx.quality_discovery_mode:
-                answer = "I could not find a player who satisfies the quality thresholds for that request."
-                answer = _translate_output_if_needed(answer, lang, trace)
-                _persist_turn(session_id, ctx.translated_question, answer, {"players": []})
-                _trace_step(trace, "tool", "persist_memory")
-                _log_trace(trace, session_id=session_id, outcome="no_valid_quality_candidate")
-                return {"answer": answer, "data": {"players": []}}
             _trace_step(trace, "tool", "legacy_fallback")
-            _log_trace(trace, session_id=session_id, outcome="fallback_no_valid_scored_candidate")
+            _log_trace(
+                trace,
+                session_id=session_id,
+                outcome=(
+                    "fallback_no_valid_scored_candidate_quality_relaxed"
+                    if ctx.quality_discovery_mode
+                    else "fallback_no_valid_scored_candidate"
+                ),
+            )
             return legacy_answer_question(original_question, session_id=session_id, strategy=strategy)
 
         _trace_step(trace, "tool", "payload_builder")
@@ -1274,15 +1315,12 @@ def answer_question(
 
         if not new_names and not ctx.direct_player_lookup:
             if ctx.quality_discovery_mode:
-                answer = "I could not find a different player who satisfies the quality thresholds for that request."
-                answer = _translate_output_if_needed(answer, lang, trace)
-                _persist_turn(session_id, ctx.translated_question, answer, {"players": []})
-                _trace_step(trace, "tool", "persist_memory")
-                _log_trace(trace, session_id=session_id, outcome="no_new_quality_candidate")
-                return {"answer": answer, "data": {"players": []}}
-            _trace_step(trace, "tool", "legacy_fallback")
-            _log_trace(trace, session_id=session_id, outcome="fallback_duplicate_candidate")
-            return legacy_answer_question(original_question, session_id=session_id, strategy=strategy)
+                trace["selection_mode"] = trace.get("selection_mode") or "quality_duplicate_allowed"
+                trace["selected"]["duplicate_allowed"] = True
+            else:
+                _trace_step(trace, "tool", "legacy_fallback")
+                _log_trace(trace, session_id=session_id, outcome="fallback_duplicate_candidate")
+                return legacy_answer_question(original_question, session_id=session_id, strategy=strategy)
 
         p0 = (payload.get("players") or [None])[0] or {}
         profile_meta = p0.get("meta") or {}

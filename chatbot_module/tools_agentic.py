@@ -1289,6 +1289,35 @@ def build_filtered_retriever_agentic(
         original_level = int(ctx.constraint_relaxation_level or 0)
         if ctx.quality_discovery_mode:
             docs = fetch_quality_suggestion_docs_from_db(ctx)
+            if not docs:
+                ctx.retrieval_debug.append({
+                    "pass": "quality_relaxed_to_selection",
+                    "raw_count": 0,
+                    "accepted_count": 0,
+                    "returned_count": 0,
+                    "top_rejections": [("quality_docs_empty", 1)],
+                })
+                for level in range(original_level, 5):
+                    ctx.constraint_relaxation_level = level
+                    db_docs = fetch_selection_suggestion_docs_from_db(ctx, enforce_allowed_leagues=True)
+                    docs = _merge_docs(docs, db_docs)
+                    docs = _diverse_doc_cap(docs, limit=SELECTOR_CANDIDATE_LIMIT)
+                    if len(docs or []) >= SELECTOR_CANDIDATE_LIMIT or docs:
+                        break
+            if not docs:
+                ctx.allow_all_selection_leagues = True
+                for level in range(original_level, 5):
+                    ctx.constraint_relaxation_level = level
+                    db_docs = fetch_selection_suggestion_docs_from_db(ctx, enforce_allowed_leagues=False)
+                    docs = _merge_docs(docs, db_docs)
+                    docs = _diverse_doc_cap(docs, limit=SELECTOR_CANDIDATE_LIMIT)
+                    if len(docs or []) >= SELECTOR_CANDIDATE_LIMIT or docs:
+                        break
+            if not docs:
+                ctx.constraint_relaxation_level = 5
+                db_docs = fetch_selection_suggestion_docs_from_db(ctx, enforce_allowed_leagues=False)
+                docs = _merge_docs(docs, db_docs)
+                docs = _diverse_doc_cap(docs, limit=SELECTOR_CANDIDATE_LIMIT)
         else:
             for level in range(original_level, 5):
                 ctx.constraint_relaxation_level = level
