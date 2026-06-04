@@ -1,6 +1,6 @@
 # api_module/main.py
 from typing import Optional, Dict, Any, List
-from fastapi import FastAPI, HTTPException, Depends, Header, status, Response, Body, BackgroundTasks
+from fastapi import FastAPI, HTTPException, Depends, Header, status, Response, Body, BackgroundTasks, Query as FastAPIQuery
 from fastapi.middleware.cors import CORSMiddleware
 from dotenv import load_dotenv
 
@@ -622,12 +622,13 @@ def player_pool_search(
 @app.post("/player-pool/{player_id}/search-hit")
 def player_pool_record_search_hit(
     player_id: str,
+    worldCupMode: bool = FastAPIQuery(False),
     user_id: int = Depends(require_auth),
     db: Session = Depends(get_db),
 ):
     _ = user_id  # authenticated route by design
     try:
-        record_player_search(db, player_id)
+        record_player_search(db, player_id, worldCupMode)
     except (TypeError, ValueError):
         raise HTTPException(status_code=400, detail="Invalid player_id")
     db.commit()
@@ -640,8 +641,9 @@ def player_pool_weekly_popular(
     user_id: int = Depends(require_auth),
     db: Session = Depends(get_db),
 ):
-    record_weekly_popular_reveal(db, user_id)
-    rows = get_weekly_popular_players(db, payload.limit or 10)
+    world_cup_mode = bool(payload.worldCupMode)
+    record_weekly_popular_reveal(db, user_id, world_cup_mode)
+    rows = get_weekly_popular_players(db, payload.limit or 10, world_cup_mode)
     db.commit()
     return rows
 
@@ -654,29 +656,31 @@ def player_pool_matchup_comparison(
 ):
     _ = user_id  # authenticated route by design
     try:
-        return get_matchup_comparison(db, payload.player1Id, payload.player2Id)
+        return get_matchup_comparison(db, payload.player1Id, payload.player2Id, bool(payload.worldCupMode))
     except ValueError as exc:
         raise HTTPException(status_code=404, detail=str(exc))
 
 
 @app.get("/player-pool/options", response_model=PlayerPoolFilterOptionsOut)
 def player_pool_options(
+    worldCupMode: bool = FastAPIQuery(False),
     user_id: int = Depends(require_auth),
     db: Session = Depends(get_db),
 ):
     _ = user_id  # authenticated route by design
-    return get_player_pool_filter_options(db)
+    return get_player_pool_filter_options(db, worldCupMode)
 
 
 @app.post("/player-pool/{player_id}/potential", response_model=PlayerPoolPotentialOut)
 def player_pool_reveal_potential(
     player_id: str,
+    worldCupMode: bool = FastAPIQuery(False),
     user_id: int = Depends(require_auth),
     db: Session = Depends(get_db),
 ):
     _ = user_id  # authenticated route by design
     try:
-        return reveal_player_potential(db, player_id)
+        return reveal_player_potential(db, player_id, worldCupMode)
     except ValueError as exc:
         raise HTTPException(status_code=404, detail=str(exc))
     except RuntimeError as exc:
@@ -686,12 +690,13 @@ def player_pool_reveal_potential(
 @app.post("/player-pool/{player_id}/form", response_model=PlayerPoolFormOut)
 def player_pool_reveal_form(
     player_id: str,
+    worldCupMode: bool = FastAPIQuery(False),
     user_id: int = Depends(require_auth),
     db: Session = Depends(get_db),
 ):
     _ = user_id  # authenticated route by design
     try:
-        return reveal_player_form(db, player_id)
+        return reveal_player_form(db, player_id, worldCupMode)
     except ValueError as exc:
         raise HTTPException(status_code=404, detail=str(exc))
     except RuntimeError as exc:
@@ -763,6 +768,76 @@ def add_favorite(
     db: Session = Depends(get_db),
 ):
     roles_long = to_long_roles(payload.roles)
+    favorite_values: Dict[str, Any] = {
+        "name": payload.name,
+        "nationality": payload.nationality,
+        "age": payload.age,
+        "potential": payload.potential,
+        "form": payload.form,
+        "gender": payload.gender,
+        "height": payload.height,
+        "weight": payload.weight,
+        "team": payload.team,
+        "league": payload.league,
+        "roles": roles_long,
+    }
+
+    if payload.worldCupMode:
+        club_row = db.execute(
+            text("""
+            SELECT id, metadata
+            FROM player_data
+            WHERE lower(COALESCE(metadata->>'player_name', '')) = lower(:name)
+              AND (:gender IS NULL OR lower(COALESCE(metadata->>'gender', '')) = lower(:gender))
+              AND (:age IS NULL OR (
+                    COALESCE(metadata->>'age', '') ~ '^-?[0-9]+(\\.[0-9]+)?$'
+                    AND (metadata->>'age')::numeric = :age
+                  ))
+              AND (:height IS NULL OR (
+                    COALESCE(metadata->>'height', '') ~ '^-?[0-9]+(\\.[0-9]+)?$'
+                    AND (metadata->>'height')::numeric = :height
+                  ))
+              AND (:weight IS NULL OR (
+                    COALESCE(metadata->>'weight', '') ~ '^-?[0-9]+(\\.[0-9]+)?$'
+                    AND (metadata->>'weight')::numeric = :weight
+                  ))
+            ORDER BY id DESC
+            LIMIT 1
+            """),
+            {
+                "name": payload.name,
+                "gender": payload.gender,
+                "age": payload.age,
+                "height": payload.height,
+                "weight": payload.weight,
+            },
+        ).mappings().first()
+
+        if club_row and club_row.get("metadata"):
+            club_meta = club_row["metadata"] or {}
+            club_roles = club_meta.get("roles") or club_meta.get("positions") or []
+            if not club_roles and club_meta.get("position_name"):
+                club_roles = [club_meta.get("position_name")]
+            if not isinstance(club_roles, list):
+                club_roles = [club_roles] if club_roles else []
+            favorite_values.update({
+                "name": club_meta.get("player_name") or payload.name,
+                "nationality": club_meta.get("nationality_name") or club_meta.get("nationality"),
+                "age": club_meta.get("age"),
+                "gender": club_meta.get("gender"),
+                "height": club_meta.get("height"),
+                "weight": club_meta.get("weight"),
+                "team": club_meta.get("team_name") or club_meta.get("team"),
+                "league": club_meta.get("league_name") or club_meta.get("league"),
+                "roles": to_long_roles(club_roles),
+                "potential": None,
+                "form": None,
+            })
+            if payload.formRevealed:
+                form_result = reveal_player_form(db, club_row["id"], False)
+                potential_result = reveal_player_potential(db, club_row["id"], False)
+                favorite_values["form"] = form_result.get("form")
+                favorite_values["potential"] = potential_result.get("potential")
 
     existing = db.execute(
         text("""
@@ -776,22 +851,26 @@ def add_favorite(
         """),
         {
             "uid": user_id,
-            "name": payload.name,
-            "nat": payload.nationality,
-            "age": payload.age,
+            "name": favorite_values["name"],
+            "nat": favorite_values["nationality"],
+            "age": favorite_values["age"],
         }
     ).mappings().first()
 
     if existing:
         league = existing["league"]
         form = existing["form"]
+        potential = existing["potential"]
         updates: Dict[str, Any] = {}
-        if not league and payload.league:
-            updates["league"] = payload.league
-            league = payload.league
-        if form is None and payload.form is not None:
-            updates["form"] = payload.form
-            form = payload.form
+        if not league and favorite_values["league"]:
+            updates["league"] = favorite_values["league"]
+            league = favorite_values["league"]
+        if form is None and favorite_values["form"] is not None:
+            updates["form"] = favorite_values["form"]
+            form = favorite_values["form"]
+        if existing["potential"] is None and favorite_values["potential"] is not None:
+            updates["potential"] = favorite_values["potential"]
+            potential = favorite_values["potential"]
         if updates:
             set_clause = ", ".join(f"{key} = :{key}" for key in updates)
             db.execute(
@@ -816,7 +895,7 @@ def add_favorite(
             name=existing["name"],
             nationality=existing["nationality"],
             age=existing["age"],
-            potential=existing["potential"],
+            potential=potential,
             form=form,
             gender=existing["gender"],
             height=existing["height"],
@@ -867,17 +946,17 @@ def add_favorite(
         {
             "id": fav_id,
             "uid": user_id,
-            "name": payload.name,
-            "nat": payload.nationality,
-            "age": payload.age,
-            "pot": payload.potential,
-            "form": payload.form,
-            "gender": payload.gender,
-            "height": payload.height,
-            "weight": payload.weight,
-            "team": payload.team,
-            "league": payload.league,
-            "roles": json.dumps(roles_long, ensure_ascii=False),
+            "name": favorite_values["name"],
+            "nat": favorite_values["nationality"],
+            "age": favorite_values["age"],
+            "pot": favorite_values["potential"],
+            "form": favorite_values["form"],
+            "gender": favorite_values["gender"],
+            "height": favorite_values["height"],
+            "weight": favorite_values["weight"],
+            "team": favorite_values["team"],
+            "league": favorite_values["league"],
+            "roles": json.dumps(favorite_values["roles"], ensure_ascii=False),
             "ts": created_at,
         }
     )
@@ -885,17 +964,17 @@ def add_favorite(
 
     return FavoritePlayerOut(
         id=fav_id,
-        name=payload.name,
-        nationality=payload.nationality,
-        age=payload.age,
-        potential=payload.potential,
-        form=payload.form,
-        gender=payload.gender,
-        height=payload.height,
-        weight=payload.weight,
-        team=payload.team,
-        league=payload.league,
-        roles=roles_long,
+        name=favorite_values["name"],
+        nationality=favorite_values["nationality"],
+        age=favorite_values["age"],
+        potential=favorite_values["potential"],
+        form=favorite_values["form"],
+        gender=favorite_values["gender"],
+        height=favorite_values["height"],
+        weight=favorite_values["weight"],
+        team=favorite_values["team"],
+        league=favorite_values["league"],
+        roles=favorite_values["roles"],
     )
 
 

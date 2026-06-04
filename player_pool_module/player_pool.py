@@ -12,6 +12,7 @@ from player_pool_module.utilities import (
     clean_str,
     folded_text_sql,
     numeric_filter_sql,
+    player_pool_table,
 )
 
 
@@ -19,10 +20,11 @@ SEARCH_LIMIT = 100
 
 
 def search_players(db: Session, filters: Dict[str, Any]) -> List[Dict[str, Any]]:
+    table_name = player_pool_table(bool(filters.get("worldCupMode")))
     name = clean_str(filters.get("name"))
     gender = clean_str(filters.get("gender"))
-    nationality = clean_str(filters.get("nationality"))
-    league = clean_str(filters.get("league"))
+    nationality = None if filters.get("worldCupMode") else clean_str(filters.get("nationality"))
+    league = None if filters.get("worldCupMode") else clean_str(filters.get("league"))
     team = clean_str(filters.get("team"))
     position = clean_str(filters.get("position"))
     name_norm = norm_name(name) if name else None
@@ -35,7 +37,7 @@ def search_players(db: Session, filters: Dict[str, Any]) -> List[Dict[str, Any]]
         SELECT
             id,
             metadata AS content
-        FROM player_data
+        FROM {table_name}
         WHERE (
                 :name_q IS NULL
                 OR metadata->>'player_name' ILIKE :name_q
@@ -108,34 +110,35 @@ def search_players(db: Session, filters: Dict[str, Any]) -> List[Dict[str, Any]]
     return [{"id": row["id"], "content": row["content"] or {}} for row in rows]
 
 
-def get_player_pool_filter_options(db: Session) -> Dict[str, List[str]]:
+def get_player_pool_filter_options(db: Session, world_cup_mode: bool = False) -> Dict[str, List[str]]:
+    table_name = player_pool_table(world_cup_mode)
     teams = db.execute(text("""
         SELECT DISTINCT metadata->>'team_name' AS value
-        FROM player_data
+        FROM {table_name}
         WHERE COALESCE(metadata->>'team_name', '') <> ''
         ORDER BY value
-    """)).scalars().all()
+    """.format(table_name=table_name))).scalars().all()
 
     nationalities = db.execute(text("""
         SELECT DISTINCT metadata->>'nationality_name' AS value
-        FROM player_data
+        FROM {table_name}
         WHERE COALESCE(metadata->>'nationality_name', '') <> ''
         ORDER BY value
-    """)).scalars().all()
+    """.format(table_name=table_name))).scalars().all()
 
     leagues = db.execute(text("""
         SELECT DISTINCT metadata->>'league_name' AS value
-        FROM player_data
+        FROM {table_name}
         WHERE COALESCE(metadata->>'league_name', '') <> ''
         ORDER BY value
-    """)).scalars().all()
+    """.format(table_name=table_name))).scalars().all()
 
     positions = db.execute(text("""
         SELECT DISTINCT metadata->>'position_name' AS value
-        FROM player_data
+        FROM {table_name}
         WHERE COALESCE(metadata->>'position_name', '') <> ''
         ORDER BY value
-    """)).scalars().all()
+    """.format(table_name=table_name))).scalars().all()
 
     return {
         "teams": [value for value in teams if value],

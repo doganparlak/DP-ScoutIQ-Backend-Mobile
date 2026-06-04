@@ -12,6 +12,10 @@ def clean_str(value: str | None) -> str | None:
     return value or None
 
 
+def player_pool_table(world_cup_mode: bool = False) -> str:
+    return "player_data_wc" if world_cup_mode else "player_data"
+
+
 def numeric_filter_sql(field_name: str, param_name: str, operator: str) -> str:
     value_expr = f"""
     CASE

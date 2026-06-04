@@ -5,17 +5,20 @@ from typing import Any, Dict
 from sqlalchemy import text
 from sqlalchemy.orm import Session
 
+from player_pool_module.utilities import player_pool_table
 
-def _fetch_player_metadata(db: Session, player_id: str) -> Dict[str, Any]:
+
+def _fetch_player_metadata(db: Session, player_id: str, world_cup_mode: bool = False) -> Dict[str, Any]:
     try:
         player_id_int = int(player_id)
     except (TypeError, ValueError) as exc:
         raise ValueError("Invalid player_id") from exc
 
+    table_name = player_pool_table(world_cup_mode)
     row = db.execute(
-        text("""
+        text(f"""
         SELECT id, metadata AS content
-        FROM player_data
+        FROM {table_name}
         WHERE id = :player_id
         LIMIT 1
         """),
@@ -31,8 +34,8 @@ def _fetch_player_metadata(db: Session, player_id: str) -> Dict[str, Any]:
     }
 
 
-def get_matchup_comparison(db: Session, player1_id: str, player2_id: str) -> Dict[str, Any]:
+def get_matchup_comparison(db: Session, player1_id: str, player2_id: str, world_cup_mode: bool = False) -> Dict[str, Any]:
     return {
-        "player1": _fetch_player_metadata(db, player1_id),
-        "player2": _fetch_player_metadata(db, player2_id),
+        "player1": _fetch_player_metadata(db, player1_id, world_cup_mode),
+        "player2": _fetch_player_metadata(db, player2_id, world_cup_mode),
     }

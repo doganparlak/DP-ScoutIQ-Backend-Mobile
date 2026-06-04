@@ -28,8 +28,8 @@ _form_prompt = ChatPromptTemplate.from_messages([
 ])
 
 
-def reveal_player_form(db: Session, player_id: int | str) -> Dict[str, Any]:
-    full_metadata = get_player_metadata_by_id(db, player_id)
+def reveal_player_form(db: Session, player_id: int | str, world_cup_mode: bool = False) -> Dict[str, Any]:
+    full_metadata = get_player_metadata_by_id(db, player_id, world_cup_mode)
     cached_form = get_cached_player_pool_form(full_metadata)
 
     if cached_form is not None:
@@ -47,7 +47,7 @@ def reveal_player_form(db: Session, player_id: int | str) -> Dict[str, Any]:
     raw_msg = CHAT_LLM.invoke(prompt_messages)
     raw_output = getattr(raw_msg, "content", "") or ""
     form = parse_form_value(raw_output)
-    save_player_pool_form(db, player_id, form)
+    save_player_pool_form(db, player_id, form, world_cup_mode)
     return {
         "player_id": str(player_id),
         "status": "ready",

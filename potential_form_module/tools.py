@@ -18,6 +18,10 @@ def parse_score_value(raw_output: str, score_name: str) -> int:
     return clamp_score(int(match.group(1)))
 
 
+def player_pool_table(world_cup_mode: bool = False) -> str:
+    return "player_data_wc" if world_cup_mode else "player_data"
+
+
 def clamp_potential(value: int) -> int:
     return max(30, clamp_score(value))
 
@@ -33,11 +37,12 @@ def parse_form_value(raw_output: str) -> int:
     return parse_score_value(raw_output, "Form")
 
 
-def get_player_metadata_by_id(db: Session, player_id: int | str) -> Dict[str, Any]:
+def get_player_metadata_by_id(db: Session, player_id: int | str, world_cup_mode: bool = False) -> Dict[str, Any]:
+    table_name = player_pool_table(world_cup_mode)
     row = db.execute(
-        text("""
+        text(f"""
             SELECT metadata
-            FROM player_data
+            FROM {table_name}
             WHERE id = :id
             LIMIT 1
         """),
@@ -107,13 +112,15 @@ def save_player_pool_score(
     player_id: int | str,
     field_name: str,
     score: int,
+    world_cup_mode: bool = False,
 ) -> None:
     if field_name not in {"potential", "form"}:
         raise ValueError("Unsupported player score field")
 
+    table_name = player_pool_table(world_cup_mode)
     db.execute(
         text(f"""
-            UPDATE player_data
+            UPDATE {table_name}
             SET metadata = jsonb_set(
                 COALESCE(metadata::jsonb, '{{}}'::jsonb),
                 '{{{field_name}}}',
@@ -127,9 +134,9 @@ def save_player_pool_score(
     db.commit()
 
 
-def save_player_pool_potential(db: Session, player_id: int | str, potential: int) -> None:
-    save_player_pool_score(db, player_id, "potential", clamp_potential(potential))
+def save_player_pool_potential(db: Session, player_id: int | str, potential: int, world_cup_mode: bool = False) -> None:
+    save_player_pool_score(db, player_id, "potential", clamp_potential(potential), world_cup_mode)
 
 
-def save_player_pool_form(db: Session, player_id: int | str, form: int) -> None:
-    save_player_pool_score(db, player_id, "form", form)
+def save_player_pool_form(db: Session, player_id: int | str, form: int, world_cup_mode: bool = False) -> None:
+    save_player_pool_score(db, player_id, "form", form, world_cup_mode)

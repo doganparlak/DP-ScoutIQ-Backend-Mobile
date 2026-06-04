@@ -28,8 +28,8 @@ _potential_prompt = ChatPromptTemplate.from_messages([
 ])
 
 
-def reveal_player_potential(db: Session, player_id: int | str) -> Dict[str, Any]:
-    full_metadata = get_player_metadata_by_id(db, player_id)
+def reveal_player_potential(db: Session, player_id: int | str, world_cup_mode: bool = False) -> Dict[str, Any]:
+    full_metadata = get_player_metadata_by_id(db, player_id, world_cup_mode)
     cached_potential = get_cached_player_pool_potential(full_metadata)
 
     if cached_potential is not None:
@@ -47,7 +47,7 @@ def reveal_player_potential(db: Session, player_id: int | str) -> Dict[str, Any]
     raw_msg = CHAT_LLM.invoke(prompt_messages)
     raw_output = getattr(raw_msg, "content", "") or ""
     potential = parse_potential_value(raw_output)
-    save_player_pool_potential(db, player_id, potential)
+    save_player_pool_potential(db, player_id, potential, world_cup_mode)
     return {
         "player_id": str(player_id),
         "status": "ready",

@@ -38,6 +38,8 @@ class FavoritePlayerIn(BaseModel):
     weight: Optional[float] = Field(default=None, ge=0)
     team: Optional[str] = None
     league: Optional[str] = None
+    worldCupMode: Optional[bool] = False
+    formRevealed: Optional[bool] = False
     # Accepts SHORT or LONG; backend will normalize to LONG before storing.
     roles: List[str] = Field(default_factory=list)
 
@@ -164,6 +166,7 @@ class PlayerPoolSearchIn(BaseModel):
     maxWeight: Optional[float] = Field(default=None, ge=0)
     position: Optional[str] = None
     limit: Optional[int] = Field(default=100, ge=1, le=200)
+    worldCupMode: Optional[bool] = False
 
 
 class PlayerPoolSearchRow(BaseModel):
@@ -173,6 +176,7 @@ class PlayerPoolSearchRow(BaseModel):
 
 class PlayerPoolWeeklyPopularIn(BaseModel):
     limit: Optional[int] = Field(default=10, ge=1, le=10)
+    worldCupMode: Optional[bool] = False
 
 
 class PlayerPoolFilterOptionsOut(BaseModel):
@@ -199,6 +203,7 @@ class PlayerPoolFormOut(BaseModel):
 class MatchupComparisonIn(BaseModel):
     player1Id: str
     player2Id: str
+    worldCupMode: Optional[bool] = False
 
 
 class MatchupComparisonPlayer(BaseModel):
