@@ -536,6 +536,9 @@ async def chat(body: ChatIn,
                user_id: int = Depends(require_auth), 
                accept_language: str | None = Header(default=None),
                db: Session = Depends(get_db)) -> Dict[str, Any]:
+    if not body.tutorial_mode and not is_user_pro(db, user_id):
+        raise HTTPException(status_code=403, detail="ScoutWise Pro required")
+
     session_id = body.session_id or "default"
     header_lang = normalize_lang(accept_language)
     user_lang = normalize_lang(get_user_language(db, user_id))

@@ -573,25 +573,16 @@ def split_response_parts(html: str):
 
 # === USER PLAN CHECK ====
 def is_user_pro(db: Session, user_id: int) -> bool:
-    row = db.execute(text("""
-        SELECT plan, subscription_end_at
-        FROM users
-        WHERE id = :uid
-        LIMIT 1
-    """), {"uid": user_id}).mappings().first()
-
-    if not row:
-        return False
-    
-    plan = row.get("plan")
-    end_at = row.get("subscription_end_at")
-
-    if plan not in ("Pro Monthly", "Pro Yearly"):
-        return False
-
-    # subscription_end_at must exist and be in the future
-    now_db = db.execute(text("NOW()")).scalar()
-    return end_at is not None and end_at > now_db()
+    return bool(db.execute(text("""
+        SELECT EXISTS (
+            SELECT 1
+            FROM users
+            WHERE id = :uid
+              AND plan IN ('Pro Monthly', 'Pro Yearly')
+              AND subscription_end_at IS NOT NULL
+              AND subscription_end_at > NOW()
+        )
+    """), {"uid": user_id}).scalar())
 
 def plan_from_product_id(product_id: str | None) -> str:
     if not product_id:
