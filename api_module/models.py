@@ -214,3 +214,57 @@ class MatchupComparisonPlayer(BaseModel):
 class MatchupComparisonOut(BaseModel):
     player1: MatchupComparisonPlayer
     player2: MatchupComparisonPlayer
+
+
+class DailyScoutQuestionText(BaseModel):
+    en: str
+    tr: str
+
+
+class DailyScoutChoice(BaseModel):
+    id: str | int
+    content: Dict[str, Any]
+
+
+class DailyScoutAttemptOut(BaseModel):
+    status: Literal["available", "skipped", "completed"]
+    chosenPlayerId: Optional[str] = None
+    isCorrect: Optional[bool] = None
+    score: Optional[int] = None
+    needsNickname: bool = False
+
+
+class DailyScoutChallengeOut(BaseModel):
+    challengeId: str
+    challengeDate: str
+    strategy: DailyScoutQuestionText
+    question: DailyScoutQuestionText
+    choices: List[DailyScoutChoice]
+    winnerPlayerId: Optional[str] = None
+    explanation: Optional[DailyScoutQuestionText] = None
+    attempt: DailyScoutAttemptOut
+
+
+class DailyScoutAnswerIn(BaseModel):
+    challengeId: str
+    chosenPlayerId: str
+
+
+class DailyScoutNicknameIn(BaseModel):
+    nickname: str = Field(min_length=2, max_length=24)
+
+
+class DailyScoutNicknameOut(BaseModel):
+    nickname: str
+
+
+class DailyScoutLeaderboardRow(BaseModel):
+    nickname: str
+    score: int
+    played: int
+    correct: int
+
+
+class DailyScoutLeaderboardOut(BaseModel):
+    weekStart: str
+    rows: List[DailyScoutLeaderboardRow]

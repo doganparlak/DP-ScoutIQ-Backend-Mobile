@@ -29,7 +29,8 @@ from api_module.models import (
     ScoutingReportIn, ScoutingReportOut, ConsentPatch, PlayerPoolSearchIn,
     PlayerPoolSearchRow, PlayerPoolFilterOptionsOut, PlayerPoolPotentialOut,
     PlayerPoolFormOut, PlayerPoolWeeklyPopularIn, MatchupComparisonIn,
-    MatchupComparisonOut, TutorialPatch,
+    MatchupComparisonOut, TutorialPatch, DailyScoutAnswerIn, DailyScoutChallengeOut,
+    DailyScoutNicknameIn, DailyScoutNicknameOut, DailyScoutLeaderboardOut,
 )
 from player_pool_module.player_pool import (
     get_player_pool_filter_options,
@@ -43,6 +44,13 @@ from player_pool_module.weekly_popular import (
     record_weekly_popular_reveal,
 )
 from matchup_module.comparison import get_matchup_comparison
+from daily_quiz_module.quiz import (
+    get_daily_status,
+    get_weekly_leaderboard,
+    set_weekly_nickname,
+    skip_daily_challenge,
+    submit_daily_answer,
+)
 from tutorial_module.tutorial import tutorial_chat_response, tutorial_yamal_scouting_report
 
 import hmac, uuid, json, re, os
@@ -702,6 +710,55 @@ def player_pool_reveal_form(
     except RuntimeError as exc:
         raise HTTPException(status_code=500, detail=str(exc))
 
+
+
+@app.get("/daily-scout-challenge", response_model=DailyScoutChallengeOut)
+def daily_scout_challenge_status(user_id: int = Depends(require_auth), db: Session = Depends(get_db)):
+    try:
+        return get_daily_status(db, user_id)
+    except RuntimeError as exc:
+        raise HTTPException(status_code=500, detail=str(exc))
+
+
+@app.post("/daily-scout-challenge/skip", response_model=DailyScoutChallengeOut)
+def daily_scout_challenge_skip(user_id: int = Depends(require_auth), db: Session = Depends(get_db)):
+    return skip_daily_challenge(db, user_id)
+
+
+@app.post("/daily-scout-challenge/answer", response_model=DailyScoutChallengeOut)
+def daily_scout_challenge_answer(
+    payload: DailyScoutAnswerIn,
+    user_id: int = Depends(require_auth),
+    db: Session = Depends(get_db),
+):
+    try:
+        return submit_daily_answer(db, user_id, payload.challengeId, payload.chosenPlayerId)
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc))
+
+
+@app.post("/daily-scout-challenge/nickname", response_model=DailyScoutNicknameOut)
+def daily_scout_challenge_nickname(
+    payload: DailyScoutNicknameIn,
+    user_id: int = Depends(require_auth),
+    db: Session = Depends(get_db),
+):
+    try:
+        return set_weekly_nickname(db, user_id, payload.nickname)
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc))
+
+
+@app.get("/daily-scout-challenge/leaderboard", response_model=DailyScoutLeaderboardOut)
+def daily_scout_challenge_leaderboard(
+    limit: int = FastAPIQuery(20, ge=1, le=50),
+    user_id: int = Depends(require_auth),
+    db: Session = Depends(get_db),
+):
+    _ = user_id
+    return get_weekly_leaderboard(db, limit)
+
+
 # --- favorite players ---
 @app.get("/me/favorites", response_model=List[FavoritePlayerOut])
 def list_favorites(user_id: int = Depends(require_auth), db: Session = Depends(get_db)):
@@ -781,6 +838,60 @@ def add_favorite(
         "league": payload.league,
         "roles": roles_long,
     }
+
+    if payload.formRevealed and not payload.worldCupMode:
+        player_row = db.execute(
+            text("""
+            SELECT id, metadata
+            FROM player_data
+            WHERE lower(COALESCE(metadata->>'player_name', '')) = lower(:name)
+              AND (:gender IS NULL OR lower(COALESCE(metadata->>'gender', '')) = lower(:gender))
+              AND (:age IS NULL OR (
+                    COALESCE(metadata->>'age', '') ~ '^-?[0-9]+(\.[0-9]+)?$'
+                    AND (metadata->>'age')::numeric = :age
+                  ))
+              AND (:height IS NULL OR (
+                    COALESCE(metadata->>'height', '') ~ '^-?[0-9]+(\.[0-9]+)?$'
+                    AND (metadata->>'height')::numeric = :height
+                  ))
+              AND (:weight IS NULL OR (
+                    COALESCE(metadata->>'weight', '') ~ '^-?[0-9]+(\.[0-9]+)?$'
+                    AND (metadata->>'weight')::numeric = :weight
+                  ))
+            ORDER BY id DESC
+            LIMIT 1
+            """),
+            {
+                "name": payload.name,
+                "gender": payload.gender,
+                "age": payload.age,
+                "height": payload.height,
+                "weight": payload.weight,
+            },
+        ).mappings().first()
+
+        if player_row and player_row.get("metadata"):
+            player_meta = player_row["metadata"] or {}
+            player_roles = player_meta.get("roles") or player_meta.get("positions") or []
+            if not player_roles and player_meta.get("position_name"):
+                player_roles = [player_meta.get("position_name")]
+            if not isinstance(player_roles, list):
+                player_roles = [player_roles] if player_roles else []
+            form_result = reveal_player_form(db, player_row["id"], False)
+            potential_result = reveal_player_potential(db, player_row["id"], False)
+            favorite_values.update({
+                "name": player_meta.get("player_name") or payload.name,
+                "nationality": player_meta.get("nationality_name") or player_meta.get("nationality") or payload.nationality,
+                "age": player_meta.get("age") or payload.age,
+                "gender": player_meta.get("gender") or payload.gender,
+                "height": player_meta.get("height") or payload.height,
+                "weight": player_meta.get("weight") or payload.weight,
+                "team": player_meta.get("team_name") or player_meta.get("team") or payload.team,
+                "league": player_meta.get("league_name") or player_meta.get("league") or payload.league,
+                "roles": to_long_roles(player_roles),
+                "form": form_result.get("form"),
+                "potential": potential_result.get("potential"),
+            })
 
     if payload.worldCupMode:
         club_row = db.execute(
