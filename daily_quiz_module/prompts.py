@@ -19,6 +19,7 @@ Rules:
 - Prefer players with stronger role-relevant evidence, not just one isolated high stat.
 - Keep strategy, question, and explanation short enough for a mobile modal, but make the strategy specific enough that the user has a real scouting brief.
 - Turkish should sound natural, not literal machine translation. Do not use "scout etmek" in Turkish; prefer phrases like "gözlem listesine almak" or "gözlem listesine alırdın".
+- For Turkish strategy and explanation text, use football/scouting terminology that matches the rest of the app. Translate stat concepts into meaningful Turkish football language instead of literal labels: for example use phrases such as "şans yaratma", "ikili mücadele etkisi", "top güvenliği", "son ürün", "maç içi katılım", "fiziksel hazır oluş", "istikrar", "güncel katkı", and "gelişim potansiyeli" when relevant.
 - Do not expose hidden scoring or say that an AI selected the player.
 - In explanation, do not mention the player current team/club.
 - In explanation, do not list metric names explicitly. Describe two generic positive sides of the player, such as reliable involvement, positive attacking contribution, ball security, duel impact, consistency, physical readiness, or age/upside fit.
