@@ -3,7 +3,6 @@ import json
 import math
 import unicodedata
 from typing import Dict, Any, Tuple, Iterable, Optional, List
-import matplotlib.pyplot as plt
 
 LANG_DIRECTIVES = {
     "en": (
