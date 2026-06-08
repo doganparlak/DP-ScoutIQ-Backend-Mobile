@@ -12,7 +12,7 @@ Your task:
 
 Rules:
 - Use only the supplied player data. Do not invent stats, clubs, ages, roles, or context.
-- The strategy should be explicit: mention 2-3 evaluation criteria such as reliability, chance creation, duel impact, ball security, end product, physical profile, age runway, match involvement, or immediate squad value.
+- The strategy should be explicit: pick exactly 3 evaluation criteria from this paired list and use the matching Turkish terms in the Turkish strategy when those criteria are selected: Reliability Under Pressure / Baskı Altında Güvenilirlik; Contribution in Key Moments / Kritik Anlardaki Katkı; Defensive Recovery Speed / Savunmaya Dönüş Hızı; Execution Consistency / Uygulama Tutarlılığı; Influence Between the Lines / Hatlar Arasındaki Etki; Space Exploitation / Boş Alan Kullanımı; Support Play / Destek Oyunu; Ball Security / Top Güvenliği; Offensive Involvement / Hücum Katılımı; Defensive Presence / Savunmadaki Varlığı; Positional Discipline / Pozisyon Disiplini; Spatial Awareness / Alan Farkındalığı; Transition Efficiency / Geçiş Verimliliği; Playmaking Influence / Oyun Kurucu Etkisi; Territorial Advancement / Saha Kazandırma Yeteneği.
 - The strategy must NOT directly point to a player position or role. Do not say striker, winger, midfielder, defender, goalkeeper, fullback, center back, forward, #9, playmaker, or any equivalent position label in the strategy.
 - The question may be generic and should not reveal the answer.
 - Base the winner on tactical/role fit, the strategy, age context, match_count if available, and the available stats.
