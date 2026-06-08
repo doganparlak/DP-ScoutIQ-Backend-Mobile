@@ -3,16 +3,22 @@ from __future__ import annotations
 from typing import Any, Dict, List
 import datetime as dt
 import json
+import os
 import random
+import ssl
+import urllib.error
+import urllib.request
 
-from langchain_deepseek import ChatDeepSeek
-from langchain_core.output_parsers import StrOutputParser
-from langchain_core.prompts import ChatPromptTemplate
+import certifi
+from dotenv import load_dotenv
 from sqlalchemy import text
 from sqlalchemy.orm import Session
 
-from chatbot_module.tools_agentic import ALLOWED_METRICS, POSITIVE_METRICS
+from chatbot_module.metrics import ALLOWED_METRICS, POSITIVE_METRICS
 from daily_quiz_module.prompts import DAILY_SCOUT_FALLBACK_STRATEGIES, DAILY_SCOUT_QUIZ_PROMPT
+
+
+load_dotenv()
 
 
 METADATA_SKIP = {
@@ -23,11 +29,9 @@ METADATA_SKIP = {
     "minutes", "birth_date",
 }
 
-QUIZ_LLM = ChatDeepSeek(model="deepseek-chat", temperature=0.35)
-QUIZ_CHAIN = ChatPromptTemplate.from_messages([
-    ("system", DAILY_SCOUT_QUIZ_PROMPT),
-    ("human", "Candidate players JSON:\n{candidates_json}\n\nReturn JSON only."),
-]) | QUIZ_LLM | StrOutputParser()
+DEEPSEEK_API_KEY = os.getenv("DEEPSEEK_API_KEY", "")
+DEEPSEEK_API_BASE = os.getenv("DEEPSEEK_API_BASE", "https://api.deepseek.com").rstrip("/")
+QUIZ_LLM_TIMEOUT_SECONDS = float(os.getenv("DAILY_SCOUT_LLM_TIMEOUT_SECONDS", "20"))
 
 
 def _today() -> dt.date:
@@ -140,6 +144,55 @@ def _extract_json_object(raw: str) -> Dict[str, Any] | None:
     return None
 
 
+def _quiz_llm_decision(summaries: List[Dict[str, Any]]) -> Dict[str, Any] | None:
+    if not DEEPSEEK_API_KEY:
+        print("[daily_scout_quiz] missing DEEPSEEK_API_KEY; using fallback", flush=True)
+        return None
+
+    body = {
+        "model": "deepseek-chat",
+        "temperature": 0.35,
+        "messages": [
+            {"role": "system", "content": DAILY_SCOUT_QUIZ_PROMPT},
+            {
+                "role": "user",
+                "content": (
+                    "Candidate players JSON:\n"
+                    f"{json.dumps(summaries, ensure_ascii=False)}\n\n"
+                    "Return JSON only."
+                ),
+            },
+        ],
+    }
+    req = urllib.request.Request(
+        f"{DEEPSEEK_API_BASE}/chat/completions",
+        data=json.dumps(body, ensure_ascii=False).encode("utf-8"),
+        headers={
+            "Authorization": f"Bearer {DEEPSEEK_API_KEY}",
+            "Content-Type": "application/json",
+        },
+        method="POST",
+    )
+    try:
+        ssl_context = ssl.create_default_context(cafile=certifi.where())
+        with urllib.request.urlopen(req, timeout=QUIZ_LLM_TIMEOUT_SECONDS, context=ssl_context) as resp:
+            payload = json.loads(resp.read().decode("utf-8"))
+    except (urllib.error.URLError, TimeoutError, json.JSONDecodeError) as exc:
+        print(f"[daily_scout_quiz] DeepSeek request failed; using fallback: {exc}", flush=True)
+        return None
+
+    try:
+        raw = payload["choices"][0]["message"]["content"]
+    except (KeyError, IndexError, TypeError) as exc:
+        print(f"[daily_scout_quiz] DeepSeek response missing content; using fallback: {exc}", flush=True)
+        return None
+
+    parsed = _extract_json_object(raw)
+    if not parsed:
+        print("[daily_scout_quiz] DeepSeek response was not valid JSON; using fallback", flush=True)
+    return parsed
+
+
 def _fallback_decision(choices: List[Dict[str, Any]]) -> Dict[str, Any]:
     strategy = random.choice(DAILY_SCOUT_FALLBACK_STRATEGIES)
     winner = max(choices, key=lambda c: c["score"])
@@ -161,14 +214,12 @@ def _fallback_decision(choices: List[Dict[str, Any]]) -> Dict[str, Any]:
 
 def _ai_decision(choices: List[Dict[str, Any]]) -> Dict[str, Any]:
     summaries = [_candidate_summary(choice) for choice in choices]
-    try:
-        raw = QUIZ_CHAIN.invoke({"candidates_json": json.dumps(summaries, ensure_ascii=False)})
-        parsed = _extract_json_object(raw)
-    except Exception:
-        parsed = None
+    parsed = _quiz_llm_decision(summaries)
 
     valid_ids = {choice["id"] for choice in choices}
     if not parsed or str(parsed.get("winner_player_id")) not in valid_ids:
+        if parsed:
+            print("[daily_scout_quiz] invalid winner_player_id from DeepSeek; using fallback", flush=True)
         return _fallback_decision(choices)
 
     strategy = parsed.get("strategy") if isinstance(parsed.get("strategy"), dict) else {}

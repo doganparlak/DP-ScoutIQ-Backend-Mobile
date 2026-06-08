@@ -1,0 +1,33 @@
+ALLOWED_METRICS = {
+    "Duels Won", "Clearances", "Chances Created", "Accurate Crosses", "Clearance Offline",
+    "Ball Recovery", "Saves Insidebox", "Man Of Match", "Penalties Committed",
+    "Dispossessed", "Fouls", "Goals Conceded", "Shots On Target", "Shots On Target (%)",
+    "Accurate Passes", "Penalties Scored", "Tackles Won", "Aerials Won (%)",
+    "Through Balls", "Offsides Provoked", "Penalties Missed", "Good High Claim",
+    "Big Chances Created", "Penalties Won", "Dribbled Past", "Punches", "Yellow Cards",
+    "Assists", "Blocked Shots", "Backward Passes", "Hit Woodwork", "Shots Total",
+    "Shots Blocked", "Dribble Attempts", "Penalties Saved", "Long Balls Won (%)",
+    "Long Balls Won", "Long Balls", "Tackles", "Aerials", "Offsides", "Possession Lost",
+    "Successful Dribbles", "Goalkeeper Goals Conceded", "Total Crosses", "Total Duels",
+    "Error Lead To Goal", "Saves", "Successful Crosses (%)", "Big Chances Missed",
+    "Own Goals", "Key Passes", "Yellow & Red Cards", "Minutes Played",
+    "Accurate Passes (%)", "Aerials Won", "Goals", "Touches", "Passes", "Duels Lost",
+    "Last Man Tackle", "Shots Off Target", "Interceptions", "Turn Over",
+    "Tackles Won (%)", "Aerials Lost", "Duels Won (%)", "Red Cards", "Captain",
+    "Passes In Final Third", "Rating", "Fouls Drawn", "Error Lead To Shot",
+    "Through Balls Won",
+}
+
+POSITIVE_METRICS = {
+    "Duels Won", "Clearances", "Chances Created", "Accurate Crosses", "Ball Recovery",
+    "Saves Insidebox", "Man Of Match", "Shots On Target", "Shots On Target (%)",
+    "Accurate Passes", "Penalties Scored", "Tackles Won", "Aerials Won (%)",
+    "Through Balls", "Good High Claim", "Big Chances Created", "Penalties Won",
+    "Assists", "Blocked Shots", "Hit Woodwork", "Shots Total", "Dribble Attempts",
+    "Penalties Saved", "Long Balls Won (%)", "Long Balls Won", "Long Balls", "Tackles",
+    "Aerials", "Successful Dribbles", "Total Crosses", "Total Duels", "Saves",
+    "Successful Crosses (%)", "Key Passes", "Minutes Played", "Accurate Passes (%)",
+    "Aerials Won", "Goals", "Touches", "Passes", "Last Man Tackle", "Shots Off Target",
+    "Interceptions", "Tackles Won (%)", "Duels Won (%)", "Passes In Final Third",
+    "Rating", "Fouls Drawn", "Through Balls Won",
+}
