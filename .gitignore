@@ -10,6 +10,9 @@ data_module/explore.py
 
 #database backup
 database_backup/*
+
+#scripts
+create_app_user_activity_events.sql
 # Chatbot module
 chatbot_module/cost_approximation.py
 

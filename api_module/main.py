@@ -21,6 +21,12 @@ from api_module.utilities import (
 from api_module.payment_utilities import(
      verify_ios_subscription, verify_android_subscription, run_subscription_sync,
 )
+from api_module.analytics import (
+    analytics_mode,
+    get_favorite_player_snapshot,
+    get_player_snapshot,
+    record_analytics_event,
+)
 from api_module.database import get_db, SessionLocal
 from api_module.models import (
     SignUpIn, LoginIn, LoginOut, ProfileOut, ProfilePatch, SetNewPasswordIn,
@@ -623,8 +629,18 @@ def player_pool_search(
     if payload.minWeight is not None and payload.maxWeight is not None and payload.minWeight > payload.maxWeight:
         raise HTTPException(status_code=400, detail="minWeight cannot be greater than maxWeight")
 
-    _ = user_id  # authenticated route by design
-    return search_players(db, payload.model_dump(exclude_none=True))
+    filters = payload.model_dump(exclude_none=True)
+    rows = search_players(db, filters)
+    record_analytics_event(
+        user_id=user_id,
+        event_type="player_pool_search",
+        mode=analytics_mode(payload.worldCupMode),
+        source="player_pool_search",
+        player_table="player_data_wc" if payload.worldCupMode else "player_data",
+        search_filters=filters,
+        result_count=len(rows),
+    )
+    return rows
 
 
 @app.post("/player-pool/{player_id}/search-hit")
@@ -634,12 +650,20 @@ def player_pool_record_search_hit(
     user_id: int = Depends(require_auth),
     db: Session = Depends(get_db),
 ):
-    _ = user_id  # authenticated route by design
     try:
         record_player_search(db, player_id, worldCupMode)
     except (TypeError, ValueError):
         raise HTTPException(status_code=400, detail="Invalid player_id")
     db.commit()
+    player = get_player_snapshot(db, player_id, worldCupMode)
+    record_analytics_event(
+        user_id=user_id,
+        event_type="player_pool_search_hit",
+        mode=analytics_mode(worldCupMode),
+        source="player_pool_search_hit",
+        player_table="player_data_wc" if worldCupMode else "player_data",
+        **player,
+    )
     return {"ok": True}
 
 
@@ -653,6 +677,15 @@ def player_pool_weekly_popular(
     record_weekly_popular_reveal(db, user_id, world_cup_mode)
     rows = get_weekly_popular_players(db, payload.limit or 10, world_cup_mode)
     db.commit()
+    record_analytics_event(
+        user_id=user_id,
+        event_type="weekly_popular_reveal",
+        mode=analytics_mode(world_cup_mode),
+        source="player_pool_weekly_popular",
+        player_table="player_data_wc" if world_cup_mode else "player_data",
+        result_count=len(rows),
+        metadata={"limit": payload.limit or 10},
+    )
     return rows
 
 
@@ -662,9 +695,26 @@ def player_pool_matchup_comparison(
     user_id: int = Depends(require_auth),
     db: Session = Depends(get_db),
 ):
-    _ = user_id  # authenticated route by design
     try:
-        return get_matchup_comparison(db, payload.player1Id, payload.player2Id, bool(payload.worldCupMode))
+        world_cup_mode = bool(payload.worldCupMode)
+        result = get_matchup_comparison(db, payload.player1Id, payload.player2Id, world_cup_mode)
+        player1 = get_player_snapshot(db, payload.player1Id, world_cup_mode)
+        player2 = get_player_snapshot(db, payload.player2Id, world_cup_mode)
+        record_analytics_event(
+            user_id=user_id,
+            event_type="matchup_comparison",
+            section="matchup_center",
+            mode=analytics_mode(world_cup_mode),
+            source="player_pool_matchup_comparison",
+            player_table="player_data_wc" if world_cup_mode else "player_data",
+            **player1,
+            secondary_player_id=player2.get("player_id"),
+            secondary_player_name=player2.get("player_name"),
+            secondary_player_team=player2.get("player_team"),
+            secondary_player_league=player2.get("player_league"),
+            secondary_player_nationality=player2.get("player_nationality"),
+        )
+        return result
     except ValueError as exc:
         raise HTTPException(status_code=404, detail=str(exc))
 
@@ -675,7 +725,6 @@ def player_pool_options(
     user_id: int = Depends(require_auth),
     db: Session = Depends(get_db),
 ):
-    _ = user_id  # authenticated route by design
     return get_player_pool_filter_options(db, worldCupMode)
 
 
@@ -686,9 +735,21 @@ def player_pool_reveal_potential(
     user_id: int = Depends(require_auth),
     db: Session = Depends(get_db),
 ):
-    _ = user_id  # authenticated route by design
     try:
-        return reveal_player_potential(db, player_id, worldCupMode)
+        result = reveal_player_potential(db, player_id, worldCupMode)
+        player = get_player_snapshot(db, player_id, worldCupMode)
+        record_analytics_event(
+            user_id=user_id,
+            event_type="score_reveal",
+            mode=analytics_mode(worldCupMode),
+            source="player_pool_reveal_potential",
+            player_table="player_data_wc" if worldCupMode else "player_data",
+            score_kind="potential",
+            score_value=result.get("potential"),
+            score_source=result.get("source"),
+            **player,
+        )
+        return result
     except ValueError as exc:
         raise HTTPException(status_code=404, detail=str(exc))
     except RuntimeError as exc:
@@ -702,9 +763,21 @@ def player_pool_reveal_form(
     user_id: int = Depends(require_auth),
     db: Session = Depends(get_db),
 ):
-    _ = user_id  # authenticated route by design
     try:
-        return reveal_player_form(db, player_id, worldCupMode)
+        result = reveal_player_form(db, player_id, worldCupMode)
+        player = get_player_snapshot(db, player_id, worldCupMode)
+        record_analytics_event(
+            user_id=user_id,
+            event_type="score_reveal",
+            mode=analytics_mode(worldCupMode),
+            source="player_pool_reveal_form",
+            player_table="player_data_wc" if worldCupMode else "player_data",
+            score_kind="form",
+            score_value=result.get("form"),
+            score_source=result.get("source"),
+            **player,
+        )
+        return result
     except ValueError as exc:
         raise HTTPException(status_code=404, detail=str(exc))
     except RuntimeError as exc:
@@ -879,6 +952,29 @@ def add_favorite(
                 player_roles = [player_roles] if player_roles else []
             form_result = reveal_player_form(db, player_row["id"], False)
             potential_result = reveal_player_potential(db, player_row["id"], False)
+            player_snapshot = get_player_snapshot(db, player_row["id"], False)
+            record_analytics_event(
+                user_id=user_id,
+                event_type="score_reveal",
+                source="favorite_add_auto_reveal",
+                player_table="player_data",
+                score_kind="form",
+                score_value=form_result.get("form"),
+                score_source=form_result.get("source"),
+                metadata={"favorite_action": "add_or_update"},
+                **player_snapshot,
+            )
+            record_analytics_event(
+                user_id=user_id,
+                event_type="score_reveal",
+                source="favorite_add_auto_reveal",
+                player_table="player_data",
+                score_kind="potential",
+                score_value=potential_result.get("potential"),
+                score_source=potential_result.get("source"),
+                metadata={"favorite_action": "add_or_update"},
+                **player_snapshot,
+            )
             favorite_values.update({
                 "name": player_meta.get("player_name") or payload.name,
                 "nationality": player_meta.get("nationality_name") or player_meta.get("nationality") or payload.nationality,
@@ -947,6 +1043,31 @@ def add_favorite(
             if payload.formRevealed:
                 form_result = reveal_player_form(db, club_row["id"], False)
                 potential_result = reveal_player_potential(db, club_row["id"], False)
+                player_snapshot = get_player_snapshot(db, club_row["id"], False)
+                record_analytics_event(
+                    user_id=user_id,
+                    event_type="score_reveal",
+                    mode=analytics_mode(True),
+                    source="favorite_add_auto_reveal",
+                    player_table="player_data",
+                    score_kind="form",
+                    score_value=form_result.get("form"),
+                    score_source=form_result.get("source"),
+                    metadata={"favorite_action": "add_or_update"},
+                    **player_snapshot,
+                )
+                record_analytics_event(
+                    user_id=user_id,
+                    event_type="score_reveal",
+                    mode=analytics_mode(True),
+                    source="favorite_add_auto_reveal",
+                    player_table="player_data",
+                    score_kind="potential",
+                    score_value=potential_result.get("potential"),
+                    score_source=potential_result.get("source"),
+                    metadata={"favorite_action": "add_or_update"},
+                    **player_snapshot,
+                )
                 favorite_values["form"] = form_result.get("form")
                 favorite_values["potential"] = potential_result.get("potential")
 
@@ -1282,6 +1403,16 @@ def _generate_report_background(
             },
         )
         db.commit()
+        favorite_snapshot = get_favorite_player_snapshot(db, favorite_id, user_id)
+        record_analytics_event(
+            user_id=user_id,
+            event_type="scouting_report_ready",
+            section="reports",
+            source="scouting_report_generation",
+            report_id=report_id,
+            metadata={"language": lang, "version": version},
+            **favorite_snapshot,
+        )
 
     except Exception as e:
         print(f"[report_generation_failed] report_id={report_id} favorite_id={favorite_id} error={e}")
@@ -1303,6 +1434,16 @@ def _generate_report_background(
             },
         )
         db.commit()
+        favorite_snapshot = get_favorite_player_snapshot(db, favorite_id, user_id)
+        record_analytics_event(
+            user_id=user_id,
+            event_type="scouting_report_failed",
+            section="reports",
+            source="scouting_report_generation",
+            report_id=report_id,
+            metadata={"language": lang, "version": version, "error": str(e)},
+            **favorite_snapshot,
+        )
     finally:
         db.close()
 
@@ -1327,6 +1468,7 @@ def get_or_create_report(
     ).first()
     if not owned:
         raise HTTPException(status_code=404, detail="Favorite not found")
+    favorite_snapshot = get_favorite_player_snapshot(db, favorite_id, user_id)
 
     if tutorial_mode:
         name = str(player_payload.get("name") or "").strip().lower()
@@ -1373,6 +1515,15 @@ def get_or_create_report(
                 db.commit()
                 row = None  # regenerate with the newly available score fields
             else:
+                record_analytics_event(
+                    user_id=user_id,
+                    event_type="scouting_report_cached",
+                    section="reports",
+                    source="scouting_report_request",
+                    report_id=str(row["id"]),
+                    metadata={"language": row["language"], "version": row["version"], "status": row["status"]},
+                    **favorite_snapshot,
+                )
                 return {
                     "favorite_player_id": favorite_id,
                     "status": row["status"],
@@ -1383,6 +1534,15 @@ def get_or_create_report(
                     "player": payload,  # NEW
                 }
         else:
+            record_analytics_event(
+                user_id=user_id,
+                event_type="scouting_report_pending",
+                section="reports",
+                source="scouting_report_request",
+                report_id=str(row["id"]),
+                metadata={"language": row["language"], "version": row["version"], "status": row["status"]},
+                **favorite_snapshot,
+            )
             return {
                 "favorite_player_id": favorite_id,
                 "status": row["status"],
@@ -1400,6 +1560,15 @@ def get_or_create_report(
         VALUES (:id, :uid, :fid, 'processing', :lang, :ver, NOW(), NOW())
     """), {"id": rid, "uid": user_id, "fid": favorite_id, "lang": lang, "ver": version})
     db.commit()
+    record_analytics_event(
+        user_id=user_id,
+        event_type="scouting_report_requested",
+        section="reports",
+        source="scouting_report_request",
+        report_id=rid,
+        metadata={"language": lang, "version": version},
+        **favorite_snapshot,
+    )
 
     # Generate synchronously (DeepSeek) and update cache
 
