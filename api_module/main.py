@@ -912,6 +912,29 @@ def add_favorite(
         "roles": roles_long,
     }
 
+    player_row_by_id = None
+    if payload.playerId:
+        player_row_by_id = db.execute(
+            text("""
+            SELECT id, metadata
+            FROM player_data
+            WHERE id = :id
+            LIMIT 1
+            """),
+            {"id": payload.playerId},
+        ).mappings().first()
+
+    def player_row_matches_payload(row: Any) -> bool:
+        if not row or not row.get("metadata"):
+            return False
+        metadata = row["metadata"] or {}
+        row_name = metadata.get("player_name") or metadata.get("name")
+        if not row_name or str(row_name).strip().lower() != payload.name.strip().lower():
+            return False
+        payload_nat = (payload.nationality or "").strip().lower()
+        row_nat = str(metadata.get("nationality_name") or metadata.get("nationality") or "").strip().lower()
+        return not payload_nat or not row_nat or payload_nat == row_nat
+
     if payload.formRevealed and not payload.worldCupMode:
         player_row = db.execute(
             text("""
@@ -942,6 +965,8 @@ def add_favorite(
                 "weight": payload.weight,
             },
         ).mappings().first()
+        if not player_row and player_row_matches_payload(player_row_by_id):
+            player_row = player_row_by_id
 
         if player_row and player_row.get("metadata"):
             player_meta = player_row["metadata"] or {}
@@ -1019,6 +1044,8 @@ def add_favorite(
                 "weight": payload.weight,
             },
         ).mappings().first()
+        if not club_row and player_row_matches_payload(player_row_by_id):
+            club_row = player_row_by_id
 
         if club_row and club_row.get("metadata"):
             club_meta = club_row["metadata"] or {}

@@ -28,6 +28,7 @@ class ScoutingReportOut(BaseModel):
 
 # ---- Favorite Players I/O ----
 class FavoritePlayerIn(BaseModel):
+    playerId: Optional[str] = None
     name: str
     nationality: Optional[str] = None
     age: Optional[int] = Field(default=None, ge=0)
