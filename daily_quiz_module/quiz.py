@@ -409,6 +409,20 @@ def set_weekly_nickname(db: Session, user_id: int, nickname: str) -> Dict[str, A
     if len(nick) < 2:
         raise ValueError("Nickname must be at least 2 characters")
     week = _week_start()
+    taken = db.execute(
+        text("""
+        SELECT 1
+        FROM daily_scout_weekly_nicknames
+        WHERE week_start = :week
+          AND user_id <> :uid
+          AND lower(nickname) = lower(:nick)
+        LIMIT 1
+        """),
+        {"uid": user_id, "week": week, "nick": nick},
+    ).first()
+    if taken:
+        raise ValueError("Nickname is already taken for this week")
+
     db.execute(
         text("""
         INSERT INTO daily_scout_weekly_nicknames (user_id, week_start, nickname, created_at)
@@ -434,7 +448,7 @@ def get_weekly_leaderboard(db: Session, limit: int = 20) -> Dict[str, Any]:
           ON n.user_id = a.user_id AND n.week_start = DATE_TRUNC('week', a.challenge_date)::date
         WHERE a.challenge_date >= :week
           AND a.completed_at IS NOT NULL
-        GROUP BY n.nickname
+        GROUP BY n.user_id, n.nickname
         ORDER BY score DESC, correct DESC, played DESC, n.nickname ASC
         LIMIT :limit
         """),
