@@ -957,63 +957,67 @@ def add_favorite(
         WHERE user_id = :uid
           AND lower(name) = lower(:name)
           AND lower(COALESCE(nationality, '')) = lower(COALESCE(:nat, ''))
-          AND COALESCE(age, -1) = COALESCE(:age, -1)
         LIMIT 1
         """),
         {
             "uid": user_id,
             "name": favorite_values["name"],
             "nat": favorite_values["nationality"],
-            "age": favorite_values["age"],
         }
     ).mappings().first()
 
     if existing:
-        league = existing["league"]
-        form = existing["form"]
-        potential = existing["potential"]
-        updates: Dict[str, Any] = {}
-        if not league and favorite_values["league"]:
-            updates["league"] = favorite_values["league"]
-            league = favorite_values["league"]
-        if form is None and favorite_values["form"] is not None:
-            updates["form"] = favorite_values["form"]
-            form = favorite_values["form"]
-        if existing["potential"] is None and favorite_values["potential"] is not None:
-            updates["potential"] = favorite_values["potential"]
-            potential = favorite_values["potential"]
-        if updates:
-            set_clause = ", ".join(f"{key} = :{key}" for key in updates)
-            db.execute(
-                text(f"""
-                UPDATE favorite_players
-                SET {set_clause}
-                WHERE id = :id
-                  AND user_id = :uid
-                """),
-                {**updates, "id": existing["id"], "uid": user_id},
-            )
-            db.commit()
+        db.execute(
+            text("""
+            UPDATE favorite_players
+            SET
+                name = :name,
+                nationality = :nat,
+                age = :age,
+                potential = :pot,
+                form = :form,
+                gender = :gender,
+                height = :height,
+                weight = :weight,
+                team = :team,
+                league = :league,
+                roles_json = :roles
+            WHERE id = :id
+              AND user_id = :uid
+            """),
+            {
+                "id": existing["id"],
+                "uid": user_id,
+                "name": favorite_values["name"],
+                "nat": favorite_values["nationality"],
+                "age": favorite_values["age"],
+                "pot": favorite_values["potential"],
+                "form": favorite_values["form"],
+                "gender": favorite_values["gender"],
+                "height": favorite_values["height"],
+                "weight": favorite_values["weight"],
+                "team": favorite_values["team"],
+                "league": favorite_values["league"],
+                "roles": json.dumps(favorite_values["roles"], ensure_ascii=False),
+            },
+        )
+        db.commit()
 
-        try:
-            existing_roles = json.loads(existing["roles_json"]) or []
-        except Exception:
-            existing_roles = []
         if response is not None:
             response.status_code = status.HTTP_200_OK
         return FavoritePlayerOut(
             id=existing["id"],
-            name=existing["name"],
-            nationality=existing["nationality"],
-            age=existing["age"],
-            potential=potential,
-            form=form,
-            gender=existing["gender"],
-            height=existing["height"],
-            weight=existing["weight"],
-            team=existing["team"],
-            league=league,
-            roles=existing_roles,
+            name=favorite_values["name"],
+            nationality=favorite_values["nationality"],
+            age=favorite_values["age"],
+            potential=favorite_values["potential"],
+            form=favorite_values["form"],
+            gender=favorite_values["gender"],
+            height=favorite_values["height"],
+            weight=favorite_values["weight"],
+            team=favorite_values["team"],
+            league=favorite_values["league"],
+            roles=favorite_values["roles"],
         )
 
     fav_id = uuid.uuid4().hex
