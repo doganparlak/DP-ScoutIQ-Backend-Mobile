@@ -71,6 +71,8 @@ IOS_PRO_MONTHLY_PRODUCT_ID = os.getenv("IOS_PRO_MONTHLY_PRODUCT_ID", "scoutwise_
 IOS_PRO_YEARLY_PRODUCT_ID  = os.getenv("IOS_PRO_YEARLY_PRODUCT_ID", "scoutwise_pro_yearly_ios")
 ANDROID_PRO_MONTHLY_PRODUCT_ID = os.getenv("ANDROID_PRO_MONTHLY_PRODUCT_ID", "scoutwise_pro_monthly_android")
 ANDROID_PRO_YEARLY_PRODUCT_ID  = os.getenv("ANDROID_PRO_YEARLY_PRODUCT_ID", "scoutwise_pro_yearly_android")
+IOS_NO_ADS_MONTHLY_PRODUCT_ID = os.getenv("IOS_NO_ADS_MONTHLY_PRODUCT_ID", "scoutwise_no_ads_monthly_ios")
+ANDROID_NO_ADS_MONTHLY_PRODUCT_ID = os.getenv("ANDROID_NO_ADS_MONTHLY_PRODUCT_ID", "scoutwise_no_ads_monthly_android")
 
 
 app = FastAPI()
@@ -1269,6 +1271,8 @@ def activate_subscription(
         IOS_PRO_YEARLY_PRODUCT_ID,
         ANDROID_PRO_MONTHLY_PRODUCT_ID,
         ANDROID_PRO_YEARLY_PRODUCT_ID,
+        IOS_NO_ADS_MONTHLY_PRODUCT_ID,
+        ANDROID_NO_ADS_MONTHLY_PRODUCT_ID,
     }
     if body.product_id not in allowed_product_ids:
         raise HTTPException(status_code=400, detail="Unknown product")

@@ -15,7 +15,7 @@ from collections.abc import Mapping
 # DB session provider
 from api_module.database import SessionLocal
 
-PlanLiteral = Literal["Free", "Pro Monthly", "Pro Yearly"]
+PlanLiteral = Literal["Free", "No Ads Monthly", "Pro Monthly", "Pro Yearly"]
 
 MESSAGES = {
     "weak_pw": {
@@ -588,6 +588,8 @@ def plan_from_product_id(product_id: str | None) -> str:
     if not product_id:
         return "Free"
     pid = product_id.lower()
+    if "no_ads" in pid or "noads" in pid:
+        return "No Ads Monthly"
     if "yearly" in pid:
         return "Pro Yearly"
     if "monthly" in pid:

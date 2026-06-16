@@ -37,6 +37,8 @@ IOS_PRO_MONTHLY_PRODUCT_ID = os.getenv("IOS_PRO_MONTHLY_PRODUCT_ID", "scoutwise_
 IOS_PRO_YEARLY_PRODUCT_ID  = os.getenv("IOS_PRO_YEARLY_PRODUCT_ID", "scoutwise_pro_yearly_ios")
 ANDROID_PRO_MONTHLY_PRODUCT_ID = os.getenv("ANDROID_PRO_MONTHLY_PRODUCT_ID", "scoutwise_pro_monthly_android")
 ANDROID_PRO_YEARLY_PRODUCT_ID  = os.getenv("ANDROID_PRO_YEARLY_PRODUCT_ID", "scoutwise_pro_yearly_android")
+IOS_NO_ADS_MONTHLY_PRODUCT_ID = os.getenv("IOS_NO_ADS_MONTHLY_PRODUCT_ID", "scoutwise_no_ads_monthly_ios")
+ANDROID_NO_ADS_MONTHLY_PRODUCT_ID = os.getenv("ANDROID_NO_ADS_MONTHLY_PRODUCT_ID", "scoutwise_no_ads_monthly_android")
 
 APPLE_IAP_KEY_ID = os.environ["APPLE_IAP_KEY_ID"]
 APPLE_IAP_ISSUER_ID = os.environ["APPLE_IAP_ISSUER_ID"]
@@ -272,6 +274,13 @@ def run_subscription_sync(db: Session):
                         new_end = end_at
                         auto_renew = ar
                         plan = "Pro Monthly"
+                    else:
+                        ok, end_at, ar = verify_ios_subscription(IOS_NO_ADS_MONTHLY_PRODUCT_ID, ext_id)
+                        if ok and end_at and end_at > now:
+                            active = True
+                            new_end = end_at
+                            auto_renew = ar
+                            plan = "No Ads Monthly"
             else:
                 # yearly first
                 ok, end_at, ar = verify_android_subscription(ANDROID_PRO_YEARLY_PRODUCT_ID, ext_id, receipt)
@@ -287,6 +296,13 @@ def run_subscription_sync(db: Session):
                         new_end = end_at
                         auto_renew = ar
                         plan = "Pro Monthly"
+                    else:
+                        ok, end_at, ar = verify_android_subscription(ANDROID_NO_ADS_MONTHLY_PRODUCT_ID, ext_id, receipt)
+                        if ok and end_at and end_at > now:
+                            active = True
+                            new_end = end_at
+                            auto_renew = ar
+                            plan = "No Ads Monthly"
         except Exception:
             active = False
 
@@ -414,7 +430,12 @@ def run_entitlements_sync(db: Session, limit: int = 2000):
                         {"id": uid},
                     )
                 else:
-                    plan = "Pro Yearly" if "yearly" in (product_id or "").lower() else "Pro Monthly"
+                    pid = (product_id or "").lower()
+                    plan = (
+                        "No Ads Monthly"
+                        if "no_ads" in pid or "noads" in pid
+                        else "Pro Yearly" if "yearly" in pid else "Pro Monthly"
+                    )
                     db.execute(
                         text("""
                             UPDATE users
