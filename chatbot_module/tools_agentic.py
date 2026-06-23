@@ -17,9 +17,10 @@ from chatbot_module.tools import (
     extract_target_team_from_question,
     filter_players_by_seen,
     get_candidate_rejection_reason,
-    has_required_discovery_fields,
+    is_disallowed_turkish_club,
     is_direct_player_lookup_request,
     is_generic_alternative_request,
+    is_non_senior_team,
     is_premium_request,
     is_same_club,
     is_turkish,
@@ -34,6 +35,10 @@ from chatbot_module.tools import (
 from chatbot_module.tools_extensions import _score_candidate, build_player_payload_new
 from report_module.utilities import norm_name
 from chatbot_module.metrics import ALLOWED_METRICS, POSITIVE_METRICS
+
+
+SQL_FOLD_FROM = "ÁÀÂÃÄÅĀĂĄáàâãäåāăąÉÈÊËĒĖĘĚéèêëēėęěÍÌÎÏĪİıíìîïīÓÒÔÕÖØŌóòôõöøōÚÙÛÜŪúùûüūÇĆČçćčÑñĞğŞŠşšÝŸýÿŽŹŻžźżÐð"
+SQL_FOLD_TO = "AAAAAAAAAaaaaaaaaaEEEEEEEEeeeeeeeeIIIIIIiiiiiiOOOOOOOoooooooUUUUUuuuuuCCCcccNnGgSSssYYyyZZZzzzDd"
 
 
 AGENTIC_LOOKUP_DEBUG = os.getenv("AGENTIC_LOOKUP_DEBUG", "1").lower() not in {"0", "false", "no", "off"}
@@ -278,6 +283,43 @@ def is_narrow_filtered_suggestion_request(question: Optional[str], strategy: Opt
     return any(re.search(pattern, normalized) for pattern in narrow_patterns)
 
 
+def _mentions_club_as_source_team(question: Optional[str], team_name: Optional[str]) -> bool:
+    text = re.sub(r"\s+", " ", norm_name(question or "")).strip()
+    team_tokens = [re.escape(token) for token in norm_name(team_name or "").strip().split() if token]
+    team = r"\s+".join(team_tokens)
+    if not text or not team:
+        return False
+    source_patterns = [
+        rf"\b(?:play|plays|playing|played|currently plays|currently playing)\s+(?:for|at|in)\s+{team}\b",
+        rf"\b(?:from|at|in)\s+{team}\b",
+        rf"\b{team}\s+(?:player|footballer|striker|forward|winger|midfielder|defender|goalkeeper)\b",
+        rf"\b{team}\s*(?:de|da|te|ta|den|dan|ten|tan)\s+(?:oynayan|forma giyen|top oynayan)\b",
+        rf"\b{team}\s+(?:oyuncusu|futbolcusu|formasi giyen|forma giyen)\b",
+    ]
+    return any(re.search(pattern, text) for pattern in source_patterns)
+
+
+def _has_search_constraints(constraints: Dict[str, Any]) -> bool:
+    cleaned = clean_constraints(constraints)
+    scalar_keys = (
+        "position", "nationality", "league", "team",
+        "age_min", "age_max", "height_min", "height_max", "weight_min", "weight_max",
+    )
+    return any(cleaned.get(key) is not None for key in scalar_keys) or bool(
+        cleaned.get("preferred_stats") or cleaned.get("stat_requirements")
+    )
+
+
+def _looks_like_generic_player_search(question: Optional[str]) -> bool:
+    normalized = re.sub(r"\s+", " ", norm_name(question or "")).strip()
+    if not normalized:
+        return False
+    return bool(re.search(
+        r"\b(player|footballer|oyuncu|futbolcu|striker|forward|forvet|winger|midfielder|defender|goalkeeper)\b",
+        normalized,
+    ))
+
+
 def is_constraint_modification_request(question: Optional[str]) -> bool:
     normalized = re.sub(r"\s+", " ", norm_name(question or "")).strip()
     if not normalized:
@@ -312,6 +354,35 @@ def _is_requested_constraint_league(league_name: Optional[str], ctx: Optional[Ag
 
 def _is_selectable_league(league_name: Optional[str], ctx: Optional[AgenticContext]) -> bool:
     return _is_allowed_selection_league(league_name) or _is_requested_constraint_league(league_name, ctx)
+
+
+def _has_explicit_league_constraint(ctx: Optional[AgenticContext]) -> bool:
+    return bool(clean_constraints(getattr(ctx, "constraints", {}) or {}).get("league"))
+
+
+def _missing_discovery_rejection(team_name: Optional[str], position_name: Optional[str], ctx: Optional[AgenticContext]) -> Optional[str]:
+    level = int(getattr(ctx, "constraint_relaxation_level", 0) or 0)
+    if not (team_name or "").strip() and level < 7:
+        return "missing team"
+    if not (position_name or "").strip() and level < 6:
+        return "missing position"
+    return None
+
+
+def _requested_non_senior(ctx: Optional[AgenticContext]) -> bool:
+    return bool(getattr(ctx, "allow_non_senior", False))
+
+
+def _sort_for_squad_preference(docs: List[Document], ctx: Optional[AgenticContext]) -> List[Document]:
+    wants_non_senior = _requested_non_senior(ctx)
+    return sorted(
+        docs or [],
+        key=lambda doc: (
+            0 if is_non_senior_team((doc.metadata or {}).get("team_name") or (doc.metadata or {}).get("team")) == wants_non_senior else 1,
+            -(_num((doc.metadata or {}).get("Rating")) or 0),
+            -(_num((doc.metadata or {}).get("match_count")) or 0),
+        ),
+    )
 
 
 def canonical_league(value: Optional[Any]) -> Optional[str]:
@@ -530,6 +601,16 @@ def _constraint_exact_match(candidate_value: Optional[Any], requested_value: Opt
     return bool(requested and candidate and requested == candidate)
 
 
+def _constraint_team_match(candidate_value: Optional[Any], requested_value: Optional[Any]) -> bool:
+    requested = str(requested_value or "").strip()
+    candidate = str(candidate_value or "").strip()
+    if not requested:
+        return True
+    if not candidate:
+        return False
+    return is_same_club(candidate, requested)
+
+
 def _passes_numeric_bound(value: Optional[float], min_value: Optional[Any], max_value: Optional[Any]) -> bool:
     numeric = _num(value)
     min_num = _num(min_value)
@@ -570,17 +651,13 @@ def candidate_constraint_rejection(candidate: Dict[str, Any], ctx: Optional[Agen
         return None
     level = int(getattr(ctx, "constraint_relaxation_level", 0) or 0)
 
-    if level < 5:
-        if constraints.get("gender") and not _constraint_exact_match(candidate.get("gender"), constraints.get("gender")):
-            return "constraint gender"
-        if constraints.get("nationality") and not _constraint_text_match(
-            candidate.get("nationality"),
-            constraints.get("nationality"),
-            nationality=True,
-        ):
-            return "constraint nationality"
+    if level < 8 and constraints.get("gender") and not _constraint_exact_match(candidate.get("gender"), constraints.get("gender")):
+        return "constraint gender"
 
-    if constraints.get("position"):
+    if level < 7 and constraints.get("team") and not _constraint_team_match(candidate.get("team"), constraints.get("team")):
+        return "constraint team"
+
+    if level < 6 and constraints.get("position"):
         position_ok, _, _ = player_matches_requested_position(
             constraints.get("position"),
             candidate.get("position_name"),
@@ -589,20 +666,24 @@ def candidate_constraint_rejection(candidate: Dict[str, Any], ctx: Optional[Agen
         if not position_ok:
             return "constraint position"
 
-    if level < 4:
-        if constraints.get("league") and not _constraint_text_match(candidate.get("league_name"), constraints.get("league")):
-            return "constraint league"
-        if constraints.get("team") and not _constraint_text_match(candidate.get("team"), constraints.get("team")):
-            return "constraint team"
+    if level < 5 and constraints.get("nationality") and not _constraint_text_match(
+        candidate.get("nationality"),
+        constraints.get("nationality"),
+        nationality=True,
+    ):
+        return "constraint nationality"
 
-    if level < 3 and not _passes_numeric_bound(candidate.get("age"), constraints.get("age_min"), constraints.get("age_max")):
+    if constraints.get("league") and not _constraint_text_match(candidate.get("league_name"), constraints.get("league")):
+        return "constraint league"
+
+    if level < 4 and not _passes_numeric_bound(candidate.get("age"), constraints.get("age_min"), constraints.get("age_max")):
         return "constraint age"
 
-    if level < 2:
-        if not _passes_numeric_bound(candidate.get("height"), constraints.get("height_min"), constraints.get("height_max")):
-            return "constraint height"
-        if not _passes_numeric_bound(candidate.get("weight"), constraints.get("weight_min"), constraints.get("weight_max")):
-            return "constraint weight"
+    if level < 3 and not _passes_numeric_bound(candidate.get("height"), constraints.get("height_min"), constraints.get("height_max")):
+        return "constraint height"
+
+    if level < 2 and not _passes_numeric_bound(candidate.get("weight"), constraints.get("weight_min"), constraints.get("weight_max")):
+        return "constraint weight"
 
     if level < 1:
         candidate_stats = {
@@ -640,10 +721,13 @@ def constraint_relaxation_label(level: int) -> str:
     labels = {
         0: "strict",
         1: "relaxed_stats",
-        2: "relaxed_physical",
-        3: "relaxed_age",
-        4: "relaxed_league_team",
-        5: "relaxed_nationality_gender",
+        2: "relaxed_weight",
+        3: "relaxed_height",
+        4: "relaxed_age",
+        5: "relaxed_nationality",
+        6: "relaxed_position",
+        7: "relaxed_team",
+        8: "relaxed_gender",
     }
     return labels.get(int(level or 0), "relaxed_all")
 
@@ -695,7 +779,15 @@ def _merge_docs(existing: List[Document], new_docs: List[Document], *, limit: in
     return merged
 
 
-def _diverse_doc_cap(docs: List[Document], *, limit: int = SELECTOR_CANDIDATE_LIMIT) -> List[Document]:
+def _diverse_doc_cap(
+    docs: List[Document],
+    *,
+    limit: int = SELECTOR_CANDIDATE_LIMIT,
+    diversify_teams: bool = True,
+) -> List[Document]:
+    if not diversify_teams:
+        return list(docs or [])[:limit]
+
     selected: List[Document] = []
     selected_teams = set()
     selected_leagues = set()
@@ -829,11 +921,33 @@ def build_agentic_context(
 
     premium_only = is_premium_request(translated)
     cleaned_constraints = clean_constraints(constraints)
-    if target_team and cleaned_constraints.get("team") and is_same_club(target_team, cleaned_constraints.get("team")):
+    source_team_phrase = bool(
+        target_team
+        and (
+            _mentions_club_as_source_team(original_question, target_team)
+            or _mentions_club_as_source_team(translated, target_team)
+        )
+    )
+    if source_team_phrase:
+        cleaned_constraints["team"] = cleaned_constraints.get("team") or target_team
+        note = cleaned_constraints.get("notes") or ""
+        suffix = f" Treated {target_team} as source/current team constraint, not target team."
+        cleaned_constraints["notes"] = (note + suffix).strip()[:220]
+        target_team = None
+    elif target_team and cleaned_constraints.get("team") and is_same_club(target_team, cleaned_constraints.get("team")):
         cleaned_constraints["team"] = None
         note = cleaned_constraints.get("notes") or ""
         suffix = f" Treated {target_team} as target team, not source team."
         cleaned_constraints["notes"] = (note + suffix).strip()[:160]
+
+    if direct_lookup and _has_search_constraints(cleaned_constraints) and (
+        _looks_like_generic_player_search(original_question)
+        or _looks_like_generic_player_search(translated)
+    ):
+        direct_lookup = False
+        if intent == "direct_player_lookup":
+            intent = "new_recommendation"
+
     discovery_mode = not mentions_seen and not direct_lookup
     quality_discovery_mode = (
         discovery_mode
@@ -857,7 +971,10 @@ def build_agentic_context(
         recent_constraints=recent_constraints,
         initial_strong_club_default=False,
         discovery_mode=discovery_mode,
-        allow_turkish=request_allows_turkish_entities(translated),
+        allow_turkish=(
+            request_allows_turkish_entities(translated)
+            or bool(cleaned_constraints.get("team") and is_disallowed_turkish_club(cleaned_constraints.get("team")))
+        ),
         allow_non_senior=request_allows_non_senior_squads(translated),
         premium_only=premium_only,
         quality_discovery_mode=quality_discovery_mode,
@@ -904,14 +1021,15 @@ def filter_candidate_docs(
         if rejection_reason:
             rejection_counts[rejection_reason] += 1
             continue
-        if not ctx.direct_player_lookup and not _is_selectable_league(league_name, ctx):
+        if not ctx.direct_player_lookup and _has_explicit_league_constraint(ctx) and not _is_selectable_league(league_name, ctx):
             rejection_counts["league_restriction"] += 1
             continue
         if restrict_to_fallback_clubs and not _is_transfer_fallback_club_strict(team_name):
             rejection_counts["fallback_club_restriction"] += 1
             continue
-        if require_complete_discovery_fields and not has_required_discovery_fields(team_name, position_name):
-            rejection_counts["missing_discovery_fields"] += 1
+        missing_discovery = _missing_discovery_rejection(team_name, position_name, ctx) if require_complete_discovery_fields else None
+        if missing_discovery:
+            rejection_counts[missing_discovery] += 1
             continue
         if ctx.quality_discovery_mode and not _passes_quality_discovery_metadata(md, ctx):
             rejection_counts["quality_metadata_floor"] += 1
@@ -989,7 +1107,6 @@ def fetch_quality_suggestion_docs_from_db(ctx: AgenticContext, *, limit: int = S
             WHERE
                 (metadata->>'age') IS NOT NULL
                 AND (metadata->>'match_count') IS NOT NULL
-                AND (metadata->>'position_name') IS NOT NULL
                 AND ((metadata->>'age')::numeric BETWEEN :min_age AND :max_age)
                 AND ((metadata->>'match_count')::numeric >= :min_match_count)
             ORDER BY COALESCE((metadata->>'Rating')::numeric, 0) DESC
@@ -1030,14 +1147,15 @@ def fetch_quality_suggestion_docs_from_db(ctx: AgenticContext, *, limit: int = S
         if rejection_reason:
             rejection_counts[rejection_reason] += 1
             continue
-        if not _is_selectable_league(league_name, ctx):
+        if _has_explicit_league_constraint(ctx) and not _is_selectable_league(league_name, ctx):
             rejection_counts["league_restriction"] += 1
             continue
         if ctx.initial_strong_club_default and not _is_transfer_fallback_club_strict(team_name):
             rejection_counts["fallback_club_restriction"] += 1
             continue
-        if not has_required_discovery_fields(team_name, position_name):
-            rejection_counts["missing_discovery_fields"] += 1
+        missing_discovery = _missing_discovery_rejection(team_name, position_name, ctx)
+        if missing_discovery:
+            rejection_counts[missing_discovery] += 1
             continue
         if not _passes_quality_discovery_metadata(md, ctx):
             rejection_counts["quality_metadata_floor"] += 1
@@ -1110,10 +1228,7 @@ def fetch_selection_suggestion_docs_from_db(
 ) -> List[Document]:
     constraints = clean_constraints(ctx.constraints)
     relaxation_level = int(ctx.constraint_relaxation_level or 0)
-    where_parts = [
-        "(metadata->>'position_name') IS NOT NULL",
-        "(metadata->>'league_name') IS NOT NULL",
-    ]
+    where_parts = ["TRUE"]
     params: Dict[str, Any] = {"lim": 1200}
     sql_filters_applied: List[str] = []
 
@@ -1123,6 +1238,27 @@ def fetch_selection_suggestion_docs_from_db(
         where_parts.append(f"LOWER(metadata->>'{field}') = :{param}")
         params[param] = str(value).lower()
         sql_filters_applied.append(param)
+
+    def add_team_filter(value: Any) -> None:
+        if value is None:
+            return
+        tokens = [token for token in norm_name(str(value)).split() if len(token) >= 3]
+        if not tokens:
+            add_text_filter("team_name", "team", value)
+            return
+        folded_team_sql = (
+            "LOWER(TRANSLATE(COALESCE(metadata->>'team_name', ''), "
+            ":sql_fold_from, :sql_fold_to))"
+        )
+        params["sql_fold_from"] = SQL_FOLD_FROM
+        params["sql_fold_to"] = SQL_FOLD_TO
+        clauses = []
+        for index, token in enumerate(tokens):
+            param = f"team_token_{index}"
+            clauses.append(f"{folded_team_sql} LIKE :{param}")
+            params[param] = f"%{token}%"
+        where_parts.append("(" + " OR ".join(clauses) + ")")
+        sql_filters_applied.append("team")
 
     def add_numeric_min(field: str, param: str, value: Any) -> None:
         numeric_value = _num(value)
@@ -1146,18 +1282,20 @@ def fetch_selection_suggestion_docs_from_db(
         params[param] = numeric_value
         sql_filters_applied.append(param)
 
-    if relaxation_level < 5:
+    if relaxation_level < 8:
         add_text_filter("gender", "gender", constraints.get("gender"))
+    if relaxation_level < 5:
         add_text_filter("nationality_name", "nationality", constraints.get("nationality"))
+    add_text_filter("league_name", "league", constraints.get("league"))
+    if relaxation_level < 7:
+        add_team_filter(constraints.get("team"))
     if relaxation_level < 4:
-        add_text_filter("league_name", "league", constraints.get("league"))
-        add_text_filter("team_name", "team", constraints.get("team"))
-    if relaxation_level < 3:
         add_numeric_min("age", "age_min", constraints.get("age_min"))
         add_numeric_max("age", "age_max", constraints.get("age_max"))
-    if relaxation_level < 2:
+    if relaxation_level < 3:
         add_numeric_min("height", "height_min", constraints.get("height_min"))
         add_numeric_max("height", "height_max", constraints.get("height_max"))
+    if relaxation_level < 2:
         add_numeric_min("weight", "weight_min", constraints.get("weight_min"))
         add_numeric_max("weight", "weight_max", constraints.get("weight_max"))
 
@@ -1202,11 +1340,12 @@ def fetch_selection_suggestion_docs_from_db(
         if rejection_reason:
             rejection_counts[rejection_reason] += 1
             continue
-        if enforce_allowed_leagues and not _is_selectable_league(league_name, ctx):
+        if enforce_allowed_leagues and constraints.get("league") and not _is_selectable_league(league_name, ctx):
             rejection_counts["league_restriction"] += 1
             continue
-        if not has_required_discovery_fields(team_name, position_name):
-            rejection_counts["missing_discovery_fields"] += 1
+        missing_discovery = _missing_discovery_rejection(team_name, position_name, ctx)
+        if missing_discovery:
+            rejection_counts[missing_discovery] += 1
             continue
         if _stats_count_from_metadata(md) < MIN_SELECTION_STATS:
             rejection_counts["stats_floor"] += 1
@@ -1231,12 +1370,14 @@ def fetch_selection_suggestion_docs_from_db(
         docs.append(Document(page_content=row.get("content") or "", metadata=md))
 
     random.SystemRandom().shuffle(docs)
-    docs_out = _diverse_doc_cap(docs, limit=limit)
+    docs = _sort_for_squad_preference(docs, ctx)
+    docs_out = _diverse_doc_cap(docs, limit=limit, diversify_teams=not bool(constraints.get("team")))
     ctx.retrieval_debug.append({
         "pass": (
             f"db_selection_pass:{constraint_relaxation_label(ctx.constraint_relaxation_level)}"
             f":{'allowed_leagues' if enforce_allowed_leagues else 'all_leagues'}"
             f":sql={','.join(sql_filters_applied) or 'none'}"
+            f":{'u19_preference' if _requested_non_senior(ctx) else 'senior_preference'}"
         ),
         "raw_count": len(rows or []),
         "accepted_count": len(docs),
@@ -1252,6 +1393,7 @@ def build_filtered_retriever_agentic(
     broad_candidate_retriever: BaseRetriever,
 ) -> Tuple[BaseRetriever, List[Document]]:
     docs: List[Document] = []
+    diversify_teams = not bool(clean_constraints(ctx.constraints).get("team"))
     if ctx.discovery_mode and not ctx.direct_player_lookup:
         original_level = int(ctx.constraint_relaxation_level or 0)
         if ctx.quality_discovery_mode:
@@ -1264,51 +1406,51 @@ def build_filtered_retriever_agentic(
                     "returned_count": 0,
                     "top_rejections": [("quality_docs_empty", 1)],
                 })
-                for level in range(original_level, 5):
+                for level in range(original_level, 9):
                     ctx.constraint_relaxation_level = level
                     db_docs = fetch_selection_suggestion_docs_from_db(ctx, enforce_allowed_leagues=True)
                     docs = _merge_docs(docs, db_docs)
-                    docs = _diverse_doc_cap(docs, limit=SELECTOR_CANDIDATE_LIMIT)
+                    docs = _diverse_doc_cap(docs, limit=SELECTOR_CANDIDATE_LIMIT, diversify_teams=diversify_teams)
                     if len(docs or []) >= SELECTOR_CANDIDATE_LIMIT or docs:
                         break
             if not docs:
                 ctx.allow_all_selection_leagues = True
-                for level in range(original_level, 5):
+                for level in range(original_level, 9):
                     ctx.constraint_relaxation_level = level
                     db_docs = fetch_selection_suggestion_docs_from_db(ctx, enforce_allowed_leagues=False)
                     docs = _merge_docs(docs, db_docs)
-                    docs = _diverse_doc_cap(docs, limit=SELECTOR_CANDIDATE_LIMIT)
+                    docs = _diverse_doc_cap(docs, limit=SELECTOR_CANDIDATE_LIMIT, diversify_teams=diversify_teams)
                     if len(docs or []) >= SELECTOR_CANDIDATE_LIMIT or docs:
                         break
             if not docs:
-                ctx.constraint_relaxation_level = 5
+                ctx.constraint_relaxation_level = 8
                 db_docs = fetch_selection_suggestion_docs_from_db(ctx, enforce_allowed_leagues=False)
                 docs = _merge_docs(docs, db_docs)
-                docs = _diverse_doc_cap(docs, limit=SELECTOR_CANDIDATE_LIMIT)
+                docs = _diverse_doc_cap(docs, limit=SELECTOR_CANDIDATE_LIMIT, diversify_teams=diversify_teams)
         else:
-            for level in range(original_level, 5):
+            for level in range(original_level, 9):
                 ctx.constraint_relaxation_level = level
                 db_docs = fetch_selection_suggestion_docs_from_db(ctx, enforce_allowed_leagues=True)
                 docs = _merge_docs(docs, db_docs)
-                docs = _diverse_doc_cap(docs, limit=SELECTOR_CANDIDATE_LIMIT)
+                docs = _diverse_doc_cap(docs, limit=SELECTOR_CANDIDATE_LIMIT, diversify_teams=diversify_teams)
                 if len(docs or []) >= SELECTOR_CANDIDATE_LIMIT or docs:
                     break
             if not docs:
                 ctx.allow_all_selection_leagues = True
-                for level in range(original_level, 5):
+                for level in range(original_level, 9):
                     ctx.constraint_relaxation_level = level
                     db_docs = fetch_selection_suggestion_docs_from_db(ctx, enforce_allowed_leagues=False)
                     docs = _merge_docs(docs, db_docs)
-                    docs = _diverse_doc_cap(docs, limit=SELECTOR_CANDIDATE_LIMIT)
+                    docs = _diverse_doc_cap(docs, limit=SELECTOR_CANDIDATE_LIMIT, diversify_teams=diversify_teams)
                     if len(docs or []) >= SELECTOR_CANDIDATE_LIMIT or docs:
                         break
             if not docs:
-                ctx.constraint_relaxation_level = 5
+                ctx.constraint_relaxation_level = 8
                 db_docs = fetch_selection_suggestion_docs_from_db(ctx, enforce_allowed_leagues=False)
                 docs = _merge_docs(docs, db_docs)
-                docs = _diverse_doc_cap(docs, limit=SELECTOR_CANDIDATE_LIMIT)
+                docs = _diverse_doc_cap(docs, limit=SELECTOR_CANDIDATE_LIMIT, diversify_teams=diversify_teams)
 
-    if not docs:
+    if not docs and not clean_constraints(ctx.constraints).get("team"):
         fallback_query = _transfer_target_query(ctx) if ctx.target_team and ctx.intent in {"new_recommendation", "alternative_recommendation"} else (ctx.effective_query or "")
         fallback_docs = filter_candidate_docs(
             broad_candidate_retriever.invoke(fallback_query),
@@ -1845,11 +1987,14 @@ def validate_candidate(candidate: Dict[str, Any], ctx: AgenticContext) -> Option
             return "premium form restriction"
         if candidate.get("potential") is None or int(candidate["potential"]) <= 80:
             return "premium potential restriction"
-    if ctx.discovery_mode and not has_required_discovery_fields(candidate.get("team"), candidate.get("position_name")):
-        return "missing discovery fields"
+    if ctx.discovery_mode:
+        missing_discovery = _missing_discovery_rejection(candidate.get("team"), candidate.get("position_name"), ctx)
+        if missing_discovery:
+            return missing_discovery
     if (
         not ctx.direct_player_lookup
         and not ctx.allow_all_selection_leagues
+        and _has_explicit_league_constraint(ctx)
         and not _is_selectable_league(candidate.get("league_name"), ctx)
     ):
         return "league restriction"

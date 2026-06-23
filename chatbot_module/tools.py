@@ -418,6 +418,26 @@ def is_same_club(club_a: Optional[str], club_b: Optional[str]) -> bool:
         return True
     if a in b or b in a:
         return True
+    def _similar_token(left: str, right: str) -> bool:
+        if not left or not right or left[0] != right[0]:
+            return False
+        from difflib import SequenceMatcher
+        return SequenceMatcher(None, left, right).ratio() >= 0.72
+
+    generic_tokens = {"club", "football", "sporting", "athletic", "de", "del", "cf", "fc", "sc", "ac", "fk", "sk"}
+    a_distinctive = {token for token in a_tokens if len(token) >= 4 and token not in generic_tokens}
+    b_distinctive = {token for token in b_tokens if len(token) >= 4 and token not in generic_tokens}
+    shared = a_distinctive & b_distinctive
+    if shared:
+        a_remaining = a_distinctive - shared
+        b_remaining = b_distinctive - shared
+        if not a_remaining and not b_remaining:
+            return True
+        if a_remaining and b_remaining and all(
+            any(_similar_token(left, right) for right in b_remaining)
+            for left in a_remaining
+        ):
+            return True
     return False
 
 

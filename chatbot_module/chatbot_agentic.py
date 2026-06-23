@@ -60,6 +60,7 @@ from chatbot_module.tools_agentic import (
     format_candidates_for_selector,
     is_greeting_or_offtopic,
     clean_constraints,
+    candidate_constraint_rejection,
     constraint_relaxation_label,
     infer_league_from_text,
     infer_nationality_from_text,
@@ -1122,6 +1123,12 @@ def answer_question(
             )
             """
             direct_candidates = fetch_direct_player_candidates_by_name(ctx.effective_query)
+            if direct_candidates and ctx.constraints:
+                direct_candidates = [
+                    candidate
+                    for candidate in direct_candidates
+                    if not candidate_constraint_rejection(candidate, ctx)
+                ]
             trace["retrieval"] = {
                 "source": "direct_candidate_lookup",
                 "fetched_count": len(direct_candidates or []),

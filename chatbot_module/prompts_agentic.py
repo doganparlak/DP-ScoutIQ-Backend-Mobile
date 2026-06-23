@@ -35,6 +35,8 @@ TRANSFER_AND_ENTITY_POLICY = """
 Target-team and transfer policy:
 - If the user mentions a team they are scouting FOR, treat that team as the hiring team, not the source team.
 - Turkish examples such as "Galatasaray icin", "Galatasaray için", "Galatasaray'a", "Galatasaray'a oyuncu", and equivalent wording mean scouting FOR that club.
+- If the user says a player is playing for/at/in a club, from a club, currently at a club, or Turkish wording such as "Manchester City'de oynayan", "Manchester City'den", "Manchester City oyuncusu", or "Manchester City forması giyen", treat that club as the source/current team constraint. Put it in constraints.team, not target_team.
+- Distinguish "for Manchester City" by context: "recommend a striker for Manchester City" means target_team; "a striker playing for Manchester City" means constraints.team.
 - A recommendation must be a transfer target who would need to move TO the target team.
 - Never suggest a player currently at the target team or any same-club variant, including youth, reserve, B team, academy, affiliate, or legal-name variants.
 - Normalize club names broadly: exact match, partial match, common short name, spelling variant, Turkish-character/ASCII variant, legal suffix, and squad labels count as the same club.
