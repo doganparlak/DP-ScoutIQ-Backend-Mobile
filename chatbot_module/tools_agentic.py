@@ -43,12 +43,24 @@ SQL_FOLD_TO = "AAAAAAAAAaaaaaaaaaEEEEEEEEeeeeeeeeIIIIIIiiiiiiOOOOOOOoooooooUUUUU
 
 AGENTIC_LOOKUP_DEBUG = os.getenv("AGENTIC_LOOKUP_DEBUG", "1").lower() not in {"0", "false", "no", "off"}
 AGENTIC_LOOKUP_VERBOSE = os.getenv("AGENTIC_LOOKUP_VERBOSE", "0").lower() in {"1", "true", "yes", "on"}
-AGENTIC_QUALITY_DEBUG = os.getenv("AGENTIC_QUALITY_DEBUG", "1").lower() not in {"0", "false", "no", "off"}
+AGENTIC_QUALITY_DEBUG = os.getenv("AGENTIC_QUALITY_DEBUG", "0").lower() not in {"0", "false", "no", "off"}
 SELECTOR_CANDIDATE_LIMIT = 24
 
 
 def _lookup_debug(event: str, payload: Dict[str, Any]) -> None:
     if not AGENTIC_LOOKUP_DEBUG:
+        return
+    concise_events = {
+        "direct_lookup_start",
+        "direct_lookup_sql_before",
+        "direct_lookup_sql_after",
+        "direct_lookup_result",
+        "direct_candidates_start",
+        "direct_candidates_fuzzy_sql_before",
+        "direct_candidates_fuzzy_sql_after",
+        "direct_candidates_result",
+    }
+    if not AGENTIC_LOOKUP_VERBOSE and event not in concise_events:
         return
     if not AGENTIC_LOOKUP_VERBOSE:
         compact = dict(payload or {})
@@ -81,7 +93,7 @@ def _lookup_debug(event: str, payload: Dict[str, Any]) -> None:
         body = json.dumps(payload, ensure_ascii=False, default=str)
     except Exception:
         body = str(payload)
-    #print(f"[chatbot_agentic_lookup] event={event} {body}", flush=True)
+    print(f"[chatbot_db_search] event={event} {body}", flush=True)
 
 
 def _quality_debug(event: str, payload: Dict[str, Any]) -> None:
@@ -91,7 +103,7 @@ def _quality_debug(event: str, payload: Dict[str, Any]) -> None:
         body = json.dumps(payload, ensure_ascii=False, default=str)
     except Exception:
         body = str(payload)
-    #print(f"[chatbot_agentic_quality] event={event} {body}", flush=True)
+    print(f"[chatbot_quality] event={event} {body}", flush=True)
 
 
 NEGATIVE_METRICS = {
@@ -242,6 +254,8 @@ def extract_json_object(text: str) -> Dict[str, Any]:
 
 
 def is_direct_player_lookup_request_agentic(original_question: Optional[str], translated_question: Optional[str]) -> bool:
+    if extract_named_player_lookup_query(original_question, translated_question):
+        return True
     if is_direct_player_lookup_request(original_question):
         return True
 
@@ -266,6 +280,69 @@ def is_direct_player_lookup_request_agentic(original_question: Optional[str], tr
     if len(tokens) == 1:
         return len(tokens[0]) >= 5
     return 2 <= len(tokens) <= 5 and all(len(token) >= 2 for token in tokens)
+
+
+def _looks_like_player_name_fragment(value: Optional[str], *, allow_single: bool = False) -> Optional[str]:
+    text = re.sub(r"\s+", " ", (value or "").strip(" .?!,:;\"'’“”")).strip()
+    if not text:
+        return None
+    lowered = norm_name(text)
+    blocked = {
+        "bana", "bir", "oyuncu", "futbolcu", "player", "footballer", "profile", "scouting",
+        "report", "analysis", "analyze", "analyse", "tell", "about", "what", "kind", "how",
+        "is", "the", "a", "an", "young", "powerful", "explosive", "striker", "forward",
+    }
+    tokens = _lookup_tokens(lowered)
+    tokens = [token for token in tokens if token not in blocked]
+    if len(tokens) > 5:
+        return None
+    if len(tokens) < 2 and not (allow_single and len(tokens) == 1 and len(tokens[0]) >= 5):
+        return None
+    if any(len(token) < 2 for token in tokens):
+        return None
+    if any(token in {"player", "oyuncu", "futbolcu", "striker", "forward", "midfielder", "defender"} for token in tokens):
+        return None
+    original_tokens = [
+        token
+        for token in re.split(r"\s+", text)
+        if norm_name(token) in set(tokens)
+    ]
+    return " ".join(original_tokens[: len(tokens)]).strip() or " ".join(tokens).strip()
+
+
+def extract_named_player_lookup_query(
+    original_question: Optional[str],
+    translated_question: Optional[str] = None,
+    effective_query: Optional[str] = None,
+) -> Optional[str]:
+    candidates = [original_question or "", effective_query or "", translated_question or ""]
+    patterns = [
+        r"^\s*(?P<name>.+?)\s+(?:nasil|nasıl)\s+bir\s+(?:oyuncu|futbolcu)\b",
+        r"^\s*(?P<name>.+?)\s+(?:nasildir|nasıldır|kimdir)\b",
+        r"^\s*(?P<name>.+?)\s+(?:player\s+profile|scouting\s+report|profile|analysis|analizi)\b",
+        r"^\s*(?:tell\s+me\s+about|analy[sz]e|profile)\s+(?P<name>.+?)\s*$",
+        r"^\s*(?:what\s+kind\s+of\s+player\s+is|who\s+is|how\s+is)\s+(?P<name>.+?)\s*$",
+        r"^\s*(?:how\s+would)\s+(?P<name>.+?)\s+(?:fit|be)\s+(?:for|at|in|to)\s+.+$",
+        r"^\s*(?P<name>[A-Za-zÀ-ÿ.'’\- ]{3,50}?)\s+\S+(?:'?[aeıiuü]|ye|ya|de|da|te|ta|e|a)?\s+(?:nasil|nasıl)\s+olur\b",
+    ]
+    for text in candidates:
+        compact = re.sub(r"\s+", " ", text or "").strip()
+        if not compact:
+            continue
+        for pattern in patterns:
+            match = re.search(pattern, compact, flags=re.IGNORECASE)
+            if not match:
+                continue
+            name = _looks_like_player_name_fragment(match.group("name"), allow_single=True)
+            if name:
+                return name
+
+    # Controller often returns "Name player profile scouting report"; recover the leading identity.
+    compact_effective = re.sub(r"\s+", " ", effective_query or "").strip()
+    match = re.search(r"^(?P<name>.+?)\s+(?:player\s+profile|scouting\s+report|profile|analysis)\b", compact_effective, flags=re.IGNORECASE)
+    if match:
+        return _looks_like_player_name_fragment(match.group("name"))
+    return None
 
 
 def is_narrow_filtered_suggestion_request(question: Optional[str], strategy: Optional[str] = None) -> bool:
@@ -306,7 +383,12 @@ def _has_search_constraints(constraints: Dict[str, Any]) -> bool:
         "age_min", "age_max", "height_min", "height_max", "weight_min", "weight_max",
     )
     return any(cleaned.get(key) is not None for key in scalar_keys) or bool(
-        cleaned.get("preferred_stats") or cleaned.get("stat_requirements")
+        cleaned.get("preferred_stats")
+        or cleaned.get("stat_requirements")
+        or cleaned.get("excluded_nationalities")
+        or cleaned.get("excluded_positions")
+        or cleaned.get("excluded_leagues")
+        or cleaned.get("excluded_teams")
     )
 
 
@@ -461,7 +543,7 @@ CANONICAL_NATIONALITIES = {
     "Slovenia", "Solomon Islands", "Somalia", "South Africa", "South America", "South Korea",
     "South Sudan", "Spain", "Sri Lanka", "Sudan", "Suriname", "Sweden", "Switzerland",
     "Syria", "Taiwan", "Tajikistan", "Tanzania", "Thailand", "Togo", "Trinidad and Tobago",
-    "Tunisia", "Turkmenistan", "Türkiye", "Uganda", "Ukraine", "United Arab Emirates",
+    "Tunisia", "Turkmenistan", "Turkey", "Türkiye", "Uganda", "Ukraine", "United Arab Emirates",
     "United States", "Uruguay", "Uzbekistan", "Vanuatu", "Venezuela", "Vietnam", "Wales",
     "Yemen", "Zambia", "Zimbabwe",
 }
@@ -472,7 +554,7 @@ NATIONALITY_ALIASES = {
     "english": "England", "british": "England", "welsh": "Wales", "scottish": "Scotland",
     "irish": "Republic of Ireland", "portuguese": "Portugal", "dutch": "Netherlands",
     "argentinian": "Argentina", "argentine": "Argentina", "brazilian": "Brazil",
-    "uruguayan": "Uruguay", "turkish": "Türkiye", "turk": "Türkiye",
+    "uruguayan": "Uruguay", "turkey": "Türkiye", "turkiye": "Türkiye", "turkish": "Türkiye", "turk": "Türkiye",
     "moroccan": "Morocco", "nigerian": "Nigeria", "croatian": "Croatia",
     "polish": "Poland", "swedish": "Sweden", "norwegian": "Norway", "danish": "Denmark",
     "belgian": "Belgium", "austrian": "Austria", "swiss": "Switzerland",
@@ -480,8 +562,23 @@ NATIONALITY_ALIASES = {
     "peruvian": "Peru", "venezuelan": "Venezuela", "japanese": "Japan", "korean": "South Korea",
     "senegalese": "Senegal", "ghanaian": "Ghana", "cameroonian": "Cameroon",
     "egyptian": "Egypt", "algerian": "Algeria", "tunisian": "Tunisia",
+    "ingiliz": "England", "brezilyali": "Brazil", "arjantinli": "Argentina",
+    "norvecli": "Norway", "turkiye": "Türkiye", "türkiye": "Türkiye", "turk": "Türkiye", "alman": "Germany", "fransiz": "France",
+    "ispanyol": "Spain", "italyan": "Italy", "portekizli": "Portugal", "hollandali": "Netherlands",
 }
 NATIONALITY_ALIAS_KEYS = {norm_name(key): value for key, value in NATIONALITY_ALIASES.items()}
+
+POSITION_NEGATION_ALIASES = {
+    "goalkeeper": "Goalkeeper", "goal keeper": "Goalkeeper", "keeper": "Goalkeeper", "gk": "Goalkeeper",
+    "kaleci": "Goalkeeper",
+    "defender": "Center Back", "centre back": "Center Back", "center back": "Center Back", "cb": "Center Back",
+    "stoper": "Center Back", "savunmaci": "Center Back",
+    "midfielder": "Center Midfield", "central midfielder": "Center Midfield", "cm": "Center Midfield",
+    "orta saha": "Center Midfield", "ortasaha": "Center Midfield",
+    "winger": "Left Wing", "kanat": "Left Wing",
+    "forward": "Center Forward", "striker": "Center Forward", "attacker": "Center Forward", "cf": "Center Forward",
+    "forvet": "Center Forward", "santrafor": "Center Forward",
+}
 
 
 def normalize_constraint_value(value: Optional[Any]) -> str:
@@ -494,7 +591,7 @@ def canonical_nationality(value: Optional[Any]) -> Optional[str]:
     key = norm_name(str(value or ""))
     if not key:
         return None
-    return NATIONALITY_BY_KEY.get(key) or NATIONALITY_ALIAS_KEYS.get(key)
+    return NATIONALITY_ALIAS_KEYS.get(key) or NATIONALITY_BY_KEY.get(key)
 
 
 def infer_nationality_from_text(*texts: Optional[str]) -> Optional[str]:
@@ -509,6 +606,64 @@ def infer_nationality_from_text(*texts: Optional[str]) -> Optional[str]:
         if f" {nat_key} " in padded:
             return canonical
     return None
+
+
+def _unique_list(values: List[str], limit: int = 5) -> List[str]:
+    out: List[str] = []
+    for value in values:
+        cleaned = str(value or "").strip()
+        if cleaned and cleaned not in out:
+            out.append(cleaned)
+        if len(out) >= limit:
+            break
+    return out
+
+
+def _is_negated_term(normalized_text: str, term: str) -> bool:
+    term = norm_name(term)
+    if not normalized_text or not term:
+        return False
+    escaped = re.escape(term)
+    tr_suffix = r"(?:de|da|te|ta|den|dan|ten|tan|nde|nda|inde|inda|deki|daki|teki|taki)?"
+    tr_negative = r"(?:olmayan|olmasin|oynamayan|oynamasin|oynamiyor|oynam\s*yor|istemiyorum|haric|haricinde|disinda)"
+    return bool(
+        re.search(rf"\b(?:non|not|no|without|except|excluding|exclude)\s+(?:a|an|any)?\s*{escaped}\b", normalized_text)
+        or re.search(rf"\b{escaped}{tr_suffix}\s+{tr_negative}\b", normalized_text)
+        or re.search(rf"\b{escaped}{tr_suffix}\s+(?:player|footballer|oyuncu|futbolcu)?\s*(?:olmasin|oynamasin|oynamiyor|oynam\s*yor|istemiyorum)\b", normalized_text)
+    )
+
+
+def infer_excluded_constraints_from_text(*texts: Optional[str]) -> Dict[str, List[str]]:
+    normalized = norm_name(" ".join(text or "" for text in texts))
+    excluded_nationalities: List[str] = []
+    excluded_positions: List[str] = []
+    excluded_leagues: List[str] = []
+
+    for alias_key, canonical in sorted(NATIONALITY_ALIAS_KEYS.items(), key=lambda item: len(item[0]), reverse=True):
+        if _is_negated_term(normalized, alias_key):
+            excluded_nationalities.append(canonical)
+    for nat_key, canonical in sorted(NATIONALITY_BY_KEY.items(), key=lambda item: len(item[0]), reverse=True):
+        if _is_negated_term(normalized, nat_key):
+            excluded_nationalities.append(canonical)
+
+    position_terms = {
+        **POSITION_NEGATION_ALIASES,
+        **ROLE_CODE_BY_KEY,
+        **ROLE_LONG_BY_KEY,
+    }
+    for term, canonical in sorted(position_terms.items(), key=lambda item: len(item[0]), reverse=True):
+        if _is_negated_term(normalized, term):
+            excluded_positions.append(canonical_position(canonical) or canonical)
+
+    for league_key, canonical in sorted(LEAGUE_BY_KEY.items(), key=lambda item: len(item[0]), reverse=True):
+        if _is_negated_term(normalized, league_key):
+            excluded_leagues.append(canonical)
+
+    return {
+        "excluded_nationalities": _unique_list(excluded_nationalities),
+        "excluded_positions": _unique_list(excluded_positions),
+        "excluded_leagues": _unique_list(excluded_leagues),
+    }
 
 
 STAT_PREFERENCE_PATTERNS: List[Tuple[str, List[str]]] = [
@@ -581,6 +736,52 @@ def clean_constraints(raw: Optional[Dict[str, Any]]) -> Dict[str, Any]:
         if len(requirements) >= 3:
             break
     cleaned["stat_requirements"] = requirements
+
+    excluded_nationalities = []
+    for value in raw.get("excluded_nationalities") or []:
+        canonical = canonical_nationality(value)
+        if canonical and canonical not in excluded_nationalities:
+            excluded_nationalities.append(canonical)
+    cleaned["excluded_nationalities"] = excluded_nationalities[:5]
+
+    excluded_positions = []
+    for value in raw.get("excluded_positions") or []:
+        canonical = canonical_position(value)
+        if canonical and canonical not in excluded_positions:
+            excluded_positions.append(canonical)
+    cleaned["excluded_positions"] = excluded_positions[:5]
+
+    excluded_leagues = []
+    for value in raw.get("excluded_leagues") or []:
+        canonical = canonical_league(value)
+        if canonical and canonical not in excluded_leagues:
+            excluded_leagues.append(canonical)
+    cleaned["excluded_leagues"] = excluded_leagues[:5]
+
+    excluded_teams = _unique_list([str(value).strip() for value in raw.get("excluded_teams") or []], limit=5)
+    cleaned["excluded_teams"] = excluded_teams
+
+    if cleaned.get("nationality") and any(
+        normalize_constraint_value(cleaned["nationality"]) == normalize_constraint_value(value)
+        for value in cleaned["excluded_nationalities"]
+    ):
+        cleaned["nationality"] = None
+    if cleaned.get("position"):
+        position_excluded = any(
+            player_matches_requested_position(
+                value,
+                cleaned.get("position"),
+                [cleaned.get("position")] if cleaned.get("position") else [],
+            )[0]
+            for value in cleaned["excluded_positions"]
+        )
+        if position_excluded:
+            cleaned["position"] = None
+    if cleaned.get("league") and any(_constraint_text_match(cleaned["league"], value) for value in cleaned["excluded_leagues"]):
+        cleaned["league"] = None
+    if cleaned.get("team") and any(_constraint_team_match(cleaned["team"], value) for value in cleaned["excluded_teams"]):
+        cleaned["team"] = None
+
     cleaned["notes"] = str(raw.get("notes") or "").strip()[:160]
     return cleaned
 
@@ -651,11 +852,36 @@ def candidate_constraint_rejection(candidate: Dict[str, Any], ctx: Optional[Agen
         return None
     level = int(getattr(ctx, "constraint_relaxation_level", 0) or 0)
 
+    for nationality in constraints.get("excluded_nationalities") or []:
+        if _constraint_text_match(candidate.get("nationality"), nationality, nationality=True):
+            return "excluded nationality"
+
+    for position in constraints.get("excluded_positions") or []:
+        position_match, _, _ = player_matches_requested_position(
+            position,
+            candidate.get("position_name"),
+            [candidate.get("position_name")] if candidate.get("position_name") else [],
+        )
+        if position_match:
+            return "excluded position"
+
+    for team in constraints.get("excluded_teams") or []:
+        if _constraint_team_match(candidate.get("team"), team):
+            return "excluded team"
+
+    for league in constraints.get("excluded_leagues") or []:
+        if _constraint_text_match(candidate.get("league_name"), league):
+            return "excluded league"
+
     if level < 8 and constraints.get("gender") and not _constraint_exact_match(candidate.get("gender"), constraints.get("gender")):
         return "constraint gender"
 
-    if level < 7 and constraints.get("team") and not _constraint_team_match(candidate.get("team"), constraints.get("team")):
-        return "constraint team"
+    if level < 5 and constraints.get("nationality") and not _constraint_text_match(
+        candidate.get("nationality"),
+        constraints.get("nationality"),
+        nationality=True,
+    ):
+        return "constraint nationality"
 
     if level < 6 and constraints.get("position"):
         position_ok, _, _ = player_matches_requested_position(
@@ -666,12 +892,8 @@ def candidate_constraint_rejection(candidate: Dict[str, Any], ctx: Optional[Agen
         if not position_ok:
             return "constraint position"
 
-    if level < 5 and constraints.get("nationality") and not _constraint_text_match(
-        candidate.get("nationality"),
-        constraints.get("nationality"),
-        nationality=True,
-    ):
-        return "constraint nationality"
+    if level < 7 and constraints.get("team") and not _constraint_team_match(candidate.get("team"), constraints.get("team")):
+        return "constraint team"
 
     if constraints.get("league") and not _constraint_text_match(candidate.get("league_name"), constraints.get("league")):
         return "constraint league"
@@ -856,10 +1078,17 @@ def build_agentic_context(
     planner_data = planner_data or {}
     generic_alternative = is_generic_alternative_request(translated)
     planner_intent = planner_data.get("intent")
+    named_lookup_query = extract_named_player_lookup_query(
+        original_question,
+        translated,
+        planner_data.get("effective_query") or "",
+    )
     heuristic_direct_lookup = is_direct_player_lookup_request_agentic(original_question, translated)
     direct_lookup = planner_intent == "direct_player_lookup" or (
         not planner_intent and heuristic_direct_lookup
     )
+    if named_lookup_query:
+        direct_lookup = True
 
     target_team = extract_target_team_from_question(translated)
     if not target_team and generic_alternative:
@@ -878,7 +1107,7 @@ def build_agentic_context(
             limit=3,
         )
 
-    effective_query = (planner_data.get("effective_query") or translated).strip()
+    effective_query = (named_lookup_query or planner_data.get("effective_query") or translated).strip()
     if generic_alternative and recent_constraints:
         constraints_block = "\n".join(f"- {msg}" for msg in recent_constraints)
         effective_query = (
@@ -916,11 +1145,22 @@ def build_agentic_context(
         intent = "alternative_recommendation"
     if len(comparison_players) >= 2:
         intent = "comparison"
+    if named_lookup_query:
+        intent = "direct_player_lookup"
     if intent != "direct_player_lookup":
         direct_lookup = False
 
     premium_only = is_premium_request(translated)
     cleaned_constraints = clean_constraints(constraints)
+    inferred_exclusions = infer_excluded_constraints_from_text(
+        original_question,
+        translated,
+        planner_data.get("effective_query") or "",
+    )
+    for key, values in inferred_exclusions.items():
+        if values:
+            cleaned_constraints[key] = _unique_list([*(cleaned_constraints.get(key) or []), *values])
+    cleaned_constraints = clean_constraints(cleaned_constraints)
     source_team_phrase = bool(
         target_team
         and (
@@ -940,7 +1180,7 @@ def build_agentic_context(
         suffix = f" Treated {target_team} as target team, not source team."
         cleaned_constraints["notes"] = (note + suffix).strip()[:160]
 
-    if direct_lookup and _has_search_constraints(cleaned_constraints) and (
+    if direct_lookup and not named_lookup_query and _has_search_constraints(cleaned_constraints) and (
         _looks_like_generic_player_search(original_question)
         or _looks_like_generic_player_search(translated)
     ):
@@ -973,6 +1213,7 @@ def build_agentic_context(
         discovery_mode=discovery_mode,
         allow_turkish=(
             request_allows_turkish_entities(translated)
+            or normalize_constraint_value(cleaned_constraints.get("nationality")) == "turkiye"
             or bool(cleaned_constraints.get("team") and is_disallowed_turkish_club(cleaned_constraints.get("team")))
         ),
         allow_non_senior=request_allows_non_senior_squads(translated),
@@ -1260,6 +1501,29 @@ def fetch_selection_suggestion_docs_from_db(
         where_parts.append("(" + " OR ".join(clauses) + ")")
         sql_filters_applied.append("team")
 
+    def add_nationality_filter(value: Any) -> None:
+        if value is None:
+            return
+        canonical = canonical_nationality(value) or str(value)
+        keys = {norm_name(str(value)), norm_name(canonical)}
+        if canonical == "Türkiye":
+            keys.update({"turkiye", "turkey", "turkish", "turk"})
+        keys = {key for key in keys if key}
+        folded_nat_sql = (
+            "LOWER(TRANSLATE(COALESCE(metadata->>'nationality_name', ''), "
+            ":sql_fold_from, :sql_fold_to))"
+        )
+        params["sql_fold_from"] = SQL_FOLD_FROM
+        params["sql_fold_to"] = SQL_FOLD_TO
+        clauses = []
+        for index, key in enumerate(sorted(keys)):
+            param = f"nationality_key_{index}"
+            clauses.append(f"{folded_nat_sql} = :{param}")
+            params[param] = key
+        if clauses:
+            where_parts.append("(" + " OR ".join(clauses) + ")")
+            sql_filters_applied.append("nationality")
+
     def add_numeric_min(field: str, param: str, value: Any) -> None:
         numeric_value = _num(value)
         if numeric_value is None:
@@ -1285,7 +1549,7 @@ def fetch_selection_suggestion_docs_from_db(
     if relaxation_level < 8:
         add_text_filter("gender", "gender", constraints.get("gender"))
     if relaxation_level < 5:
-        add_text_filter("nationality_name", "nationality", constraints.get("nationality"))
+        add_nationality_filter(constraints.get("nationality"))
     add_text_filter("league_name", "league", constraints.get("league"))
     if relaxation_level < 7:
         add_team_filter(constraints.get("team"))
@@ -1508,6 +1772,10 @@ def doc_to_candidate(doc: Document, index: int) -> Dict[str, Any]:
         "team": md.get("team_name") or md.get("team") or md.get("club"),
         "league_name": md.get("league_name") or md.get("league"),
         "position_name": position,
+        "position_counts": md.get("position_counts"),
+        "position_count_total": md.get("position_count_total"),
+        "position_names_seen": md.get("position_names_seen"),
+        "primary_position_code": md.get("primary_position_code"),
         "match_count": _num(md.get("match_count")),
         "rating": _num(md.get("Rating")),
         "potential": None,
@@ -2032,6 +2300,7 @@ def validate_candidate(candidate: Dict[str, Any], ctx: AgenticContext) -> Option
 def candidate_to_meta(candidate: Dict[str, Any]) -> Dict[str, Any]:
     return {
         "players": [{
+            "id": candidate.get("id"),
             "name": candidate.get("name"),
             "gender": candidate.get("gender"),
             "height": candidate.get("height"),
@@ -2043,6 +2312,10 @@ def candidate_to_meta(candidate: Dict[str, Any]) -> Dict[str, Any]:
             "league_name": candidate.get("league_name"),
             "match_count": candidate.get("match_count"),
             "roles": [candidate.get("position_name")] if candidate.get("position_name") else [],
+            "position_counts": candidate.get("position_counts"),
+            "position_count_total": candidate.get("position_count_total"),
+            "position_names_seen": candidate.get("position_names_seen"),
+            "primary_position_code": candidate.get("primary_position_code"),
             "potential": candidate.get("potential"),
             "form": candidate.get("form"),
         }]
@@ -2054,9 +2327,13 @@ def build_payload_from_candidate(candidate: Dict[str, Any], seen_players: set[st
     meta_new, new_names = filter_players_by_seen(meta, seen_players)
     payload = build_player_payload_new(meta_new) if new_names else {"players": []}
     if payload.get("players"):
+        payload["players"][0].setdefault("id", candidate.get("id"))
         payload_meta = payload["players"][0].setdefault("meta", {})
         payload_meta["potential"] = candidate.get("potential")
         payload_meta["form"] = candidate.get("form")
+        for key in ("position_counts", "position_count_total", "position_names_seen", "primary_position_code"):
+            if candidate.get(key) is not None:
+                payload_meta[key] = candidate.get(key)
         if candidate.get("league_name"):
             payload_meta.setdefault("league", candidate.get("league_name"))
             payload_meta.setdefault("league_name", candidate.get("league_name"))
