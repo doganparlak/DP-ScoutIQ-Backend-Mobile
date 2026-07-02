@@ -3,6 +3,7 @@ import json
 import os
 import random
 import re
+import time
 import warnings
 
 from dotenv import load_dotenv
@@ -72,6 +73,20 @@ from chatbot_module.tools_agentic import (
 )
 from potential_form_module.form import reveal_player_form
 from potential_form_module.potential import reveal_player_potential
+
+
+def _agentic_diag(event: str, session_id: str, started_at: float, **fields: Any) -> None:
+    parts = [
+        f"event={event}",
+        f"session={session_id[:6] + '...' + session_id[-4:] if len(session_id) > 10 else session_id}",
+        f"elapsed_ms={int((time.perf_counter() - started_at) * 1000)}",
+    ]
+    for key, value in fields.items():
+        if value is None:
+            value = "none"
+        text = str(value).replace("\n", " ")[:180]
+        parts.append(f"{key}={text}")
+    print("[mobile_agentic] " + " ".join(parts), flush=True)
 
 
 controller_prompt = ChatPromptTemplate.from_messages([
@@ -932,9 +947,13 @@ def answer_question(
     session_id: str = "default",
     strategy: Optional[str] = None,
 ) -> Dict[str, Any]:
+    started_at = time.perf_counter()
+    _agentic_diag("enter", session_id, started_at, question_chars=len(question or ""), strategy_chars=len(strategy or ""))
     trace = _new_trace()
+    _agentic_diag("load_memory_start", session_id, started_at)
     lang, history_rows = get_session_state(session_id)
     _trace_step(trace, "tool", "load_memory")
+    _agentic_diag("load_memory_done", session_id, started_at, lang=lang, history_rows=len(history_rows or []))
     ai_msgs: List[AIMessage] = [
         AIMessage(content=row["content"])
         for row in history_rows
@@ -942,9 +961,12 @@ def answer_question(
     ]
     seen_players = get_seen_players_from_history(ai_msgs)
     _trace_step(trace, "tool", "seen_players")
+    _agentic_diag("seen_players_done", session_id, started_at, seen_count=len(seen_players or []))
 
     original_question = question or ""
+    _agentic_diag("translate_start", session_id, started_at, lang=lang)
     translated_raw = translate_to_english_if_needed(original_question, lang)
+    _agentic_diag("translate_done", session_id, started_at, translated_chars=len(translated_raw or ""))
     if is_turkish(lang):
         _trace_step(trace, "agent", "translate_to_english")
         _trace_translation_cost(
@@ -961,6 +983,7 @@ def answer_question(
         _log_trace(trace, session_id=session_id, outcome="greeting_or_offtopic")
         return {"answer": answer, "data": {"players": []}}
 
+    _agentic_diag("controller_start", session_id, started_at)
     planner_data = _controller_decision(
         original_question=original_question,
         translated_question=translated_raw,
@@ -969,18 +992,35 @@ def answer_question(
         history_rows=history_rows,
         trace=trace,
     )
+    _agentic_diag(
+        "controller_done",
+        session_id,
+        started_at,
+        intent=planner_data.get("intent"),
+        direct_lookup=planner_data.get("direct_player_lookup"),
+    )
     previous_constraints = _last_agentic_constraints(history_rows)
     carried_constraints = collect_recent_human_constraints(
         history_rows,
         is_generic_alternative_fn=is_generic_alternative_request,
         limit=3,
     )
+    _agentic_diag("constraints_start", session_id, started_at, carried=len(carried_constraints or []))
     constraints = _constraint_decision(
         original_question=original_question,
         translated_question=planner_data.get("effective_query") or translated_raw,
         strategy=strategy,
         recent_constraints=carried_constraints,
         trace=trace,
+    )
+    _agentic_diag(
+        "constraints_done",
+        session_id,
+        started_at,
+        position=constraints.get("position"),
+        team=constraints.get("team"),
+        nationality=constraints.get("nationality"),
+        league=constraints.get("league"),
     )
     inferred_nationality = infer_nationality_from_text(
         original_question,
@@ -1023,6 +1063,7 @@ def answer_question(
         constraints["preferred_stats"] = merged_stats
     constraints = _merge_turn_constraints(previous_constraints, constraints, original_question)
     _trace_step(trace, "tool", "build_context")
+    _agentic_diag("context_start", session_id, started_at)
     ctx = build_agentic_context(
         original_question=original_question,
         translated_question=translated_raw,
@@ -1032,6 +1073,14 @@ def answer_question(
         strategy=strategy,
         planner_data=planner_data,
         constraints=constraints,
+    )
+    _agentic_diag(
+        "context_done",
+        session_id,
+        started_at,
+        intent=ctx.intent,
+        direct_lookup=ctx.direct_player_lookup,
+        quality=ctx.quality_discovery_mode,
     )
     trace["context"] = {
         "intent": ctx.intent,
@@ -1122,7 +1171,9 @@ def answer_question(
                 flush=True,
             )
             """
+            _agentic_diag("direct_lookup_start", session_id, started_at)
             direct_candidates = fetch_direct_player_candidates_by_name(ctx.effective_query)
+            _agentic_diag("direct_lookup_done", session_id, started_at, candidates=len(direct_candidates or []))
             if direct_candidates and ctx.constraints:
                 direct_candidates = [
                     candidate
@@ -1195,7 +1246,9 @@ def answer_question(
                 )
                 """
                 _trace_step(trace, "tool", "shared_retriever")
+                _agentic_diag("shared_retriever_start", session_id, started_at)
                 raw_docs = SHARED_RETRIEVER.invoke(ctx.effective_query)
+                _agentic_diag("shared_retriever_done", session_id, started_at, docs=len(raw_docs or []))
                 candidate_docs = list(raw_docs or [])[:12]
                 trace["retrieval"] = {
                     "source": "shared_retriever",
@@ -1223,11 +1276,13 @@ def answer_question(
                 candidates = []
         else:
             _trace_step(trace, "tool", "filtered_retriever")
+            _agentic_diag("filtered_retriever_start", session_id, started_at)
             _, candidate_docs = build_filtered_retriever_agentic(
                 ctx,
                 CANDIDATE_RETRIEVER,
                 BROAD_CANDIDATE_RETRIEVER,
             )
+            _agentic_diag("filtered_retriever_done", session_id, started_at, docs=len(candidate_docs or []))
             trace["retrieval"] = {
                 "source": "filtered_retriever",
                 "fetched_count": len(candidate_docs or []),
@@ -1243,6 +1298,7 @@ def answer_question(
                 session_id=session_id,
                 outcome="fallback_no_candidates_quality_relaxed" if ctx.quality_discovery_mode else "fallback_no_candidates",
             )
+            _agentic_diag("legacy_fallback_start", session_id, started_at, reason="no_candidates")
             return legacy_answer_question(original_question, session_id=session_id, strategy=strategy)
 
         if not candidates:
@@ -1272,7 +1328,9 @@ def answer_question(
             "candidate_list": candidate_list,
         }
         _trace_step(trace, "agent", "selector")
+        _agentic_diag("selector_start", session_id, started_at, candidates=len(candidates or []))
         selector_raw = selector_chain.invoke(selector_payload)
+        _agentic_diag("selector_done", session_id, started_at, raw_chars=len(selector_raw or ""))
         _trace_llm_cost(trace, AGENTIC_SELECTOR_PROMPT + json.dumps(selector_payload, ensure_ascii=False), selector_raw)
         selector_data = extract_json_object(selector_raw)
         selected_index = selector_data.get("selected_index")
@@ -1305,6 +1363,7 @@ def answer_question(
                     else "fallback_no_valid_scored_candidate"
                 ),
             )
+            _agentic_diag("legacy_fallback_start", session_id, started_at, reason="no_valid_scored_candidate")
             return legacy_answer_question(original_question, session_id=session_id, strategy=strategy)
 
         _trace_step(trace, "tool", "payload_builder")
@@ -1327,6 +1386,7 @@ def answer_question(
             else:
                 _trace_step(trace, "tool", "legacy_fallback")
                 _log_trace(trace, session_id=session_id, outcome="fallback_duplicate_candidate")
+                _agentic_diag("legacy_fallback_start", session_id, started_at, reason="duplicate_candidate")
                 return legacy_answer_question(original_question, session_id=session_id, strategy=strategy)
 
         p0 = (payload.get("players") or [None])[0] or {}
@@ -1344,10 +1404,16 @@ def answer_question(
             "stats_json": stats_json,
         }
         _trace_step(trace, "agent", "final_narrative")
+        _agentic_diag("narrative_start", session_id, started_at, stats=len(stats or []))
         memory_out = narrative_chain.invoke(narrative_payload).strip()
+        _agentic_diag("narrative_done", session_id, started_at, chars=len(memory_out or ""))
         _trace_llm_cost(trace, AGENTIC_NARRATIVE_PROMPT + json.dumps(narrative_payload, ensure_ascii=False), memory_out)
+        _agentic_diag("translate_output_start", session_id, started_at, lang=lang)
         answer = _translate_output_if_needed(memory_out, lang, trace)
+        _agentic_diag("translate_output_done", session_id, started_at, chars=len(answer or ""))
+        _agentic_diag("persist_start", session_id, started_at)
         _persist_turn(session_id, ctx.translated_question, memory_out, payload)
+        _agentic_diag("persist_done", session_id, started_at)
         _trace_step(trace, "tool", "persist_memory")
         _log_trace(trace, session_id=session_id, outcome="agentic_success")
         return {"answer": answer, "data": payload}
@@ -1355,7 +1421,9 @@ def answer_question(
     except Exception as exc:
         _trace_step(trace, "tool", "legacy_fallback")
         _log_trace(trace, session_id=session_id, outcome=f"fallback_exception:{type(exc).__name__}:{str(exc)[:120]}")
+        _agentic_diag("legacy_fallback_start", session_id, started_at, reason=f"exception:{type(exc).__name__}")
         fallback = legacy_answer_question(original_question, session_id=session_id, strategy=strategy)
+        _agentic_diag("legacy_fallback_done", session_id, started_at)
         if "error" not in fallback:
             fallback["agentic_fallback_reason"] = str(exc)
         return fallback
