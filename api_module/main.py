@@ -1,5 +1,6 @@
 # api_module/main.py
 from typing import Optional, Dict, Any, List
+import time
 from fastapi import FastAPI, HTTPException, Depends, Header, status, Response, Body, BackgroundTasks, Query as FastAPIQuery
 from fastapi.middleware.cors import CORSMiddleware
 from dotenv import load_dotenv
@@ -547,21 +548,52 @@ def delete_me(user_id: int = Depends(require_auth), db: Session = Depends(get_db
     return Response(status_code=status.HTTP_204_NO_CONTENT)
 
 # --- chat ---
+def _chat_session_label(session_id: str) -> str:
+    if not session_id:
+        return "default"
+    if len(session_id) <= 10:
+        return session_id
+    return f"{session_id[:6]}...{session_id[-4:]}"
+
+
 @app.post("/chat")
-async def chat(body: ChatIn, 
-               user_id: int = Depends(require_auth), 
+async def chat(body: ChatIn,
+               user_id: int = Depends(require_auth),
                accept_language: str | None = Header(default=None),
                db: Session = Depends(get_db)) -> Dict[str, Any]:
+    started_at = time.perf_counter()
+    session_id = body.session_id or "default"
+    session_label = _chat_session_label(session_id)
+    message_chars = len(body.message or "")
+    strategy_chars = len(body.strategy or "")
+    print(
+        "[mobile_chat] event=request_start "
+        f"user_id={user_id} session={session_label} tutorial={body.tutorial_mode} "
+        f"accept_language={accept_language or 'none'} message_chars={message_chars} "
+        f"strategy_chars={strategy_chars}",
+        flush=True,
+    )
+
     if not body.tutorial_mode and not is_user_pro(db, user_id):
+        elapsed_ms = int((time.perf_counter() - started_at) * 1000)
+        print(
+            "[mobile_chat] event=blocked_non_pro "
+            f"user_id={user_id} session={session_label} elapsed_ms={elapsed_ms}",
+            flush=True,
+        )
         raise HTTPException(status_code=403, detail="ScoutWise Pro required")
 
-    session_id = body.session_id or "default"
     header_lang = normalize_lang(accept_language)
     user_lang = normalize_lang(get_user_language(db, user_id))
     lang = header_lang or user_lang or "en"
+    print(
+        "[mobile_chat] event=session_prepare_start "
+        f"session={session_label} lang={lang} header_lang={header_lang or 'none'} "
+        f"user_lang={user_lang or 'none'}",
+        flush=True,
+    )
     try:
         if not session_exists_and_active(db, session_id):
-            # emulate SQLite INSERT OR REPLACE with UPSERT
             db.execute(
                 text("""
                 INSERT INTO sessions (token, user_id, language, created_at, ended_at)
@@ -574,29 +606,84 @@ async def chat(body: ChatIn,
                 {"t": session_id, "uid": user_id, "l": lang, "ts": now_iso()}
             )
             db.commit()
+            print(
+                "[mobile_chat] event=session_prepare_done "
+                f"session={session_label} action=upsert",
+                flush=True,
+            )
         else:
-            # IMPORTANT: update language even if session already exists
             db.execute(
                 text("UPDATE sessions SET language = :l WHERE token = :t AND ended_at IS NULL"),
                 {"l": lang, "t": session_id}
             )
             db.commit()
-    finally:
-        pass
-    if body.tutorial_mode:
-        return tutorial_chat_response(db)
+            print(
+                "[mobile_chat] event=session_prepare_done "
+                f"session={session_label} action=update_language",
+                flush=True,
+            )
+    except Exception as exc:
+        elapsed_ms = int((time.perf_counter() - started_at) * 1000)
+        print(
+            "[mobile_chat] event=session_prepare_error "
+            f"session={session_label} elapsed_ms={elapsed_ms} "
+            f"error_type={type(exc).__name__} error={str(exc)[:180]}",
+            flush=True,
+        )
+        raise
 
-    result = answer_question(
-        body.message,
-        session_id=session_id,
-        strategy=body.strategy,
-    )
+    if body.tutorial_mode:
+        print(f"[mobile_chat] event=tutorial_response_start session={session_label}", flush=True)
+        response = tutorial_chat_response(db)
+        elapsed_ms = int((time.perf_counter() - started_at) * 1000)
+        print(
+            "[mobile_chat] event=tutorial_response_done "
+            f"session={session_label} elapsed_ms={elapsed_ms}",
+            flush=True,
+        )
+        return response
+
+    print(f"[mobile_chat] event=answer_question_start session={session_label}", flush=True)
+    try:
+        result = answer_question(
+            body.message,
+            session_id=session_id,
+            strategy=body.strategy,
+        )
+    except Exception as exc:
+        elapsed_ms = int((time.perf_counter() - started_at) * 1000)
+        print(
+            "[mobile_chat] event=answer_question_error "
+            f"session={session_label} elapsed_ms={elapsed_ms} "
+            f"error_type={type(exc).__name__} error={str(exc)[:180]}",
+            flush=True,
+        )
+        raise
+
+    elapsed_answer_ms = int((time.perf_counter() - started_at) * 1000)
     answer_text = (result.get("answer") or "").strip()
     payload = result.get("data") or {"players": []}
+    players = payload.get("players") if isinstance(payload, dict) else []
+    player_count = len(players) if isinstance(players, list) else 0
+    print(
+        "[mobile_chat] event=answer_question_done "
+        f"session={session_label} elapsed_ms={elapsed_answer_ms} "
+        f"answer_chars={len(answer_text)} players={player_count} "
+        f"result_keys={','.join(sorted(result.keys())) if isinstance(result, dict) else 'n/a'}",
+        flush=True,
+    )
+
+    response_parts = split_response_parts(answer_text)
+    elapsed_ms = int((time.perf_counter() - started_at) * 1000)
+    print(
+        "[mobile_chat] event=response_ready "
+        f"session={session_label} elapsed_ms={elapsed_ms} response_parts={len(response_parts)}",
+        flush=True,
+    )
     return {
         "response": answer_text,
         "data": payload,
-        "response_parts": split_response_parts(answer_text),
+        "response_parts": response_parts,
     }
 
 @app.post("/reset")
