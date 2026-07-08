@@ -1565,6 +1565,211 @@ def _generate_report_background(
     finally:
         db.close()
 
+def _player_pool_report_cache_key(player_payload: dict) -> str:
+    cache_identity = {
+        key: player_payload.get(key)
+        for key in (
+            "name",
+            "gender",
+            "nationality",
+            "team",
+            "league",
+            "age",
+            "height",
+            "weight",
+        )
+        if player_payload.get(key) is not None
+    }
+    raw = json.dumps(cache_identity, ensure_ascii=False, sort_keys=True, default=str).lower()
+    return str(uuid.uuid5(uuid.NAMESPACE_URL, f"scoutwise:player-pool-report:{raw}"))
+
+
+@app.post("/player-pool/report", response_model=ScoutingReportOut)
+def create_player_pool_report(
+    payload: ScoutingReportIn,
+    user_id: int = Depends(require_auth),
+    accept_language: str | None = Header(default=None),
+    db: Session = Depends(get_db),
+):
+    lang = normalize_lang(accept_language) or normalize_lang(get_user_language(db, user_id)) or "en"
+    version = 2
+    player_payload = payload.model_dump(exclude_none=True)
+    player_payload.pop("tutorial_mode", None)
+    name = str(player_payload.get("name") or "").strip()
+    if not name:
+        raise HTTPException(status_code=400, detail="Player name is required")
+
+    cache_key = _player_pool_report_cache_key(player_payload)
+
+    row = db.execute(text("""
+            SELECT id, status, content, content_json, language, version, player_payload
+            FROM player_pool_scouting_reports
+            WHERE user_id = :uid
+              AND cache_key = :cache_key
+              AND COALESCE(language, 'en') = :lang
+              AND version = :ver
+            LIMIT 1
+    """), {"uid": user_id, "cache_key": cache_key, "lang": lang, "ver": version}).mappings().first()
+
+    if row:
+        if row["status"] == "failed":
+            db.execute(text("DELETE FROM player_pool_scouting_reports WHERE id = :id"), {"id": row["id"]})
+            db.commit()
+            row = None
+        elif row["status"] == "ready":
+            content_json = row["content_json"] if isinstance(row["content_json"], dict) else {}
+            player_card = content_json.get("player_card") if isinstance(content_json, dict) else {}
+            player_card = player_card if isinstance(player_card, dict) else {}
+            missing_requested_score = any(
+                player_payload.get(score_key) is not None and player_card.get(score_key) is None
+                for score_key in ("potential", "form")
+            )
+            if missing_requested_score:
+                db.execute(text("DELETE FROM player_pool_scouting_reports WHERE id = :id"), {"id": row["id"]})
+                db.commit()
+                row = None
+            else:
+                record_analytics_event(
+                    user_id=user_id,
+                    event_type="scouting_report_direct_cached",
+                    section="player_pool",
+                    source="player_pool_report_request",
+                    report_id=str(row["id"]),
+                    metadata={"language": row["language"], "version": row["version"], "player_name": name, "cache_key": cache_key},
+                )
+                return {
+                    "favorite_player_id": cache_key,
+                    "status": row["status"],
+                    "content": row["content"],
+                    "content_json": row["content_json"],
+                    "language": row["language"],
+                    "version": row["version"],
+                    "player": payload,
+                }
+        else:
+            record_analytics_event(
+                user_id=user_id,
+                event_type="scouting_report_direct_pending",
+                section="player_pool",
+                source="player_pool_report_request",
+                report_id=str(row["id"]),
+                metadata={"language": row["language"], "version": row["version"], "player_name": name, "cache_key": cache_key, "status": row["status"]},
+            )
+            return {
+                "favorite_player_id": cache_key,
+                "status": row["status"],
+                "content": row["content"],
+                "content_json": row["content_json"],
+                "language": row["language"],
+                "version": row["version"],
+                "player": payload,
+            }
+
+    report_id = str(uuid.uuid4())
+    try:
+        generated = generate_report_content(
+            db,
+            favorite_id=cache_key,
+            lang=lang,
+            version=version,
+            player_identity=player_payload,
+        )
+
+        db.execute(text("""
+            INSERT INTO player_pool_scouting_reports (
+                id, user_id, cache_key, status, language, version,
+                player_name, player_payload, content, content_json,
+                ready_at, created_at, updated_at
+            )
+            VALUES (
+                :id, :uid, :cache_key, 'ready', :lang, :ver,
+                :player_name, CAST(:player_payload AS jsonb), :content, CAST(:content_json AS jsonb),
+                NOW(), NOW(), NOW()
+            )
+            ON CONFLICT (user_id, cache_key, language, version)
+            DO UPDATE SET
+                status = 'ready',
+                player_name = EXCLUDED.player_name,
+                player_payload = EXCLUDED.player_payload,
+                content = EXCLUDED.content,
+                content_json = EXCLUDED.content_json,
+                error = NULL,
+                ready_at = NOW(),
+                updated_at = NOW()
+        """), {
+            "id": report_id,
+            "uid": user_id,
+            "cache_key": cache_key,
+            "lang": lang,
+            "ver": version,
+            "player_name": name,
+            "player_payload": json.dumps(player_payload, ensure_ascii=False, default=str),
+            "content": generated["content"],
+            "content_json": json.dumps(generated["content_json"], ensure_ascii=False, default=str),
+        })
+        db.commit()
+
+        record_analytics_event(
+            user_id=user_id,
+            event_type="scouting_report_direct_ready",
+            section="player_pool",
+            source="player_pool_report_request",
+            report_id=report_id,
+            metadata={"language": lang, "version": version, "player_name": name, "cache_key": cache_key},
+        )
+        return {
+            "favorite_player_id": cache_key,
+            "status": "ready",
+            "content": generated["content"],
+            "content_json": generated["content_json"],
+            "language": lang,
+            "version": version,
+            "player": payload,
+        }
+    except Exception as exc:
+        db.rollback()
+        print(f"[player_pool_report_failed] user_id={user_id} player={name} error={exc}")
+        try:
+            db.execute(text("""
+                INSERT INTO player_pool_scouting_reports (
+                    id, user_id, cache_key, status, language, version,
+                    player_name, player_payload, error, created_at, updated_at
+                )
+                VALUES (
+                    :id, :uid, :cache_key, 'failed', :lang, :ver,
+                    :player_name, CAST(:player_payload AS jsonb), :error, NOW(), NOW()
+                )
+                ON CONFLICT (user_id, cache_key, language, version)
+                DO UPDATE SET
+                    status = 'failed',
+                    player_name = EXCLUDED.player_name,
+                    player_payload = EXCLUDED.player_payload,
+                    error = EXCLUDED.error,
+                    updated_at = NOW()
+            """), {
+                "id": report_id,
+                "uid": user_id,
+                "cache_key": cache_key,
+                "lang": lang,
+                "ver": version,
+                "player_name": name,
+                "player_payload": json.dumps(player_payload, ensure_ascii=False, default=str),
+                "error": str(exc),
+            })
+            db.commit()
+        except Exception:
+            db.rollback()
+        record_analytics_event(
+            user_id=user_id,
+            event_type="scouting_report_direct_failed",
+            section="player_pool",
+            source="player_pool_report_request",
+            report_id=report_id,
+            metadata={"language": lang, "version": version, "player_name": name, "cache_key": cache_key, "error": str(exc)},
+        )
+        raise HTTPException(status_code=500, detail="Report generation failed") from exc
+
+
 @app.post("/me/favorites/{favorite_id}/report", response_model=ScoutingReportOut)
 def get_or_create_report(
     favorite_id: str,
