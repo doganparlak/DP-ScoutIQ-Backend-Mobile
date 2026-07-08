@@ -5,10 +5,15 @@ from api_module.utilities import PlanLiteral
 from datetime import datetime
 
 class ScoutingReportIn(BaseModel):
+    playerId: Optional[str] = None
+    clubPlayerId: Optional[int] = None
+    club_player_id: Optional[int] = None
+    worldCupMode: Optional[bool] = False
     name: Optional[str] = None
     gender: Optional[str] = None
     nationality: Optional[str] = None
     team: Optional[str] = None
+    league: Optional[str] = None
     age: Optional[float] = None
     height: Optional[float] = None
     weight: Optional[float] = None

@@ -1565,6 +1565,159 @@ def _generate_report_background(
     finally:
         db.close()
 
+
+def _metadata_text(metadata: Dict[str, Any], *keys: str) -> Optional[str]:
+    for key in keys:
+        value = metadata.get(key)
+        if value is not None and str(value).strip():
+            return str(value).strip()
+    return None
+
+
+def _metadata_number(metadata: Dict[str, Any], *keys: str) -> Optional[float]:
+    for key in keys:
+        value = metadata.get(key)
+        if value is None or value == "":
+            continue
+        try:
+            return float(value)
+        except (TypeError, ValueError):
+            continue
+    return None
+
+
+def _metadata_roles(metadata: Dict[str, Any]) -> List[str]:
+    roles = metadata.get("roles") or metadata.get("positions") or metadata.get("position_names_seen") or []
+    if not roles and metadata.get("position_name"):
+        roles = [metadata.get("position_name")]
+    if isinstance(roles, str):
+        roles = [roles]
+    if not isinstance(roles, list):
+        return []
+    return [str(role).strip() for role in roles if str(role).strip()]
+
+
+def _get_player_pool_metadata(db: Session, player_id: str, world_cup_mode: bool) -> Dict[str, Any]:
+    table_name = "player_data_wc" if world_cup_mode else "player_data"
+    row = db.execute(
+        text(f"""
+        SELECT metadata
+        FROM {table_name}
+        WHERE id = :player_id
+        LIMIT 1
+        """),
+        {"player_id": player_id},
+    ).mappings().first()
+    if not row or not row.get("metadata"):
+        raise HTTPException(status_code=404, detail="Player not found")
+    return dict(row["metadata"] or {})
+
+
+def _resolve_player_pool_report_club_row(db: Session, player_payload: Dict[str, Any]) -> Optional[Any]:
+    club_player_id = player_payload.get("club_player_id") or player_payload.get("clubPlayerId")
+    if club_player_id is not None:
+        row = db.execute(
+            text("""
+            SELECT id, metadata
+            FROM player_data
+            WHERE id = :player_id
+            LIMIT 1
+            """),
+            {"player_id": club_player_id},
+        ).mappings().first()
+        return row
+
+    player_id = player_payload.get("playerId") or player_payload.get("player_id")
+    world_cup_mode = bool(player_payload.get("worldCupMode") or player_payload.get("world_cup_mode"))
+
+    if player_id and not world_cup_mode:
+        row = db.execute(
+            text("""
+            SELECT id, metadata
+            FROM player_data
+            WHERE id = :player_id
+            LIMIT 1
+            """),
+            {"player_id": player_id},
+        ).mappings().first()
+        return row
+
+    source_metadata: Dict[str, Any] = {}
+    if player_id and world_cup_mode:
+        source_metadata = _get_player_pool_metadata(db, str(player_id), True)
+
+    player_name = _metadata_text(source_metadata, "player_name", "name") or str(player_payload.get("name") or "").strip()
+    if not player_name:
+        return None
+
+    gender = _metadata_text(source_metadata, "gender") or player_payload.get("gender")
+    age = _metadata_number(source_metadata, "age")
+    if age is None:
+        age = _metadata_number(player_payload, "age")
+    height = _metadata_text(source_metadata, "height") or (str(player_payload.get("height")) if player_payload.get("height") is not None else None)
+    weight = _metadata_text(source_metadata, "weight") or (str(player_payload.get("weight")) if player_payload.get("weight") is not None else None)
+
+    row = db.execute(
+        text("""
+        SELECT id, metadata
+        FROM player_data
+        WHERE LOWER(TRIM(metadata->>'player_name')) = LOWER(TRIM(:player_name))
+          AND (:gender IS NULL OR LOWER(COALESCE(metadata->>'gender', '')) = LOWER(:gender))
+          AND (:age IS NULL OR (
+                COALESCE(metadata->>'age', '') ~ '^-?[0-9]+(\\.[0-9]+)?$'
+                AND (metadata->>'age')::numeric = :age
+              ))
+        ORDER BY
+          CASE WHEN :height IS NOT NULL AND COALESCE(metadata->>'height', '') = :height THEN 0 ELSE 1 END,
+          CASE WHEN :weight IS NOT NULL AND COALESCE(metadata->>'weight', '') = :weight THEN 0 ELSE 1 END,
+          id DESC
+        LIMIT 1
+        """),
+        {
+            "player_name": player_name,
+            "gender": gender,
+            "age": age,
+            "height": height,
+            "weight": weight,
+        },
+    ).mappings().first()
+    return row
+
+
+def _apply_club_row_to_report_payload(
+    db: Session,
+    player_payload: Dict[str, Any],
+    club_row: Any,
+) -> Dict[str, Any]:
+    metadata = dict(club_row["metadata"] or {})
+    next_payload = dict(player_payload)
+    next_payload["club_player_id"] = int(club_row["id"])
+    next_payload["playerId"] = str(club_row["id"])
+    next_payload["worldCupMode"] = False
+    next_payload["name"] = _metadata_text(metadata, "player_name", "name") or next_payload.get("name")
+    next_payload["nationality"] = _metadata_text(metadata, "nationality_name", "nationality") or next_payload.get("nationality")
+    next_payload["gender"] = _metadata_text(metadata, "gender") or next_payload.get("gender")
+    next_payload["team"] = _metadata_text(metadata, "team_name", "team", "club") or next_payload.get("team")
+    next_payload["league"] = _metadata_text(metadata, "league_name", "league") or next_payload.get("league")
+
+    for key in ("age", "height", "weight"):
+        numeric = _metadata_number(metadata, key)
+        if numeric is not None:
+            next_payload[key] = int(numeric) if float(numeric).is_integer() else numeric
+
+    roles = _metadata_roles(metadata)
+    if roles:
+        next_payload["roles"] = to_long_roles(roles)
+
+    if player_payload.get("worldCupMode"):
+        try:
+            next_payload["potential"] = reveal_player_potential(db, club_row["id"], False).get("potential")
+            next_payload["form"] = reveal_player_form(db, club_row["id"], False).get("form")
+        except Exception as exc:
+            print(f"[player_pool_report] club_score_resolve_failed club_player_id={club_row['id']} error={exc}", flush=True)
+
+    return next_payload
+
 def _player_pool_report_cache_key(player_payload: dict) -> str:
     cache_identity = {
         key: player_payload.get(key)
@@ -1595,6 +1748,13 @@ def create_player_pool_report(
     version = 2
     player_payload = payload.model_dump(exclude_none=True)
     player_payload.pop("tutorial_mode", None)
+
+    club_row = _resolve_player_pool_report_club_row(db, player_payload)
+    if club_row is not None:
+        player_payload = _apply_club_row_to_report_payload(db, player_payload, club_row)
+    elif player_payload.get("worldCupMode"):
+        raise HTTPException(status_code=404, detail="Matching club player not found")
+
     name = str(player_payload.get("name") or "").strip()
     if not name:
         raise HTTPException(status_code=400, detail="Player name is required")
