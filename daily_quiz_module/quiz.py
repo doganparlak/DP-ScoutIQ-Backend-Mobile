@@ -15,7 +15,7 @@ from sqlalchemy import text
 from sqlalchemy.orm import Session
 
 from chatbot_module.metrics import ALLOWED_METRICS, POSITIVE_METRICS
-from daily_quiz_module.prompts import DAILY_SCOUT_FALLBACK_STRATEGIES, DAILY_SCOUT_QUIZ_PROMPT
+from daily_quiz_module.prompts import DAILY_SCOUT_FALLBACK_STRATEGIES, DAILY_SCOUT_QUIZ_PROMPT, DAILY_SCOUT_THEMES
 
 
 load_dotenv()
@@ -41,6 +41,14 @@ def _today() -> dt.date:
 def _week_start(day: dt.date | None = None) -> dt.date:
     d = day or _today()
     return d - dt.timedelta(days=d.weekday())
+
+
+def _theme_for_date(day: dt.date | None = None) -> Dict[str, Any]:
+    themes = DAILY_SCOUT_THEMES or []
+    if not themes:
+        return {}
+    d = day or _today()
+    return themes[d.toordinal() % len(themes)]
 
 
 def _num(value: Any) -> float | None:
@@ -75,6 +83,52 @@ def _positive_score(stats: List[Dict[str, Any]]) -> float:
             values.append(value)
     if not values:
         values = [_num(s.get("value")) or 0 for s in stats]
+    return round(sum(sorted(values, reverse=True)[:8]), 4)
+
+
+THEME_METRICS = {
+    "attacking_impact": {
+        "Goals", "Assists", "Shots On Target", "Shots On Target (%)", "Shots Total",
+        "Big Chances Created", "Chances Created", "Key Passes", "Passes In Final Third",
+        "Successful Dribbles", "Dribble Attempts", "Accurate Crosses", "Total Crosses",
+        "Fouls Drawn", "Rating",
+    },
+    "playmaking_control": {
+        "Accurate Passes", "Accurate Passes (%)", "Passes", "Touches", "Through Balls",
+        "Through Balls Won", "Long Balls", "Passes In Final Third", "Key Passes",
+        "Chances Created", "Ball Recovery", "Rating",
+    },
+    "transition_engine": {
+        "Successful Dribbles", "Dribble Attempts", "Passes In Final Third", "Through Balls",
+        "Long Balls", "Touches", "Fouls Drawn", "Ball Recovery", "Interceptions", "Rating",
+    },
+    "defensive_reliability": {
+        "Tackles", "Tackles Won", "Tackles Won (%)", "Interceptions", "Clearances",
+        "Blocked Shots", "Ball Recovery", "Duels Won", "Duels Won (%)", "Aerials Won",
+        "Aerials Won (%)", "Offsides Provoked", "Clearance Offline", "Last Man Tackle",
+        "Rating",
+    },
+    "balanced_value": {
+        "Rating", "Minutes Played", "Touches", "Accurate Passes", "Accurate Passes (%)",
+        "Goals", "Assists", "Key Passes", "Duels Won", "Duels Won (%)", "Ball Recovery",
+        "Fouls Drawn",
+    },
+}
+
+
+def _theme_score(stats: List[Dict[str, Any]], theme: Dict[str, Any] | None) -> float:
+    key = (theme or {}).get("key")
+    theme_metrics = THEME_METRICS.get(str(key or ""), set())
+    values: List[float] = []
+    for stat in stats:
+        metric = stat.get("metric")
+        value = _num(stat.get("value"))
+        if value is None:
+            continue
+        if metric in theme_metrics:
+            values.append(value)
+    if not values:
+        return _positive_score(stats)
     return round(sum(sorted(values, reverse=True)[:8]), 4)
 
 
@@ -144,7 +198,7 @@ def _extract_json_object(raw: str) -> Dict[str, Any] | None:
     return None
 
 
-def _quiz_llm_decision(summaries: List[Dict[str, Any]]) -> Dict[str, Any] | None:
+def _quiz_llm_decision(summaries: List[Dict[str, Any]], theme: Dict[str, Any]) -> Dict[str, Any] | None:
     if not DEEPSEEK_API_KEY:
         print("[daily_scout_quiz] missing DEEPSEEK_API_KEY; using fallback", flush=True)
         return None
@@ -157,6 +211,8 @@ def _quiz_llm_decision(summaries: List[Dict[str, Any]]) -> Dict[str, Any] | None
             {
                 "role": "user",
                 "content": (
+                    "Today's required theme JSON:\n"
+                    f"{json.dumps(theme, ensure_ascii=False)}\n\n"
                     "Candidate players JSON:\n"
                     f"{json.dumps(summaries, ensure_ascii=False)}\n\n"
                     "Return JSON only."
@@ -193,9 +249,9 @@ def _quiz_llm_decision(summaries: List[Dict[str, Any]]) -> Dict[str, Any] | None
     return parsed
 
 
-def _fallback_decision(choices: List[Dict[str, Any]]) -> Dict[str, Any]:
-    strategy = random.choice(DAILY_SCOUT_FALLBACK_STRATEGIES)
-    winner = max(choices, key=lambda c: c["score"])
+def _fallback_decision(choices: List[Dict[str, Any]], theme: Dict[str, Any] | None = None) -> Dict[str, Any]:
+    strategy = (theme or {}).get("fallback_strategy") or random.choice(DAILY_SCOUT_FALLBACK_STRATEGIES)
+    winner = max(choices, key=lambda c: c.get("theme_score", c["score"]))
     content = winner.get("content") or {}
     name = content.get("player_name") or content.get("name") or "this player"
     return {
@@ -212,19 +268,19 @@ def _fallback_decision(choices: List[Dict[str, Any]]) -> Dict[str, Any]:
     }
 
 
-def _ai_decision(choices: List[Dict[str, Any]]) -> Dict[str, Any]:
+def _ai_decision(choices: List[Dict[str, Any]], theme: Dict[str, Any]) -> Dict[str, Any]:
     summaries = [_candidate_summary(choice) for choice in choices]
-    parsed = _quiz_llm_decision(summaries)
+    parsed = _quiz_llm_decision(summaries, theme)
 
     valid_ids = {choice["id"] for choice in choices}
     if not parsed or str(parsed.get("winner_player_id")) not in valid_ids:
         if parsed:
             print("[daily_scout_quiz] invalid winner_player_id from DeepSeek; using fallback", flush=True)
-        return _fallback_decision(choices)
+        return _fallback_decision(choices, theme)
 
     strategy = parsed.get("strategy") if isinstance(parsed.get("strategy"), dict) else {}
     explanation = parsed.get("explanation") if isinstance(parsed.get("explanation"), dict) else {}
-    fallback = _fallback_decision(choices)
+    fallback = _fallback_decision(choices, theme)
     return {
         "strategy": {
             "en": str(strategy.get("en") or fallback["strategy"]["en"]),
@@ -264,6 +320,7 @@ def _challenge_payload(row: Dict[str, Any], attempt: Dict[str, Any] | None = Non
 
 def ensure_daily_challenge(db: Session) -> Dict[str, Any]:
     today = _today()
+    theme = _theme_for_date(today)
     existing = db.execute(
         text("SELECT * FROM daily_scout_challenges WHERE challenge_date = :d LIMIT 1"),
         {"d": today},
@@ -299,8 +356,10 @@ def ensure_daily_challenge(db: Session) -> Dict[str, Any]:
     if len(choices) < 3:
         raise RuntimeError("Not enough eligible male players with at least 5 allowed stats")
 
+    for choice in choices:
+        choice["theme_score"] = _theme_score(choice.get("stats") or [], theme)
     random.shuffle(choices)
-    decision = _ai_decision(choices)
+    decision = _ai_decision(choices, theme)
     challenge_id = f"daily-{today.isoformat()}"
 
     db.execute(

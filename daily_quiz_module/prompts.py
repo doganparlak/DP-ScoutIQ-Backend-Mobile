@@ -13,6 +13,8 @@ Your task:
 Rules:
 - Use only the supplied player data. Do not invent stats, clubs, ages, roles, or context.
 - The strategy should be explicit: pick exactly 3 evaluation criteria from this paired list and use the matching Turkish terms in the Turkish strategy when those criteria are selected: Reliability Under Pressure / Baskı Altında Güvenilirlik; Contribution in Key Moments / Kritik Anlardaki Katkı; Defensive Recovery Speed / Savunmaya Dönüş Hızı; Execution Consistency / Uygulama Tutarlılığı; Influence Between the Lines / Hatlar Arasındaki Etki; Space Exploitation / Boş Alan Kullanımı; Support Play / Destek Oyunu; Ball Security / Top Güvenliği; Offensive Involvement / Hücum Katılımı; Defensive Presence / Savunmadaki Varlığı; Positional Discipline / Pozisyon Disiplini; Spatial Awareness / Alan Farkındalığı; Transition Efficiency / Geçiş Verimliliği; Playmaking Influence / Oyun Kurucu Etkisi; Territorial Advancement / Saha Kazandırma Yeteneği.
+- The user message includes today's required theme and allowed criteria. You MUST build the strategy from that theme and pick criteria only from the supplied allowed criteria for today.
+- Do not choose defensive criteria unless today's required theme explicitly includes them.
 - The strategy must NOT directly point to a player position or role. Do not say striker, winger, midfielder, defender, goalkeeper, fullback, center back, forward, #9, playmaker, or any equivalent position label in the strategy.
 - The question may be generic and should not reveal the answer.
 - Base the winner on tactical/role fit, the strategy, age context, match_count if available, and the available stats.
@@ -46,5 +48,83 @@ DAILY_SCOUT_FALLBACK_STRATEGIES = [
     {
         "en": "Identify the cleanest immediate upgrade by weighing production, consistency, physical readiness, and contribution across phases.",
         "tr": "Üretim, istikrar, fiziksel hazır oluş ve oyunun farklı fazlarına katkıyı tartarak en net kısa vadeli yükseltmeyi bul.",
+    },
+]
+
+DAILY_SCOUT_THEMES = [
+    {
+        "key": "attacking_impact",
+        "label": "Attacking impact",
+        "allowed_criteria": [
+            "Contribution in Key Moments / Kritik Anlardaki Katkı",
+            "Offensive Involvement / Hücum Katılımı",
+            "Space Exploitation / Boş Alan Kullanımı",
+            "Influence Between the Lines / Hatlar Arasındaki Etki",
+            "Execution Consistency / Uygulama Tutarlılığı",
+        ],
+        "fallback_strategy": {
+            "en": "Prioritize a player who creates danger through offensive involvement, key-moment contribution, and sharp execution around advanced spaces.",
+            "tr": "Hücum katılımı, kritik anlardaki katkı ve ileri alanlarda net uygulama kalitesiyle tehlike yaratan oyuncuyu önceliklendir.",
+        },
+    },
+    {
+        "key": "playmaking_control",
+        "label": "Playmaking and control",
+        "allowed_criteria": [
+            "Playmaking Influence / Oyun Kurucu Etkisi",
+            "Ball Security / Top Güvenliği",
+            "Support Play / Destek Oyunu",
+            "Territorial Advancement / Saha Kazandırma Yeteneği",
+            "Execution Consistency / Uygulama Tutarlılığı",
+        ],
+        "fallback_strategy": {
+            "en": "Look for a player who controls rhythm through playmaking influence, ball security, and reliable support play.",
+            "tr": "Oyun kurucu etkisi, top güvenliği ve güvenilir destek oyunuyla ritmi kontrol eden oyuncuyu ara.",
+        },
+    },
+    {
+        "key": "transition_engine",
+        "label": "Transition engine",
+        "allowed_criteria": [
+            "Transition Efficiency / Geçiş Verimliliği",
+            "Territorial Advancement / Saha Kazandırma Yeteneği",
+            "Reliability Under Pressure / Baskı Altında Güvenilirlik",
+            "Space Exploitation / Boş Alan Kullanımı",
+            "Contribution in Key Moments / Kritik Anlardaki Katkı",
+        ],
+        "fallback_strategy": {
+            "en": "Identify a player who turns pressure into forward momentum through transition efficiency, territorial gain, and reliable decisions.",
+            "tr": "Geçiş verimliliği, saha kazandırma etkisi ve güvenilir kararlarla baskıyı ileri momentuma çeviren oyuncuyu belirle.",
+        },
+    },
+    {
+        "key": "defensive_reliability",
+        "label": "Defensive reliability",
+        "allowed_criteria": [
+            "Defensive Recovery Speed / Savunmaya Dönüş Hızı",
+            "Defensive Presence / Savunmadaki Varlığı",
+            "Positional Discipline / Pozisyon Disiplini",
+            "Spatial Awareness / Alan Farkındalığı",
+            "Reliability Under Pressure / Baskı Altında Güvenilirlik",
+        ],
+        "fallback_strategy": {
+            "en": "Focus on a player who adds defensive reliability through recovery speed, positional discipline, and awareness under pressure.",
+            "tr": "Savunmaya dönüş hızı, pozisyon disiplini ve baskı altında farkındalıkla savunma güvenilirliği katan oyuncuya odaklan.",
+        },
+    },
+    {
+        "key": "balanced_value",
+        "label": "Balanced value",
+        "allowed_criteria": [
+            "Execution Consistency / Uygulama Tutarlılığı",
+            "Reliability Under Pressure / Baskı Altında Güvenilirlik",
+            "Support Play / Destek Oyunu",
+            "Contribution in Key Moments / Kritik Anlardaki Katkı",
+            "Ball Security / Top Güvenliği",
+        ],
+        "fallback_strategy": {
+            "en": "Prioritize a balanced profile with consistency, pressure reliability, support play, and useful contribution in key moments.",
+            "tr": "Tutarlılık, baskı altında güvenilirlik, destek oyunu ve kritik anlarda faydalı katkıyı birleştiren dengeli profili önceliklendir.",
+        },
     },
 ]
