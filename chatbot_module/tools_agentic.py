@@ -224,6 +224,7 @@ class AgenticContext:
     retrieval_debug: List[Dict[str, Any]] = field(default_factory=list)
     constraints: Dict[str, Any] = field(default_factory=dict)
     constraint_relaxation_level: int = 0
+    hard_team_constraint: bool = False
 
 
 class StaticDocsRetriever(BaseRetriever):
@@ -473,6 +474,43 @@ def canonical_league(value: Optional[Any]) -> Optional[str]:
     return LEAGUE_BY_KEY.get(key) or LEAGUE_COMPACT_BY_KEY.get(compact)
 
 
+def extract_source_team_from_question(question: Optional[str]) -> Optional[str]:
+    text_value = re.sub(r"\s+", " ", norm_name(question or "")).strip()
+    if not text_value:
+        return None
+
+    source_cues = (
+        r"(?:oynayan|forma\s+giyen|top\s+oynayan|oyuncu|oyuncusu|futbolcu|futbolcusu|"
+        r"player|footballer|winger|striker|forward|midfielder|defender|goalkeeper)"
+    )
+    suffixes = r"(?:de|da|te|ta|den|dan|ten|tan)"
+
+    for alias_key, canonical in sorted(SOURCE_TEAM_ALIAS_BY_KEY.items(), key=lambda item: len(item[0]), reverse=True):
+        alias = re.escape(norm_name(alias_key))
+        if re.search(rf"\b{alias}\s*{suffixes}\b", text_value) or re.search(rf"\b{alias}\s+{source_cues}\b", text_value):
+            return canonical
+
+    generic_patterns = [
+        rf"\b(?P<team>[a-z0-9][a-z0-9 .&'’-]{{2,40}}?)\s*{suffixes}\s+(?:bir\s+)?(?:[a-z0-9 .&'’-]+\s+)?{source_cues}\b",
+        rf"\b(?:from|at|in)\s+(?P<team>[a-z0-9][a-z0-9 .&'’-]{{2,40}}?)(?=$|\s+(?:player|footballer|winger|striker|forward|midfielder|defender|goalkeeper|who|that|with|but|and)\b|[,.!?])",
+    ]
+    stop_prefixes = {
+        "bana", "bana bir", "bir", "oner", "öner", "suggest", "recommend", "find",
+        "show", "give me", "please", "lutfen", "lütfen",
+    }
+    for pattern in generic_patterns:
+        match = re.search(pattern, text_value, flags=re.IGNORECASE)
+        if not match:
+            continue
+        team = re.sub(r"\s+", " ", (match.group("team") or "").strip(" .,!?:;\"'"))
+        for prefix in sorted(stop_prefixes, key=len, reverse=True):
+            if team.startswith(prefix + " "):
+                team = team[len(prefix):].strip()
+        if len(team) >= 3:
+            return team.title()
+    return None
+
+
 def infer_league_from_text(*texts: Optional[str]) -> Optional[str]:
     raw = " ".join(text or "" for text in texts)
     normalized = norm_name(raw)
@@ -490,6 +528,22 @@ def infer_league_from_text(*texts: Optional[str]) -> Optional[str]:
 
 ROLE_CODE_BY_KEY = {norm_name(code): long_name for code, long_name in ROLE_SHORT_TO_LONG.items()}
 ROLE_LONG_BY_KEY = {norm_name(long_name): long_name for long_name in ROLE_SHORT_TO_LONG.values()}
+SOURCE_TEAM_ALIAS_BY_KEY = {
+    "fenerbahce": "Fenerbahçe",
+    "fenerbahçe": "Fenerbahçe",
+    "galatasaray": "Galatasaray",
+    "besiktas": "Beşiktaş",
+    "beşiktaş": "Beşiktaş",
+    "trabzonspor": "Trabzonspor",
+    "manchester city": "Manchester City",
+    "man city": "Manchester City",
+    "bayern": "FC Bayern München",
+    "bayern munich": "FC Bayern München",
+    "real madrid": "Real Madrid",
+    "barcelona": "FC Barcelona",
+    "psg": "Paris Saint Germain",
+    "paris saint germain": "Paris Saint Germain",
+}
 
 
 def canonical_position(value: Optional[Any]) -> Optional[str]:
@@ -498,6 +552,53 @@ def canonical_position(value: Optional[Any]) -> Optional[str]:
         return None
     key = norm_name(text)
     return ROLE_CODE_BY_KEY.get(key) or ROLE_LONG_BY_KEY.get(key) or text
+
+
+def role_constraint_positions_from_counts(position_counts: Optional[Any]) -> List[str]:
+    if not isinstance(position_counts, dict):
+        return []
+    ranked: List[Tuple[str, float]] = []
+    for raw_role, raw_count in position_counts.items():
+        role = canonical_position(raw_role)
+        if not role:
+            continue
+        try:
+            count = float(raw_count)
+        except (TypeError, ValueError):
+            continue
+        if count <= 0:
+            continue
+        ranked.append((role, count))
+    if not ranked:
+        return []
+    ranked.sort(key=lambda item: item[1], reverse=True)
+    selected = [ranked[0][0]]
+    total = sum(count for _, count in ranked)
+    if len(ranked) > 1 and total > 0:
+        top_share = ranked[0][1] / total * 100.0
+        second_share = ranked[1][1] / total * 100.0
+        if top_share - second_share <= 10.0:
+            selected.append(ranked[1][0])
+    return selected
+
+
+def primary_position_from_counts(position_counts: Optional[Any]) -> Optional[str]:
+    roles = role_constraint_positions_from_counts(position_counts)
+    return roles[0] if roles else None
+
+
+def metadata_position_signals(metadata: Dict[str, Any]) -> Tuple[Optional[str], List[str]]:
+    md = metadata or {}
+    roles = role_constraint_positions_from_counts(md.get("position_counts"))
+    fallback = (
+        canonical_position(md.get("primary_position_code"))
+        or canonical_position(md.get("position_name"))
+        or canonical_position(md.get("position"))
+    )
+    if fallback and fallback not in roles:
+        roles.append(fallback)
+    primary = roles[0] if roles else fallback
+    return primary, roles
 
 
 def infer_position_from_text(*texts: Optional[str]) -> Optional[str]:
@@ -857,10 +958,13 @@ def candidate_constraint_rejection(candidate: Dict[str, Any], ctx: Optional[Agen
             return "excluded nationality"
 
     for position in constraints.get("excluded_positions") or []:
+        candidate_roles = candidate.get("constraint_position_names") or (
+            [candidate.get("position_name")] if candidate.get("position_name") else []
+        )
         position_match, _, _ = player_matches_requested_position(
             position,
             candidate.get("position_name"),
-            [candidate.get("position_name")] if candidate.get("position_name") else [],
+            candidate_roles,
         )
         if position_match:
             return "excluded position"
@@ -884,15 +988,18 @@ def candidate_constraint_rejection(candidate: Dict[str, Any], ctx: Optional[Agen
         return "constraint nationality"
 
     if level < 6 and constraints.get("position"):
+        candidate_roles = candidate.get("constraint_position_names") or (
+            [candidate.get("position_name")] if candidate.get("position_name") else []
+        )
         position_ok, _, _ = player_matches_requested_position(
             constraints.get("position"),
             candidate.get("position_name"),
-            [candidate.get("position_name")] if candidate.get("position_name") else [],
+            candidate_roles,
         )
         if not position_ok:
             return "constraint position"
 
-    if level < 7 and constraints.get("team") and not _constraint_team_match(candidate.get("team"), constraints.get("team")):
+    if (level < 7 or getattr(ctx, "hard_team_constraint", False)) and constraints.get("team") and not _constraint_team_match(candidate.get("team"), constraints.get("team")):
         return "constraint team"
 
     if constraints.get("league") and not _constraint_text_match(candidate.get("league_name"), constraints.get("league")):
@@ -926,6 +1033,7 @@ def candidate_constraint_rejection(candidate: Dict[str, Any], ctx: Optional[Agen
 def metadata_constraint_rejection(metadata: Dict[str, Any], ctx: Optional[AgenticContext]) -> Optional[str]:
     md = metadata or {}
     age = _num(md.get("age"))
+    position_name, constraint_position_names = metadata_position_signals(md)
     return candidate_constraint_rejection({
         "gender": md.get("gender"),
         "height": _num(md.get("height")),
@@ -934,7 +1042,8 @@ def metadata_constraint_rejection(metadata: Dict[str, Any], ctx: Optional[Agenti
         "nationality": md.get("nationality_name") or md.get("nationality") or md.get("country"),
         "team": md.get("team_name") or md.get("team") or md.get("club"),
         "league_name": _league_from_metadata(md),
-        "position_name": md.get("position_name") or md.get("position"),
+        "position_name": position_name,
+        "constraint_position_names": constraint_position_names,
         "stats": extract_allowed_stats_from_metadata(md),
     }, ctx)
 
@@ -1161,17 +1270,27 @@ def build_agentic_context(
         if values:
             cleaned_constraints[key] = _unique_list([*(cleaned_constraints.get(key) or []), *values])
     cleaned_constraints = clean_constraints(cleaned_constraints)
+    explicit_source_team = (
+        extract_source_team_from_question(original_question)
+        or extract_source_team_from_question(translated)
+    )
     source_team_phrase = bool(
-        target_team
-        and (
-            _mentions_club_as_source_team(original_question, target_team)
-            or _mentions_club_as_source_team(translated, target_team)
+        explicit_source_team
+        or (
+            target_team
+            and (
+                _mentions_club_as_source_team(original_question, target_team)
+                or _mentions_club_as_source_team(translated, target_team)
+            )
         )
     )
+    hard_team_constraint = False
     if source_team_phrase:
-        cleaned_constraints["team"] = cleaned_constraints.get("team") or target_team
+        source_team = explicit_source_team or target_team
+        cleaned_constraints["team"] = source_team or cleaned_constraints.get("team")
+        hard_team_constraint = bool(cleaned_constraints.get("team"))
         note = cleaned_constraints.get("notes") or ""
-        suffix = f" Treated {target_team} as source/current team constraint, not target team."
+        suffix = f" Treated {source_team} as source/current team constraint, not target team."
         cleaned_constraints["notes"] = (note + suffix).strip()[:220]
         target_team = None
     elif target_team and cleaned_constraints.get("team") and is_same_club(target_team, cleaned_constraints.get("team")):
@@ -1219,6 +1338,7 @@ def build_agentic_context(
         allow_non_senior=request_allows_non_senior_squads(translated),
         premium_only=premium_only,
         quality_discovery_mode=quality_discovery_mode,
+        hard_team_constraint=hard_team_constraint,
         constraints=cleaned_constraints,
     )
 
@@ -1245,7 +1365,8 @@ def filter_candidate_docs(
         player_name = str(md.get("player_name") or md.get("name") or "").strip()
         team_name = str(md.get("team_name") or md.get("team") or md.get("club") or "").strip()
         nationality = str(md.get("nationality_name") or md.get("nationality") or md.get("country") or "").strip()
-        position_name = str(md.get("position_name") or md.get("position") or "").strip()
+        position_name, constraint_position_names = metadata_position_signals(md)
+        position_name = str(position_name or "").strip()
         league_name = _league_from_metadata(md)
         if player_name.lower() in seen_names_norm and ctx.intent in {"new_recommendation", "alternative_recommendation"}:
             rejection_counts["already_seen"] += 1
@@ -1282,7 +1403,7 @@ def filter_candidate_docs(
         if constraint_rejection:
             rejection_counts[constraint_rejection] += 1
             continue
-        position_ok, _, _ = player_matches_requested_position(query, position_name, [position_name] if position_name else [])
+        position_ok, _, _ = player_matches_requested_position(query, position_name, constraint_position_names)
         if not position_ok:
             rejection_counts["position_mismatch"] += 1
             continue
@@ -1371,7 +1492,8 @@ def fetch_quality_suggestion_docs_from_db(ctx: AgenticContext, *, limit: int = S
         player_name = str(md.get("player_name") or md.get("name") or "").strip()
         team_name = str(md.get("team_name") or md.get("team") or md.get("club") or "").strip()
         nationality = str(md.get("nationality_name") or md.get("nationality") or md.get("country") or "").strip()
-        position_name = str(md.get("position_name") or md.get("position") or "").strip()
+        position_name, constraint_position_names = metadata_position_signals(md)
+        position_name = str(position_name or "").strip()
         league_name = _league_from_metadata(md)
         if not player_name or player_name.lower() in seen_names_norm:
             rejection_counts["missing_name_or_seen"] += 1
@@ -1411,7 +1533,7 @@ def fetch_quality_suggestion_docs_from_db(ctx: AgenticContext, *, limit: int = S
         position_ok, _, _ = player_matches_requested_position(
             ctx.effective_query,
             position_name,
-            [position_name] if position_name else [],
+            constraint_position_names,
         )
         if not position_ok:
             rejection_counts["position_mismatch"] += 1
@@ -1551,7 +1673,7 @@ def fetch_selection_suggestion_docs_from_db(
     if relaxation_level < 5:
         add_nationality_filter(constraints.get("nationality"))
     add_text_filter("league_name", "league", constraints.get("league"))
-    if relaxation_level < 7:
+    if relaxation_level < 7 or getattr(ctx, "hard_team_constraint", False):
         add_team_filter(constraints.get("team"))
     if relaxation_level < 4:
         add_numeric_min("age", "age_min", constraints.get("age_min"))
@@ -1587,7 +1709,8 @@ def fetch_selection_suggestion_docs_from_db(
         player_name = str(md.get("player_name") or md.get("name") or "").strip()
         team_name = str(md.get("team_name") or md.get("team") or md.get("club") or "").strip()
         nationality = str(md.get("nationality_name") or md.get("nationality") or md.get("country") or "").strip()
-        position_name = str(md.get("position_name") or md.get("position") or "").strip()
+        position_name, constraint_position_names = metadata_position_signals(md)
+        position_name = str(position_name or "").strip()
         league_name = _league_from_metadata(md)
         if not player_name or player_name.lower() in seen_names_norm:
             rejection_counts["missing_name_or_seen"] += 1
@@ -1621,7 +1744,7 @@ def fetch_selection_suggestion_docs_from_db(
         position_ok, _, _ = player_matches_requested_position(
             ctx.effective_query,
             position_name,
-            [position_name] if position_name else [],
+            constraint_position_names,
         )
         if not position_ok:
             rejection_counts["position_mismatch"] += 1
@@ -1759,7 +1882,7 @@ def doc_to_candidate(doc: Document, index: int) -> Dict[str, Any]:
     md = doc.metadata or {}
     stats = extract_allowed_stats_from_metadata(md)
     age = _num(md.get("age"))
-    position = md.get("position_name") or md.get("position")
+    position, constraint_position_names = metadata_position_signals(md)
     return {
         "index": index,
         "id": md.get("id"),
@@ -1772,6 +1895,7 @@ def doc_to_candidate(doc: Document, index: int) -> Dict[str, Any]:
         "team": md.get("team_name") or md.get("team") or md.get("club"),
         "league_name": md.get("league_name") or md.get("league"),
         "position_name": position,
+        "constraint_position_names": constraint_position_names,
         "position_counts": md.get("position_counts"),
         "position_count_total": md.get("position_count_total"),
         "position_names_seen": md.get("position_names_seen"),
@@ -2285,7 +2409,7 @@ def validate_candidate(candidate: Dict[str, Any], ctx: AgenticContext) -> Option
     pos_ok, _, _ = player_matches_requested_position(
         ctx.effective_query,
         candidate.get("position_name"),
-        [candidate.get("position_name")] if candidate.get("position_name") else [],
+        candidate.get("constraint_position_names") or ([candidate.get("position_name")] if candidate.get("position_name") else []),
     )
     if not pos_ok and not ctx.direct_player_lookup:
         return "position mismatch"

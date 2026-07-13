@@ -4,6 +4,8 @@ import math
 import unicodedata
 from typing import Dict, Any, Tuple, Iterable, Optional, List
 
+from api_module.utilities import ROLE_SHORT_TO_LONG
+
 LANG_DIRECTIVES = {
     "en": (
         "LANGUAGE POLICY — ENGLISH ONLY:\n"
@@ -668,6 +670,60 @@ def _canonical_role_group(role: Optional[str]) -> Optional[str]:
     text = normalize_search_text(role)
     if not text:
         return None
+    role_group_by_short = {
+        "GK": "goalkeeper",
+        "LWB": "left_wing_back",
+        "LB": "left_back",
+        "LCB": "center_back",
+        "CB": "center_back",
+        "RCB": "center_back",
+        "RB": "right_back",
+        "RWB": "right_wing_back",
+        "LDM": "defensive_midfield",
+        "CDM": "defensive_midfield",
+        "RDM": "defensive_midfield",
+        "LCM": "central_midfield",
+        "CM": "central_midfield",
+        "RCM": "central_midfield",
+        "LAM": "attacking_midfield",
+        "CAM": "attacking_midfield",
+        "RAM": "attacking_midfield",
+        "LM": "left_midfield",
+        "RM": "right_midfield",
+        "LW": "left_wing",
+        "RW": "right_wing",
+        "LCF": "center_forward",
+        "CF": "center_forward",
+        "RCF": "center_forward",
+        "ST": "center_forward",
+    }
+    role_group_by_key = {
+        normalize_search_text(short): group
+        for short, group in role_group_by_short.items()
+    }
+    role_group_by_key.update({
+        normalize_search_text(long_name): role_group_by_short.get(short)
+        for short, long_name in ROLE_SHORT_TO_LONG.items()
+        if role_group_by_short.get(short)
+    })
+    role_group_by_key.update({
+        "goal keeper": "goalkeeper",
+        "centre back": "center_back",
+        "centre forward": "center_forward",
+        "striker": "center_forward",
+        "forward": "center_forward",
+        "attacker": "center_forward",
+        "left midfielder": "left_midfield",
+        "right midfielder": "right_midfield",
+        "central midfielder": "central_midfield",
+        "central midfield": "central_midfield",
+        "centre midfield": "central_midfield",
+        "centre midfielder": "central_midfield",
+        "defensive midfielder": "defensive_midfield",
+        "attacking midfielder": "attacking_midfield",
+    })
+    if text in role_group_by_key:
+        return role_group_by_key[text]
     if "goalkeeper" in text or text == "goal keeper":
         return "goalkeeper"
     if "left wing back" in text:
@@ -690,6 +746,10 @@ def _canonical_role_group(role: Optional[str]) -> Optional[str]:
         return "attacking_midfield"
     if "central midfield" in text or "center midfield" in text or "left center midfield" in text or "right center midfield" in text:
         return "central_midfield"
+    if "left midfield" in text or "left midfielder" in text:
+        return "left_midfield"
+    if "right midfield" in text or "right midfielder" in text:
+        return "right_midfield"
     if "left wing" in text:
         return "left_wing"
     if "right wing" in text:
@@ -736,11 +796,11 @@ def get_requested_position_groups(question: Optional[str]) -> Optional[set[str]]
         ([r"\bno 3\b", r"\bnumber 3\b", r"\b3 numara\b", r"\bthree numara\b", r"\bleft back\b", r"\blb\b"], {"left_back", "left_wing_back"}),
         ([r"\bno 4\b", r"\bnumber 4\b", r"\b4 numara\b", r"\bfour numara\b", r"\bcb\b", r"\bcenter back\b", r"\bcentre back\b", r"\bstopper\b"], {"center_back"}),
         ([r"\bno 6\b", r"\bnumber 6\b", r"\b6 numara\b", r"\bsix numara\b", r"\bcdm\b", r"\bdefensive midfielder\b", r"\bdefensive midfield\b"], {"defensive_midfield"}),
-        ([r"\bno 7\b", r"\bnumber 7\b", r"\b7 numara\b", r"\bseven numara\b", r"\bright winger\b", r"\bright wing\b", r"\bright midfield\b", r"\bright midfielder\b", r"\brm\b"], {"right_wing", "right_midfield"}),
+        ([r"\bno 7\b", r"\bnumber 7\b", r"\b7 numara\b", r"\bseven numara\b", r"\bright winger\b", r"\bright wing\b", r"\bright midfield\b", r"\bright midfielder\b", r"\bsa[gğ]\s+kanat\b", r"\brm\b"], {"right_wing", "right_midfield"}),
         ([r"\bno 8\b", r"\bnumber 8\b", r"\b8 numara\b", r"\beight numara\b", r"\bcm\b", r"\bcentral midfielder\b", r"\bcentral midfield\b"], {"central_midfield"}),
         ([r"\bno 9\b", r"\bnumber 9\b", r"\b9 numara\b", r"\bnine numara\b", r"\b9\b", r"\bstriker\b", r"\bcenter forward\b", r"\bcentre forward\b", r"\battacker\b", r"\bsantrafor\b", r"\bst\b", r"\bcf\b"], {"center_forward"}),
         ([r"\bno 10\b", r"\bnumber 10\b", r"\b10 numara\b", r"\bten numara\b", r"\bcam\b", r"\battacking midfielder\b", r"\battacking midfield\b"], {"attacking_midfield"}),
-        ([r"\bno 11\b", r"\bnumber 11\b", r"\b11 numara\b", r"\beleven numara\b", r"\bleft winger\b", r"\bleft wing\b", r"\bleft midfield\b", r"\bleft midfielder\b", r"\blm\b"], {"left_wing", "left_midfield"}),
+        ([r"\bno 11\b", r"\bnumber 11\b", r"\b11 numara\b", r"\beleven numara\b", r"\bleft winger\b", r"\bleft wing\b", r"\bleft midfield\b", r"\bleft midfielder\b", r"\bsol\s+kanat\b", r"\blm\b"], {"left_wing", "left_midfield"}),
         ([r"\bright wing back\b", r"\brwb\b"], {"right_wing_back", "right_back"}),
         ([r"\bleft wing back\b", r"\blwb\b"], {"left_wing_back", "left_back"}),
         ([r"\bwing back\b", r"\bwingback\b"], {"left_wing_back", "right_wing_back", "left_back", "right_back"}),
@@ -748,8 +808,8 @@ def get_requested_position_groups(question: Optional[str]) -> Optional[set[str]]
         ([r"\bright back\b", r"\brb\b"], {"right_back", "right_wing_back"}),
         ([r"\bleft back\b", r"\blb\b"], {"left_back", "left_wing_back"}),
         ([r"\bcenter back\b", r"\bcentre back\b", r"\bcenter half\b", r"\bcentre half\b", r"\bcb\b"], {"center_back"}),
-        ([r"\bright winger\b"], {"right_wing"}),
-        ([r"\bleft winger\b"], {"left_wing"}),
+        ([r"\bright winger\b"], {"right_wing", "right_midfield"}),
+        ([r"\bleft winger\b"], {"left_wing", "left_midfield"}),
         ([r"\bwinger\b", r"\bwing\b"], {"left_wing", "right_wing"}),
         ([r"\bcenter forward\b", r"\bcentre forward\b", r"\bcenterforward\b", r"\bcentreforward\b", r"\bstriker\b", r"\bforward\b", r"\bsantrafor\b", r"\bst\b", r"\bcf\b"], {"center_forward"}),
         ([r"\bmidfielder\b", r"\bmidfield\b"], {"defensive_midfield", "central_midfield", "attacking_midfield"}),
