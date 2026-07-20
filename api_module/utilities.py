@@ -14,6 +14,7 @@ from sqlalchemy.orm import Session
 from collections.abc import Mapping
 # DB session provider
 from api_module.database import SessionLocal
+from constants_module.constants import ROLE_LONG_TO_SHORT, ROLE_SHORT_TO_LONG
 
 PlanLiteral = Literal["Free", "No Ads Monthly", "Pro Monthly", "Pro Yearly"]
 
@@ -423,47 +424,6 @@ def send_email_code(receiver_email: str, code: str, mail_type: str, lang: Option
         except:
             pass
 
-
-# ---------- ROLE Utilities ----------
-ROLE_SHORT_TO_LONG = {
-    "GK": "Goal Keeper",
-    "LWB": "Left Wing Back",
-    "LB": "Left Back",
-    "LCB": "Left Center Back",
-    "CB": "Center Back",
-    "RCB": "Right Center Back",
-    "RB": "Right Back",
-    "RWB": "Right Wing Back",
-    "LM": 'Left Midfield',
-    "LDM": "Left Defensive Midfield",
-    "LCM": "Left Center Midfield",
-    "LAM": "Left Attacking Midfield",
-    "CM": "Center Midfield",
-    "CAM": 'Center Attacking Midfield',
-    "CDM": "Center Defensive Midfield",
-    "RCM": "Right Center Midfield",
-    "RM": 'Right Midfield',
-    "RDM": "Right Defensive Midfield",
-    "RAM": 'Right Attacking Midfield',
-    "CF": "Center Forward",
-    "RCF": "Right Center Forward",
-    "LCF": "Left Center Forward",
-    "LW": "Left Wing",
-    "RW": "Right Wing",
-}
-
-ROLE_LONG_TO_SHORT = {v: k for k, v in ROLE_SHORT_TO_LONG.items()}
-# Add extra accepted long-form variants
-ROLE_LONG_TO_SHORT.update({
-    "Goalkeeper": "GK",
-    "Goal Keeper": "GK",
-    'Central Midfield': 'CM',
-    "Centre Back": "CB",
-    "Attacking Midfield": "CAM",
-    "Defensive Midfield": "CDM",
-    "Centre Forward": "CF",
-    "Attacker": "CF",
-})
 
 def to_long_roles(maybe_short_or_long_list):
     out = []

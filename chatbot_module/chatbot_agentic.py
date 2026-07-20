@@ -847,6 +847,27 @@ def _choose_scored_candidate(
         else:
             score_rejections[rejection] = score_rejections.get(rejection, 0) + 1
     if not valid_scored:
+        if scored_candidates:
+            selected = max(scored_candidates, key=quality_key)
+            if trace is not None:
+                trace["selection_mode"] = "relaxed_best_available_after_validation"
+            _quality_debug("scoring_validation", {
+                "scored_count": len(scored_samples),
+                "valid_count": 0,
+                "selection_mode": "relaxed_best_available_after_validation",
+                "selected": {
+                    "name": selected.get("name"),
+                    "team": selected.get("team"),
+                    "league": selected.get("league_name"),
+                    "rating": selected.get("rating"),
+                    "potential": selected.get("potential"),
+                    "form": selected.get("form"),
+                    "stats_count": len(selected.get("stats") or []),
+                },
+                "top_rejections": sorted(score_rejections.items(), key=lambda item: item[1], reverse=True)[:5],
+                "sample_scored": scored_samples,
+            })
+            return selected
         if getattr(ctx, "quality_discovery_mode", False) and scored_candidates:
             selected = max(scored_candidates, key=quality_key)
             if trace is not None:

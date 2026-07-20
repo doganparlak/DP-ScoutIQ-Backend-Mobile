@@ -8,6 +8,7 @@ from langchain_core.prompts import ChatPromptTemplate
 from langchain_deepseek import ChatDeepSeek
 from sqlalchemy import text
 
+from constants_module.constants import ROLE_LONG_TO_SHORT, ROLE_SHORT_TO_LONG
 from report_module.prompts import report_system_prompt
 from report_module.utilities import _first_non_empty, _normalize_roles, _score_candidate, norm_name
 
@@ -23,48 +24,6 @@ _report_prompt = ChatPromptTemplate.from_messages(
 )
 
 report_chain = _report_prompt | CHAT_LLM | StrOutputParser()
-
-ROLE_SHORT_TO_LONG: Dict[str, str] = {
-    "GK": "Goalkeeper",
-    "LB": "Left Back",
-    "CB": "Center Back",
-    "RB": "Right Back",
-    "LM": "Left Midfield",
-    "CDM": "Center Defensive Midfield",
-    "CM": "Center Midfield",
-    "CAM": "Center Attacking Midfield",
-    "RM": "Right Midfield",
-    "LW": "Left Wing",
-    "CF": "Center Forward",
-    "RW": "Right Wing",
-}
-
-ROLE_LONG_TO_SHORT: Dict[str, str] = {
-    **{long.lower(): short for short, long in ROLE_SHORT_TO_LONG.items()},
-    "g": "GK",
-    "goal keeper": "GK",
-    "left wing back": "LB",
-    "right wing back": "RB",
-    "left center back": "CB",
-    "right center back": "CB",
-    "centre back": "CB",
-    "left defensive midfield": "CDM",
-    "right defensive midfield": "CDM",
-    "defensive midfield": "CDM",
-    "left center midfield": "CM",
-    "right center midfield": "CM",
-    "central midfield": "CM",
-    "left attacking midfield": "CAM",
-    "right attacking midfield": "CAM",
-    "attacking midfield": "CAM",
-    "a": "CF",
-    "f": "CF",
-    "attacker": "CF",
-    "forward": "CF",
-    "centre forward": "CF",
-    "right center forward": "CF",
-    "left center forward": "CF",
-}
 
 ROLE_USAGE_CONSTRAINTS: Dict[str, Dict[str, Any]] = {
     "GK": {

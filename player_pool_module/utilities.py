@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+from constants_module.constants import ROLE_SEARCH_SHORT_ALIASES, ROLE_SHORT_TO_LONG
+
 FOLD_CHAR_MAP_FROM = (
     "çğıöşüÇĞİÖŞÜIİı"
     "áàâäãåāăąÁÀÂÄÃÅĀĂĄ"
@@ -20,38 +22,6 @@ FOLD_CHAR_MAP_TO = (
 )
 
 SEARCH_LIMIT = 100
-
-ROLE_SHORT_TO_LONG = {
-    "GK": "Goalkeeper",
-    "LWB": "Left Wing Back",
-    "LB": "Left Back",
-    "LCB": "Left Center Back",
-    "CB": "Center Back",
-    "RCB": "Right Center Back",
-    "RB": "Right Back",
-    "RWB": "Right Wing Back",
-    "LM": "Left Midfield",
-    "LDM": "Left Defensive Midfield",
-    "LCM": "Left Center Midfield",
-    "LAM": "Left Attacking Midfield",
-    "CM": "Center Midfield",
-    "CAM": "Center Attacking Midfield",
-    "CDM": "Center Defensive Midfield",
-    "RDM": "Right Defensive Midfield",
-    "RCM": "Right Center Midfield",
-    "RAM": "Right Attacking Midfield",
-    "RM": "Right Midfield",
-    "CF": "Center Forward",
-    "RCF": "Right Center Forward",
-    "LCF": "Left Center Forward",
-    "LW": "Left Wing",
-    "RW": "Right Wing",
-}
-
-ROLE_SEARCH_SHORT_ALIASES = {
-    "LWB": "LB",
-    "RWB": "RB",
-}
 
 
 def clean_str(value: str | None) -> str | None:

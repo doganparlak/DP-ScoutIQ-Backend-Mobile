@@ -11,7 +11,7 @@ from langchain_core.documents import Document
 from langchain_core.retrievers import BaseRetriever
 from sqlalchemy import text
 
-from api_module.utilities import ROLE_SHORT_TO_LONG, get_db
+from api_module.utilities import get_db
 from chatbot_module.tools import (
     collect_recent_human_constraints,
     extract_target_team_from_question,
@@ -35,6 +35,16 @@ from chatbot_module.tools import (
 from chatbot_module.tools_extensions import _score_candidate, build_player_payload_new
 from report_module.utilities import norm_name
 from chatbot_module.metrics import ALLOWED_METRICS, POSITIVE_METRICS
+from constants_module.constants import (
+    ALLOWED_SELECTION_LEAGUES,
+    CANONICAL_LEAGUES,
+    CANONICAL_NATIONALITIES,
+    MANUAL_SOURCE_TEAM_ALIASES,
+    NATIONALITY_ALIASES,
+    PLAYER_DATA_TEAMS,
+    POSITION_NEGATION_ALIASES,
+    ROLE_SHORT_TO_LONG,
+)
 
 
 SQL_FOLD_FROM = "ÁÀÂÃÄÅĀĂĄáàâãäåāăąÉÈÊËĒĖĘĚéèêëēėęěÍÌÎÏĪİıíìîïīÓÒÔÕÖØŌóòôõöøōÚÙÛÜŪúùûüūÇĆČçćčÑñĞğŞŠşšÝŸýÿŽŹŻžźżÐð"
@@ -140,58 +150,7 @@ ROLE_METRICS = {
     },
 }
 
-ALLOWED_SELECTION_LEAGUES = [
-    "Championship",
-    "Eerste Divisie",
-    "La Liga",
-    "Stars League",
-    "Primera Division",
-    "Admiral Bundesliga",
-    "Bundesliga",
-    "2. Bundesliga",
-    "Premier League",
-    "1. Lig",
-    "La Liga 2",
-    "Liga Profesional de Fútbol",
-    "Serie B",
-    "First Division",
-    "Major League Soccer",
-    "Chance Liga",
-    "Veikkausliiga",
-    "FNL",
-    "Ekstraklasa",
-    "Eliteserien",
-    "Premiership",
-    "First League",
-    "Eredivisie",
-    "Allsvenskan",
-    "Enterprise National League",
-    "Liga Portugal",
-    "Challenger Pro League",
-    "Superliga",
-    "Botola Pro",
-    "Super League",
-    "Liga MX",
-    "League One",
-    "Ligue 2",
-    "League Two",
-    "1. HNL",
-    "Serie A",
-    "Super Lig",
-    "Ligue 1",
-]
 ALLOWED_SELECTION_LEAGUE_KEYS = {norm_name(league) for league in ALLOWED_SELECTION_LEAGUES}
-CANONICAL_LEAGUES = {
-    "Championship", "Eerste Divisie", "UAE Pro League", "La Liga", "V-League", "Stars League",
-    "Primera Division", "Admiral Bundesliga", "Bundesliga", "2. Bundesliga", "Premier League",
-    "1. Lig", "A-League Women", "La Liga 2", "Liga Profesional de Fútbol", "Indian Super League",
-    "Serie B", "First Division", "Major League Soccer", "Chance Liga", "Veikkausliiga",
-    "Women's Super League", "FNL", "Ekstraklasa", "Eliteserien", "Premiership", "First League",
-    "Ligat ha'Al", "Eredivisie", "Allsvenskan", "Brasileiro Women", "Enterprise National League",
-    "Liga Portugal", "Challenger Pro League", "Persian Gulf Pro League", "Superliga", "Botola Pro",
-    "Super League", "Liga MX", "League One", "A-League Men", "K League 1", "Pro League",
-    "Ligue 2", "League Two", "1. HNL", "Serie A", "Super Lig", "Ligue 1",
-}
 LEAGUE_BY_KEY = {norm_name(league): league for league in CANONICAL_LEAGUES}
 LEAGUE_COMPACT_BY_KEY = {
     re.sub(r"[^a-z0-9]+", "", norm_name(league)): league
@@ -468,10 +427,164 @@ def _sort_for_squad_preference(docs: List[Document], ctx: Optional[AgenticContex
     )
 
 
+def _compact_key(value: Optional[Any]) -> str:
+    return re.sub(r"[^a-z0-9]+", "", norm_name(str(value or "")))
+
+
+def _strip_constraint_suffixes(token: str) -> str:
+    token = norm_name(token)
+    suffixes = (
+        "lerinden", "larindan", "lerinden", "lerden",
+        "lardan", "lerden", "indan", "inden", "undan", "unden",
+        "dan", "den", "tan", "ten", "da", "de", "ta", "te",
+    )
+    for suffix in sorted(set(suffixes), key=len, reverse=True):
+        if len(token) - len(suffix) >= 4 and token.endswith(suffix):
+            return token[: -len(suffix)]
+    return token
+
+
+def _fuzzy_canonical_from_key(
+    query_key: str,
+    lookup: Dict[str, str],
+    *,
+    min_ratio: float,
+    min_length: int = 5,
+) -> Optional[str]:
+    key = norm_name(query_key)
+    compact = _compact_key(key)
+    if len(compact) < min_length:
+        return None
+    best_value: Optional[str] = None
+    best_score = 0.0
+    for candidate_key, canonical in lookup.items():
+        candidate_compact = _compact_key(candidate_key)
+        if len(candidate_compact) < min_length:
+            continue
+        length_ratio = min(len(compact), len(candidate_compact)) / max(len(compact), len(candidate_compact))
+        if length_ratio < 0.72:
+            continue
+        score = max(
+            SequenceMatcher(None, key, candidate_key).ratio(),
+            SequenceMatcher(None, compact, candidate_compact).ratio(),
+        )
+        if score > best_score:
+            best_score = score
+            best_value = canonical
+    return best_value if best_score >= min_ratio else None
+
+
+def _candidate_text_windows(normalized: str, *, max_size: int = 4) -> List[str]:
+    tokens = [
+        _strip_constraint_suffixes(token)
+        for token in re.split(r"[^a-z0-9]+", normalized or "")
+        if token
+    ]
+    windows: List[str] = []
+    for size in range(min(max_size, len(tokens)), 0, -1):
+        for index in range(0, len(tokens) - size + 1):
+            value = " ".join(tokens[index:index + size]).strip()
+            if value and value not in windows:
+                windows.append(value)
+    return windows
+
+
 def canonical_league(value: Optional[Any]) -> Optional[str]:
     key = norm_name(str(value or ""))
+    compact = _compact_key(key)
+    return (
+        LEAGUE_BY_KEY.get(key)
+        or LEAGUE_COMPACT_BY_KEY.get(compact)
+        or _fuzzy_canonical_from_key(key, LEAGUE_BY_KEY, min_ratio=0.84)
+    )
+
+
+def infer_league_from_text(*texts: Optional[str]) -> Optional[str]:
+    raw = " ".join(text or "" for text in texts)
+    normalized = norm_name(raw)
+    compact_text = re.sub(r"[^a-z0-9]+", "", normalized)
+    if not normalized:
+        return None
+    for key, league in sorted(LEAGUE_BY_KEY.items(), key=lambda item: len(item[0]), reverse=True):
+        if re.search(rf"\b{re.escape(key)}\b", normalized):
+            return league
+    for compact, league in sorted(LEAGUE_COMPACT_BY_KEY.items(), key=lambda item: len(item[0]), reverse=True):
+        if compact and compact in compact_text:
+            return league
+    for window in _candidate_text_windows(normalized):
+        fuzzy = _fuzzy_canonical_from_key(window, LEAGUE_BY_KEY, min_ratio=0.88)
+        if fuzzy:
+            return fuzzy
+    return None
+
+
+ROLE_CODE_BY_KEY = {norm_name(code): long_name for code, long_name in ROLE_SHORT_TO_LONG.items()}
+ROLE_LONG_BY_KEY = {norm_name(long_name): long_name for long_name in ROLE_SHORT_TO_LONG.values()}
+SOURCE_TEAM_ALIAS_BY_KEY = {norm_name(team): team for team in PLAYER_DATA_TEAMS if norm_name(team)}
+SOURCE_TEAM_ALIAS_BY_KEY.update({
+    norm_name(alias): canonical
+    for alias, canonical in MANUAL_SOURCE_TEAM_ALIASES.items()
+    if norm_name(alias)
+})
+SOURCE_TEAM_COMPACT_BY_KEY = {
+    re.sub(r"[^a-z0-9]+", "", key): canonical
+    for key, canonical in SOURCE_TEAM_ALIAS_BY_KEY.items()
+    if re.sub(r"[^a-z0-9]+", "", key)
+}
+
+
+def canonical_source_team(value: Optional[Any]) -> Optional[str]:
+    key = norm_name(str(value or ""))
+    if not key:
+        return None
+    compact = _compact_key(key)
+    return (
+        SOURCE_TEAM_ALIAS_BY_KEY.get(key)
+        or SOURCE_TEAM_COMPACT_BY_KEY.get(compact)
+        or _fuzzy_canonical_from_key(key, SOURCE_TEAM_ALIAS_BY_KEY, min_ratio=0.90)
+    )
+
+
+def _looks_like_league_text(value: Optional[Any]) -> bool:
+    key = norm_name(str(value or ""))
+    if not key:
+        return False
+    if canonical_league(key):
+        return True
     compact = re.sub(r"[^a-z0-9]+", "", key)
-    return LEAGUE_BY_KEY.get(key) or LEAGUE_COMPACT_BY_KEY.get(compact)
+    if key in LEAGUE_BY_KEY or compact in LEAGUE_COMPACT_BY_KEY:
+        return True
+    for league_key in LEAGUE_BY_KEY:
+        if league_key and re.search(rf"\b{re.escape(league_key)}\b", key):
+            return True
+    for league_compact in LEAGUE_COMPACT_BY_KEY:
+        if league_compact and league_compact in compact:
+            return True
+    return False
+
+
+def _looks_like_invalid_source_team_text(value: Optional[Any]) -> bool:
+    key = norm_name(str(value or ""))
+    if not key:
+        return True
+    if _looks_like_league_text(key):
+        return True
+    if re.search(r"\d", key):
+        return True
+    tokens = [token for token in key.split() if token]
+    if len(tokens) > 4:
+        return True
+    invalid_tokens = {
+        "a", "an", "the", "this", "that", "these", "those", "their", "his", "her", "our", "your",
+        "prime", "replacement", "later", "today", "tomorrow", "under", "over", "born", "sold",
+        "signing", "looking", "look", "strong", "best", "such", "players", "player", "footballer",
+        "defender", "midfielder", "forward", "striker", "winger", "goalkeeper", "right", "left",
+        "technical", "technically", "sound", "duels", "wins", "recommend", "suggest", "oner",
+        "öner", "yas", "yaş", "altinda", "altında", "ustunde", "üstünde",
+    }
+    if any(token in invalid_tokens for token in tokens):
+        return True
+    return False
 
 
 def extract_source_team_from_question(question: Optional[str]) -> Optional[str]:
@@ -490,6 +603,21 @@ def extract_source_team_from_question(question: Optional[str]) -> Optional[str]:
         if re.search(rf"\b{alias}\s*{suffixes}\b", text_value) or re.search(rf"\b{alias}\s+{source_cues}\b", text_value):
             return canonical
 
+    suffix_recommendation_pattern = (
+        rf"\b(?P<team>[a-z0-9][a-z0-9 .&'’-]{{2,40}}?)\s*{suffixes}\s+"
+        rf"(?:bir\s+)?(?:[a-z0-9 .&'’-]+\s+)?(?:oner|öner|recommend|suggest|find|show|give)\b"
+    )
+    match = re.search(suffix_recommendation_pattern, text_value, flags=re.IGNORECASE)
+    if match:
+        team = re.sub(r"\s+", " ", (match.group("team") or "").strip(" .,!?:;\"'"))
+        for prefix in ("bana bir", "bana", "bir", "please", "lutfen", "lütfen"):
+            if team.startswith(prefix + " "):
+                team = team[len(prefix):].strip()
+        if not _looks_like_invalid_source_team_text(team):
+            canonical = canonical_source_team(team)
+            if canonical:
+                return canonical
+
     generic_patterns = [
         rf"\b(?P<team>[a-z0-9][a-z0-9 .&'’-]{{2,40}}?)\s*{suffixes}\s+(?:bir\s+)?(?:[a-z0-9 .&'’-]+\s+)?{source_cues}\b",
         rf"\b(?:from|at|in)\s+(?P<team>[a-z0-9][a-z0-9 .&'’-]{{2,40}}?)(?=$|\s+(?:player|footballer|winger|striker|forward|midfielder|defender|goalkeeper|who|that|with|but|and)\b|[,.!?])",
@@ -506,44 +634,12 @@ def extract_source_team_from_question(question: Optional[str]) -> Optional[str]:
         for prefix in sorted(stop_prefixes, key=len, reverse=True):
             if team.startswith(prefix + " "):
                 team = team[len(prefix):].strip()
-        if len(team) >= 3:
-            return team.title()
+        if _looks_like_invalid_source_team_text(team):
+            continue
+        canonical = canonical_source_team(team)
+        if canonical:
+            return canonical
     return None
-
-
-def infer_league_from_text(*texts: Optional[str]) -> Optional[str]:
-    raw = " ".join(text or "" for text in texts)
-    normalized = norm_name(raw)
-    compact_text = re.sub(r"[^a-z0-9]+", "", normalized)
-    if not normalized:
-        return None
-    for key, league in sorted(LEAGUE_BY_KEY.items(), key=lambda item: len(item[0]), reverse=True):
-        if re.search(rf"\b{re.escape(key)}\b", normalized):
-            return league
-    for compact, league in sorted(LEAGUE_COMPACT_BY_KEY.items(), key=lambda item: len(item[0]), reverse=True):
-        if compact and compact in compact_text:
-            return league
-    return None
-
-
-ROLE_CODE_BY_KEY = {norm_name(code): long_name for code, long_name in ROLE_SHORT_TO_LONG.items()}
-ROLE_LONG_BY_KEY = {norm_name(long_name): long_name for long_name in ROLE_SHORT_TO_LONG.values()}
-SOURCE_TEAM_ALIAS_BY_KEY = {
-    "fenerbahce": "Fenerbahçe",
-    "fenerbahçe": "Fenerbahçe",
-    "galatasaray": "Galatasaray",
-    "besiktas": "Beşiktaş",
-    "beşiktaş": "Beşiktaş",
-    "trabzonspor": "Trabzonspor",
-    "manchester city": "Manchester City",
-    "man city": "Manchester City",
-    "bayern": "FC Bayern München",
-    "bayern munich": "FC Bayern München",
-    "real madrid": "Real Madrid",
-    "barcelona": "FC Barcelona",
-    "psg": "Paris Saint Germain",
-    "paris saint germain": "Paris Saint Germain",
-}
 
 
 def canonical_position(value: Optional[Any]) -> Optional[str]:
@@ -615,71 +711,9 @@ def infer_position_from_text(*texts: Optional[str]) -> Optional[str]:
     return None
 
 
-CANONICAL_NATIONALITIES = {
-    "Afghanistan", "Albania", "Algeria", "Andorra", "Angola", "Antigua and Barbuda",
-    "Argentina", "Armenia", "Aruba", "Australia", "Austria", "Azerbaijan", "Bahrain",
-    "Bangladesh", "Barbados", "Belarus", "Belgium", "Belize", "Benin", "Bermuda",
-    "Bhutan", "Bolivia", "Bosnia and Herzegovina", "Botswana", "Brazil", "British Virgin Islands",
-    "Brunei", "Bulgaria", "Burkina Faso", "Burundi", "Cambodia", "Cameroon", "Canada",
-    "Cape Verde", "Caribbean Netherlands", "Central African Republic", "Chad", "Chile", "China",
-    "Colombia", "Comoros", "Cook Islands", "Costa Rica", "Croatia", "Cuba", "Curaçao",
-    "Cyprus", "Czech Republic", "Denmark", "Dominican Republic", "DR Congo", "Ecuador",
-    "Egypt", "El Salvador", "England", "Equatorial Guinea", "Eritrea", "Estonia", "Ethiopia",
-    "Faroe Islands", "Fiji", "Finland", "France", "French Guiana", "Gabon", "Gambia",
-    "Georgia", "Germany", "Ghana", "Gibraltar", "Greece", "Grenada", "Guadeloupe", "Guatemala",
-    "Guinea", "Guinea-Bissau", "Guyana", "Haiti", "Honduras", "Hong Kong", "Hungary",
-    "Iceland", "India", "Indonesia", "Iran", "Iraq", "Israel", "Italy", "Ivory Coast",
-    "Jamaica", "Japan", "Jordan", "Kazakhstan", "Kenya", "Korea DPR", "Kosovo", "Kuwait",
-    "Kyrgyz Republic", "Kyrgyzstan", "Laos", "Latvia", "Lebanon", "Lesotho", "Liberia",
-    "Libya", "Liechtenstein", "Lithuania", "Luxembourg", "Macau", "Macedonia", "Madagascar",
-    "Malawi", "Malaysia", "Maldives", "Mali", "Malta", "Martinique", "Mauritania", "Mauritius",
-    "Mexico", "Moldova", "Mongolia", "Montenegro", "Montserrat", "Morocco", "Mozambique",
-    "Namibia", "Nepal", "Netherlands", "New Caledonia", "New Zealand", "Nicaragua", "Niger",
-    "Nigeria", "North & Central America", "Northern Ireland", "Norway", "Oman", "Pakistan",
-    "Palestine", "Panama", "Papua New Guinea", "Paraguay", "Peru", "Philippines", "Poland",
-    "Portugal", "Puerto Rico", "Qatar", "Republic of Ireland", "Republic of the Congo",
-    "Romania", "Russia", "Rwanda", "Saint Kitts and Nevis", "Saint Lucia",
-    "Saint Vincent and the Grenadines", "San Marino", "São Tomé and Príncipe", "Saudi Arabia",
-    "Scotland", "Senegal", "Serbia", "Sierra Leone", "Singapore", "Sint Maarten", "Slovakia",
-    "Slovenia", "Solomon Islands", "Somalia", "South Africa", "South America", "South Korea",
-    "South Sudan", "Spain", "Sri Lanka", "Sudan", "Suriname", "Sweden", "Switzerland",
-    "Syria", "Taiwan", "Tajikistan", "Tanzania", "Thailand", "Togo", "Trinidad and Tobago",
-    "Tunisia", "Turkmenistan", "Turkey", "Türkiye", "Uganda", "Ukraine", "United Arab Emirates",
-    "United States", "Uruguay", "Uzbekistan", "Vanuatu", "Venezuela", "Vietnam", "Wales",
-    "Yemen", "Zambia", "Zimbabwe",
-}
 NATIONALITY_BY_KEY = {norm_name(name): name for name in CANONICAL_NATIONALITIES}
-NATIONALITY_ALIASES = {
-    "american": "United States", "usa": "United States", "us": "United States",
-    "spanish": "Spain", "french": "France", "german": "Germany", "italian": "Italy",
-    "english": "England", "british": "England", "welsh": "Wales", "scottish": "Scotland",
-    "irish": "Republic of Ireland", "portuguese": "Portugal", "dutch": "Netherlands",
-    "argentinian": "Argentina", "argentine": "Argentina", "brazilian": "Brazil",
-    "uruguayan": "Uruguay", "turkey": "Türkiye", "turkiye": "Türkiye", "turkish": "Türkiye", "turk": "Türkiye",
-    "moroccan": "Morocco", "nigerian": "Nigeria", "croatian": "Croatia",
-    "polish": "Poland", "swedish": "Sweden", "norwegian": "Norway", "danish": "Denmark",
-    "belgian": "Belgium", "austrian": "Austria", "swiss": "Switzerland",
-    "mexican": "Mexico", "colombian": "Colombia", "chilean": "Chile", "paraguayan": "Paraguay",
-    "peruvian": "Peru", "venezuelan": "Venezuela", "japanese": "Japan", "korean": "South Korea",
-    "senegalese": "Senegal", "ghanaian": "Ghana", "cameroonian": "Cameroon",
-    "egyptian": "Egypt", "algerian": "Algeria", "tunisian": "Tunisia",
-    "ingiliz": "England", "brezilyali": "Brazil", "arjantinli": "Argentina",
-    "norvecli": "Norway", "turkiye": "Türkiye", "türkiye": "Türkiye", "turk": "Türkiye", "alman": "Germany", "fransiz": "France",
-    "ispanyol": "Spain", "italyan": "Italy", "portekizli": "Portugal", "hollandali": "Netherlands",
-}
 NATIONALITY_ALIAS_KEYS = {norm_name(key): value for key, value in NATIONALITY_ALIASES.items()}
 
-POSITION_NEGATION_ALIASES = {
-    "goalkeeper": "Goalkeeper", "goal keeper": "Goalkeeper", "keeper": "Goalkeeper", "gk": "Goalkeeper",
-    "kaleci": "Goalkeeper",
-    "defender": "Center Back", "centre back": "Center Back", "center back": "Center Back", "cb": "Center Back",
-    "stoper": "Center Back", "savunmaci": "Center Back",
-    "midfielder": "Center Midfield", "central midfielder": "Center Midfield", "cm": "Center Midfield",
-    "orta saha": "Center Midfield", "ortasaha": "Center Midfield",
-    "winger": "Left Wing", "kanat": "Left Wing",
-    "forward": "Center Forward", "striker": "Center Forward", "attacker": "Center Forward", "cf": "Center Forward",
-    "forvet": "Center Forward", "santrafor": "Center Forward",
-}
 
 
 def normalize_constraint_value(value: Optional[Any]) -> str:
@@ -1200,11 +1234,21 @@ def build_agentic_context(
         direct_lookup = True
 
     target_team = extract_target_team_from_question(translated)
+    if target_team and (
+        _looks_like_invalid_source_team_text(target_team)
+        or bool(infer_position_from_text(target_team))
+    ):
+        target_team = None
     if not target_team and generic_alternative:
         for row in reversed(history_rows):
             if row.get("role") != "human":
                 continue
             target_team = extract_target_team_from_question(row.get("content") or "")
+            if target_team and (
+                _looks_like_invalid_source_team_text(target_team)
+                or bool(infer_position_from_text(target_team))
+            ):
+                target_team = None
             if target_team:
                 break
 
@@ -1774,6 +1818,94 @@ def fetch_selection_suggestion_docs_from_db(
     return docs_out
 
 
+def fetch_emergency_recommendation_docs_from_db(
+    ctx: AgenticContext,
+    *,
+    limit: int = SELECTOR_CANDIDATE_LIMIT,
+    keep_requested_position: bool = True,
+) -> List[Document]:
+    constraints = clean_constraints(ctx.constraints)
+    where_parts = ["TRUE"]
+    params: Dict[str, Any] = {"lim": 1400}
+    gender = constraints.get("gender")
+    if gender:
+        where_parts.append("LOWER(metadata->>'gender') = :gender")
+        params["gender"] = str(gender).lower()
+
+    db = get_db()
+    try:
+        rows = db.execute(text(f"""
+            SELECT id, metadata, content
+            FROM player_data
+            WHERE {' AND '.join(where_parts)}
+            ORDER BY COALESCE((metadata->>'Rating')::numeric, 0) DESC
+            LIMIT :lim
+        """), params).mappings().all()
+    finally:
+        db.close()
+
+    docs: List[Document] = []
+    seen_doc_keys = set()
+    seen_names_norm = {(name or "").strip().lower() for name in ctx.seen_players}
+    rejection_counts: Counter[str] = Counter()
+    for row in rows or []:
+        md = dict(row.get("metadata") or {})
+        md.setdefault("id", row.get("id"))
+        player_name = str(md.get("player_name") or md.get("name") or "").strip()
+        team_name = str(md.get("team_name") or md.get("team") or md.get("club") or "").strip()
+        nationality = str(md.get("nationality_name") or md.get("nationality") or md.get("country") or "").strip()
+        position_name, constraint_position_names = metadata_position_signals(md)
+        if not player_name or player_name.lower() in seen_names_norm:
+            rejection_counts["missing_name_or_seen"] += 1
+            continue
+        rejection_reason = get_candidate_rejection_reason(
+            player_name,
+            team_name,
+            nationality,
+            target_team=ctx.target_team,
+            allow_turkish=ctx.allow_turkish,
+            allow_non_senior=ctx.allow_non_senior,
+            premium_only=False,
+        )
+        if rejection_reason:
+            rejection_counts[rejection_reason] += 1
+            continue
+        missing_discovery = _missing_discovery_rejection(team_name, position_name, ctx)
+        if missing_discovery:
+            rejection_counts[missing_discovery] += 1
+            continue
+        if _stats_count_from_metadata(md) < MIN_SELECTION_STATS:
+            rejection_counts["stats_floor"] += 1
+            continue
+        if keep_requested_position:
+            position_ok, _, _ = player_matches_requested_position(
+                ctx.effective_query,
+                position_name,
+                constraint_position_names,
+            )
+            if not position_ok:
+                rejection_counts["position_mismatch"] += 1
+                continue
+        doc_key = player_name.lower()
+        if doc_key in seen_doc_keys:
+            rejection_counts["duplicate_name"] += 1
+            continue
+        seen_doc_keys.add(doc_key)
+        docs.append(Document(page_content=row.get("content") or "", metadata=md))
+
+    random.SystemRandom().shuffle(docs)
+    docs = _sort_for_squad_preference(docs, ctx)
+    docs_out = _diverse_doc_cap(docs, limit=limit, diversify_teams=True)
+    ctx.retrieval_debug.append({
+        "pass": f"emergency_db_recommendation:{'position' if keep_requested_position else 'broad'}",
+        "raw_count": len(rows or []),
+        "accepted_count": len(docs),
+        "returned_count": len(docs_out),
+        "top_rejections": rejection_counts.most_common(5),
+    })
+    return docs_out
+
+
 def build_filtered_retriever_agentic(
     ctx: AgenticContext,
     candidate_retriever: BaseRetriever,
@@ -1848,6 +1980,19 @@ def build_filtered_retriever_agentic(
             pass_label="emergency_vector_fallback",
         )
         docs = _merge_docs(docs, fallback_docs)
+
+    if not docs and ctx.discovery_mode and not ctx.direct_player_lookup:
+        ctx.constraint_relaxation_level = 9
+        ctx.allow_all_selection_leagues = True
+        docs = _merge_docs(
+            docs,
+            fetch_emergency_recommendation_docs_from_db(ctx, keep_requested_position=True),
+        )
+        if not docs:
+            docs = _merge_docs(
+                docs,
+                fetch_emergency_recommendation_docs_from_db(ctx, keep_requested_position=False),
+            )
 
     return StaticDocsRetriever(docs=docs), docs
 
