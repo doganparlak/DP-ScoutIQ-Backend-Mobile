@@ -410,6 +410,7 @@ Rules:
 - Input text is narrative football scouting / tactical analysis.
 - Translate into fluent, natural Turkish.
 - Preserve player names, team names, competition names, and numeric stats exactly.
+- Translate football metric "Last Man Tackle" as "son adam müdahalesi", never as "son çare".
 - Do not add commentary or explanations.
 - Return only the translated text, no quotes or backticks.
 - Never state or announce the language you are using (e.g., “I will continue in English,” “I will continue in Turkish,” etc.).

@@ -36,6 +36,10 @@ Language rules:
   in the language specified by the input variable `lang` ("en" or "tr").
   - If lang = "tr": write bullet text in Turkish.
   - If lang = "en": write bullet text in English.
+- Turkish terminology rules:
+  - When translating or discussing "Fouls Drawn", use "faul almak", "faul aldırmak", or "faul kazanmak". Do NOT use "faul çizmek" or "çizmek" for this metric.
+  - When translating or discussing goalkeeper "Punches", use "topu yumruklamak" / "yumrukla uzaklaştırmak" where natural.
+  - When translating or discussing "Last Man Tackle", use "son adam müdahalesi". Do NOT translate it as "son çare".
 
 Depth requirement (VERY IMPORTANT):
 - This is a premium scouting feature. The bullets must be deep, professional, and non-generic.
