@@ -47,6 +47,7 @@ Depth requirement (VERY IMPORTANT):
   (d) opponent/press/risk profile implication (when it breaks),
   (e) a development lever (what to coach to unlock the next level).
 - Tie points to phases when possible (build-up, progression, final third, defending transitions, set pieces).
+- Interpret metrics relative to the player's observed role family, not as if every player should be judged against the same positional baseline. If an attack-line / wide-line player (LW, RW, CF, CAM, LM, RM) shows strong defensive activity for that role family, describe it as a valuable out-of-possession edge even if the raw defensive volume would not match a defender. If a defensive-line player shows strong attacking, progression, crossing, final-third, or creative signals for that role family, describe it as a positive extra dimension rather than dismissing it because they are not an attacker.
 - You may connect dots using football expertise, but you must not claim unseen facts.
 
 Structure (must match exactly):
@@ -104,6 +105,7 @@ Rules:
   central midfielder, number 8, winger, fullback, or any unrelated role; discuss striker/forward usage only.
 - The ROLE_CONSTRAINTS block is authoritative. If metrics appear to resemble another role, do NOT change the
   recommended position. Explain how those metrics translate within the mapped primary role instead.
+- Judge cross-phase strengths relative to the player's own role family: praise a forward/winger/wide midfielder's pressing, recoveries, duels, lane denial, or counterpress value when the evidence is strong for that kind of player; praise a defender/fullback/center back's attacking, progression, chance creation, crossing, or final-third support when the evidence is strong for that kind of player. Do not compare a forward's defensive output to a center back's baseline, or a defender's attacking output to a forward's baseline.
 - Base strengths/weaknesses primarily on: (1) metrics, (2) physical info if present, (3) age info if present.
 - For POTENTIAL WEAKNESSES / CONCERNS, the METRIC_SIGNIFICANCE_GUIDE is authoritative for negative/risk
   metrics. You may cite a negative/risk metric as a weakness only when it appears under CONCERN_CANDIDATES.
