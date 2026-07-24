@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import os
 from typing import Any, Dict, List, Optional, Tuple
 
 from dotenv import load_dotenv
@@ -14,7 +15,10 @@ from report_module.utilities import _first_non_empty, _normalize_roles, _score_c
 
 load_dotenv()
 
-CHAT_LLM = ChatDeepSeek(model="deepseek-chat", temperature=0.3)
+CHAT_LLM = ChatDeepSeek(
+    model=os.getenv("DEEPSEEK_CHAT_MODEL", "deepseek-v4-flash"),
+    temperature=0.3,
+)
 
 _report_prompt = ChatPromptTemplate.from_messages(
     [

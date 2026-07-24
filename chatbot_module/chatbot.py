@@ -1,6 +1,7 @@
 from typing import Dict, Any, Optional, List
 from dotenv import load_dotenv
 load_dotenv()
+import os
 from langchain_deepseek import ChatDeepSeek
 from langchain_core.prompts import ChatPromptTemplate
 from langchain_classic.memory import ConversationBufferMemory
@@ -67,18 +68,20 @@ from chatbot_module.vectorstore_small import get_retriever
 
 
 
+DEEPSEEK_CHAT_MODEL = os.getenv("DEEPSEEK_CHAT_MODEL", "deepseek-v4-flash")
+
 CHAT_LLM = ChatDeepSeek(
-    model="deepseek-chat",
+    model=DEEPSEEK_CHAT_MODEL,
     temperature=0.3,
 )
 
 PARSER_LLM = ChatDeepSeek(
-    model="deepseek-chat",
+    model=DEEPSEEK_CHAT_MODEL,
     temperature=0,   # keep it deterministic for JSON-style parsing
 )
 
 TRANSLATE_LLM = ChatDeepSeek(
-    model="deepseek-chat",
+    model=DEEPSEEK_CHAT_MODEL,
     temperature=0,
 )
 

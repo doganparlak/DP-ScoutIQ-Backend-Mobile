@@ -31,6 +31,7 @@ METADATA_SKIP = {
 
 DEEPSEEK_API_KEY = os.getenv("DEEPSEEK_API_KEY", "")
 DEEPSEEK_API_BASE = os.getenv("DEEPSEEK_API_BASE", "https://api.deepseek.com").rstrip("/")
+DEEPSEEK_CHAT_MODEL = os.getenv("DEEPSEEK_CHAT_MODEL", "deepseek-v4-flash")
 QUIZ_LLM_TIMEOUT_SECONDS = float(os.getenv("DAILY_SCOUT_LLM_TIMEOUT_SECONDS", "20"))
 
 
@@ -204,7 +205,7 @@ def _quiz_llm_decision(summaries: List[Dict[str, Any]], theme: Dict[str, Any]) -
         return None
 
     body = {
-        "model": "deepseek-chat",
+        "model": DEEPSEEK_CHAT_MODEL,
         "temperature": 0.35,
         "messages": [
             {"role": "system", "content": DAILY_SCOUT_QUIZ_PROMPT},
