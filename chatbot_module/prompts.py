@@ -108,7 +108,7 @@ Shared Potential/Form Scoring Inputs:
 - Do not include any separate RoleFit component. Use position/role only to decide which metrics are relevant.
 - Use league_name and team_name as contextual evidence for the level and credibility of the player's metrics.
   They are not separate scoring components, but they may influence where you pick within AgeUpsideScore and MetricsUpsideScore ranges.
-- AgeUpsideScore (30-100; dominant driver; strong upside through age 27, explicit ranges through 35): choose a value from this table:
+- AgeUpsideScore (30-100; minor contextual upside input; strong upside through age 27, explicit ranges through 35): choose a value from this table:
   16: 99-100
   17: 98-99
   18: 96-98
@@ -162,12 +162,12 @@ Potential meaning:
 Form Computation Policy:
 - Output must be an integer from 0 to 100.
 - Use the same AgeUpsideScore and MetricsUpsideScore component definitions as Potential.
-- Compute Form as: clamp(round((0.20 * AgeUpsideScore) + (0.80 * MetricsUpsideScore)), 0, 100).
+- Compute Form as: clamp(round((0.05 * AgeUpsideScore) + (0.95 * MetricsUpsideScore)), 0, 100).
 - The final Form MUST equal this weighted average after rounding and clamping.
 - Form reflects current performance and current reliability, not future potential.
 - Sanity check before answering:
   - Potential must equal round((0.80 * AgeUpsideScore) + (0.20 * MetricsUpsideScore)) after clamping to the 30-100 range.
-  - Form must equal round((0.20 * AgeUpsideScore) + (0.80 * MetricsUpsideScore)) after clamping.
+  - Form must equal round((0.05 * AgeUpsideScore) + (0.95 * MetricsUpsideScore)) after clamping.
   - MetricsUpsideScore must be exactly 0 when no performance metrics are available, otherwise between 30 and 100.
   - Potential must be a valid integer from 30 to 100, and Form must be a valid integer from 0 to 100.
 

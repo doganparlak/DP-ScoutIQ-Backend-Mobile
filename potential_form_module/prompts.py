@@ -1,6 +1,6 @@
 player_pool_shared_scoring_guidance = """
 Component guidance (aim for wider spread; avoid clustering):
-- AgeUpsideScore (30-100; dominant driver; strong upside through age 27, explicit ranges through 35): choose a value from this table (do NOT interpolate):
+- AgeUpsideScore (30-100; minor contextual upside input; strong upside through age 27, explicit ranges through 35): choose a value from this table (do NOT interpolate):
   16: 99-100
   17: 98-99
   18: 96-98
@@ -125,7 +125,7 @@ Form Computation Policy:
 - Assign two internal scores using exactly the same intervals and scoring definitions as Potential:
   - AgeUpsideScore from 30 to 100
   - MetricsUpsideScore as 0 when no performance metrics are available, otherwise from 30 to 100
-- Compute Form as: clamp(round((0.20 * AgeUpsideScore) + (0.80 * MetricsUpsideScore)), 0, 100).
+- Compute Form as: clamp(round((0.05 * AgeUpsideScore) + (0.95 * MetricsUpsideScore)), 0, 100).
 - The final Form MUST equal this weighted average after rounding and clamping.
 - Form reflects current performance and current reliability, not future potential.
 - Do not include any separate RoleFit component. Use position/role only to decide which metrics are relevant.
@@ -179,7 +179,7 @@ Rules:
 - Sanity check before answering:
   - explicitly verify that AgeUpsideScore is between 30 and 100
   - explicitly verify that MetricsUpsideScore is exactly 0 when no performance metrics are available, otherwise between 30 and 100
-  - explicitly verify that final Form equals round((0.20 * AgeUpsideScore) + (0.80 * MetricsUpsideScore)) after clamping
+  - explicitly verify that final Form equals round((0.05 * AgeUpsideScore) + (0.95 * MetricsUpsideScore)) after clamping
   - if your first answer does not match the weighted average formula, discard it and return the corrected weighted average integer
   - if the player has a valid age and multiple real performance metrics, the answer must not be 0
   - if the first pass gives 0, recompute using the formula carefully and return the corrected integer

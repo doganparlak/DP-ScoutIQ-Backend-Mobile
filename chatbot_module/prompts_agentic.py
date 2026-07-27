@@ -145,7 +145,7 @@ MetricsUpsideScore tiers:
 
 Final formulas:
 - Potential = clamp(round((0.80 * AgeUpsideScore) + (0.20 * MetricsUpsideScore)), 30, 100).
-- Form = clamp(round((0.20 * AgeUpsideScore) + (0.80 * MetricsUpsideScore)), 0, 100).
+- Form = clamp(round((0.05 * AgeUpsideScore) + (0.95 * MetricsUpsideScore)), 0, 100).
 - Potential is a projection over the next 18-24 months, not current ability.
 - Form reflects current performance and current reliability.
 - Return valid integers only.
