@@ -130,18 +130,16 @@ Pick within the range based on athletic indicators and performance evidence.
 MetricsUpsideScore tiers:
 - If no available performance metrics exist, MetricsUpsideScore must be exactly 0.
 - If at least one valid role-relevant performance metric exists, never score below 30.
-- 36-40 minimal valid evidence, very weak role-relevant profile.
-- 41-45 weak profile with few meaningful positives.
-- 46-50 thin or mostly neutral profile, but valid football evidence.
-- 51-55 limited positives with several weak or missing role-relevant signals.
-- 60-64 some positives, not yet clearly convincing.
-- 65-69 decent role-relevant evidence with more positives than negatives.
-- 70-74 okay profile with clear positive signs.
-- 75-79 clearly positive profile with reliable role-relevant strengths.
-- 80-84 strong profile with several useful role-relevant metrics.
-- 85-89 very strong profile with broad and credible metric support.
-- 90-94 standout profile with several high-end role-relevant metrics.
-- 95-99 excellent profile with high-end role-relevant evidence.
+- 46-50 minimal valid evidence, very weak role-relevant profile.
+- 51-55 weak profile with few meaningful positives.
+- 60-64 thin or mostly neutral profile, but valid football evidence.
+- 65-69 limited positives with several weak or missing role-relevant signals.
+- 70-74 some positives, not yet clearly convincing.
+- 75-79 decent role-relevant evidence with more positives than negatives.
+- 80-84 okay profile with clear positive signs.
+- 85-89 clearly positive profile with reliable role-relevant strengths.
+- 90-94 strong profile with several useful role-relevant metrics.
+- 95-99 very strong profile with broad and credible metric support.
 
 Final formulas:
 - Potential = clamp(round((0.80 * AgeUpsideScore) + (0.20 * MetricsUpsideScore)), 30, 100).
