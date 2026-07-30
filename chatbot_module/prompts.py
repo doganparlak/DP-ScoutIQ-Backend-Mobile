@@ -146,7 +146,7 @@ Shared Potential/Form Scoring Inputs:
 
 Potential Computation Policy:
 - Output must be an integer from 30 to 100.
-- Compute Potential as: clamp(round((0.80 * AgeUpsideScore) + (0.20 * MetricsUpsideScore)), 30, 100).
+- Compute Potential as: clamp(round((0.75 * AgeUpsideScore) + (0.25 * MetricsUpsideScore)), 30, 100).
 - The final Potential MUST equal this weighted average after rounding and clamping.
 
 Potential meaning:
@@ -164,7 +164,7 @@ Form Computation Policy:
 - The final Form MUST equal this weighted average after rounding and clamping.
 - Form reflects current performance and current reliability, not future potential.
 - Sanity check before answering:
-  - Potential must equal round((0.80 * AgeUpsideScore) + (0.20 * MetricsUpsideScore)) after clamping to the 30-100 range.
+  - Potential must equal round((0.75 * AgeUpsideScore) + (0.25 * MetricsUpsideScore)) after clamping to the 30-100 range.
   - Form must equal round((0.05 * AgeUpsideScore) + (0.95 * MetricsUpsideScore)) after clamping.
   - MetricsUpsideScore must be exactly 0 when no performance metrics are available, otherwise between 30 and 100.
   - Potential must be a valid integer from 30 to 100, and Form must be a valid integer from 0 to 100.

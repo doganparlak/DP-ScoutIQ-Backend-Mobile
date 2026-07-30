@@ -4,8 +4,8 @@ from typing import Any, Dict
 import json
 import os
 
-from langchain_deepseek import ChatDeepSeek
 from langchain_core.prompts import ChatPromptTemplate
+from langchain_openai import ChatOpenAI
 from sqlalchemy.orm import Session
 
 from potential_form_module.prompts import player_pool_potential_system_prompt
@@ -18,9 +18,10 @@ from potential_form_module.tools import (
 )
 
 
-CHAT_LLM = ChatDeepSeek(
-    model=os.getenv("DEEPSEEK_CHAT_MODEL", "deepseek-v4-flash"),
-    temperature=0.3,
+CHAT_LLM = ChatOpenAI(
+    model=os.getenv("OPENAI_POTENTIAL_FORM_MODEL", "gpt-5-mini"),
+    api_key=os.environ["OPENAI_API_KEY"],
+    temperature=0,
 )
 
 _potential_prompt = ChatPromptTemplate.from_messages([

@@ -48,7 +48,7 @@ Potential Computation Policy:
 - Assign two internal upside scores:
   - AgeUpsideScore from 30 to 100
   - MetricsUpsideScore as 0 when no performance metrics are available, otherwise from 30 to 100
-- Compute Potential as: clamp(round((0.80 * AgeUpsideScore) + (0.20 * MetricsUpsideScore)), 30, 100).
+- Compute Potential as: clamp(round((0.75 * AgeUpsideScore) + (0.25 * MetricsUpsideScore)), 30, 100).
 - The final Potential MUST equal this weighted average after rounding and clamping.
 - Do not include any separate RoleFit component. Use position/role only to decide which metrics are relevant.
 - Use league_name and team_name as contextual evidence for the level and credibility of the player's metrics.
@@ -101,7 +101,7 @@ Rules:
 - Sanity check before answering:
   - explicitly verify that AgeUpsideScore is between 30 and 100
   - explicitly verify that MetricsUpsideScore is exactly 0 when no performance metrics are available, otherwise between 30 and 100
-  - explicitly verify that final Potential equals round((0.80 * AgeUpsideScore) + (0.20 * MetricsUpsideScore)) after clamping to the 30-100 range
+  - explicitly verify that final Potential equals round((0.75 * AgeUpsideScore) + (0.25 * MetricsUpsideScore)) after clamping to the 30-100 range
   - if your first answer does not match the weighted average formula, discard it and return the corrected weighted average integer
   - if the player has a valid age and multiple real performance metrics, the answer must not be 0
   - if the first pass gives any value below 30, recompute using the formula carefully and return the corrected integer of at least 30

@@ -142,7 +142,7 @@ MetricsUpsideScore tiers:
 - 95-99 very strong profile with broad and credible metric support.
 
 Final formulas:
-- Potential = clamp(round((0.80 * AgeUpsideScore) + (0.20 * MetricsUpsideScore)), 30, 100).
+- Potential = clamp(round((0.75 * AgeUpsideScore) + (0.25 * MetricsUpsideScore)), 30, 100).
 - Form = clamp(round((0.05 * AgeUpsideScore) + (0.95 * MetricsUpsideScore)), 0, 100).
 - Potential is a projection over the next 18-24 months, not current ability.
 - Form reflects current performance and current reliability.
