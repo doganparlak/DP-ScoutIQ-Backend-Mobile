@@ -2053,7 +2053,7 @@ def get_or_create_report(
         **favorite_snapshot,
     )
 
-    # Generate synchronously (DeepSeek) and update cache
+    # Generate asynchronously with the configured OpenAI chat model and update cache.
 
     background_tasks.add_task(
         _generate_report_background,

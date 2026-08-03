@@ -29,9 +29,9 @@ METADATA_SKIP = {
     "minutes", "birth_date",
 }
 
-DEEPSEEK_API_KEY = os.getenv("DEEPSEEK_API_KEY", "")
-DEEPSEEK_API_BASE = os.getenv("DEEPSEEK_API_BASE", "https://api.deepseek.com").rstrip("/")
-DEEPSEEK_CHAT_MODEL = os.getenv("DEEPSEEK_CHAT_MODEL", "deepseek-v4-flash")
+OPENAI_API_KEY = os.getenv("OPENAI_API_KEY", "")
+OPENAI_API_BASE = os.getenv("OPENAI_API_BASE", "https://api.openai.com/v1").rstrip("/")
+OPENAI_CHAT_MODEL = os.getenv("OPENAI_CHAT_MODEL", "gpt-5-mini")
 QUIZ_LLM_TIMEOUT_SECONDS = float(os.getenv("DAILY_SCOUT_LLM_TIMEOUT_SECONDS", "20"))
 
 
@@ -200,12 +200,12 @@ def _extract_json_object(raw: str) -> Dict[str, Any] | None:
 
 
 def _quiz_llm_decision(summaries: List[Dict[str, Any]], theme: Dict[str, Any]) -> Dict[str, Any] | None:
-    if not DEEPSEEK_API_KEY:
-        print("[daily_scout_quiz] missing DEEPSEEK_API_KEY; using fallback", flush=True)
+    if not OPENAI_API_KEY:
+        print("[daily_scout_quiz] missing OPENAI_API_KEY; using fallback", flush=True)
         return None
 
     body = {
-        "model": DEEPSEEK_CHAT_MODEL,
+        "model": OPENAI_CHAT_MODEL,
         "temperature": 0.35,
         "messages": [
             {"role": "system", "content": DAILY_SCOUT_QUIZ_PROMPT},
@@ -222,10 +222,10 @@ def _quiz_llm_decision(summaries: List[Dict[str, Any]], theme: Dict[str, Any]) -
         ],
     }
     req = urllib.request.Request(
-        f"{DEEPSEEK_API_BASE}/chat/completions",
+        f"{OPENAI_API_BASE}/chat/completions",
         data=json.dumps(body, ensure_ascii=False).encode("utf-8"),
         headers={
-            "Authorization": f"Bearer {DEEPSEEK_API_KEY}",
+            "Authorization": f"Bearer {OPENAI_API_KEY}",
             "Content-Type": "application/json",
         },
         method="POST",
@@ -235,18 +235,18 @@ def _quiz_llm_decision(summaries: List[Dict[str, Any]], theme: Dict[str, Any]) -
         with urllib.request.urlopen(req, timeout=QUIZ_LLM_TIMEOUT_SECONDS, context=ssl_context) as resp:
             payload = json.loads(resp.read().decode("utf-8"))
     except (urllib.error.URLError, TimeoutError, json.JSONDecodeError) as exc:
-        print(f"[daily_scout_quiz] DeepSeek request failed; using fallback: {exc}", flush=True)
+        print(f"[daily_scout_quiz] OpenAI request failed; using fallback: {exc}", flush=True)
         return None
 
     try:
         raw = payload["choices"][0]["message"]["content"]
     except (KeyError, IndexError, TypeError) as exc:
-        print(f"[daily_scout_quiz] DeepSeek response missing content; using fallback: {exc}", flush=True)
+        print(f"[daily_scout_quiz] OpenAI response missing content; using fallback: {exc}", flush=True)
         return None
 
     parsed = _extract_json_object(raw)
     if not parsed:
-        print("[daily_scout_quiz] DeepSeek response was not valid JSON; using fallback", flush=True)
+        print("[daily_scout_quiz] OpenAI response was not valid JSON; using fallback", flush=True)
     return parsed
 
 
@@ -276,7 +276,7 @@ def _ai_decision(choices: List[Dict[str, Any]], theme: Dict[str, Any]) -> Dict[s
     valid_ids = {choice["id"] for choice in choices}
     if not parsed or str(parsed.get("winner_player_id")) not in valid_ids:
         if parsed:
-            print("[daily_scout_quiz] invalid winner_player_id from DeepSeek; using fallback", flush=True)
+            print("[daily_scout_quiz] invalid winner_player_id from OpenAI; using fallback", flush=True)
         return _fallback_decision(choices, theme)
 
     strategy = parsed.get("strategy") if isinstance(parsed.get("strategy"), dict) else {}

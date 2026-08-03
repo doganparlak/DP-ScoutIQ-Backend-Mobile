@@ -184,8 +184,8 @@ followup_prompt = ChatPromptTemplate.from_messages([
 followup_chain = followup_prompt | CHAT_LLM | StrOutputParser()
 
 
-DEEPSEEK_INPUT_PRICE_PER_M = float(os.getenv("DEEPSEEK_INPUT_PRICE_PER_M", "0.14"))
-DEEPSEEK_OUTPUT_PRICE_PER_M = float(os.getenv("DEEPSEEK_OUTPUT_PRICE_PER_M", "0.28"))
+OPENAI_INPUT_PRICE_PER_M = float(os.getenv("OPENAI_INPUT_PRICE_PER_M", "0.25"))
+OPENAI_OUTPUT_PRICE_PER_M = float(os.getenv("OPENAI_OUTPUT_PRICE_PER_M", "2.00"))
 AGENTIC_FLOW_LOG = os.getenv("AGENTIC_FLOW_LOG", "1").lower() in {"1", "true", "yes", "on"}
 PRO_LOOKUP_FLOW_LOG = os.getenv("PRO_LOOKUP_FLOW_LOG", "1").lower() in {"1", "true", "yes", "on"}
 
@@ -254,8 +254,8 @@ def _trace_llm_cost(trace: Dict[str, Any], input_text: Any, output_text: Any) ->
 
 def _trace_cost_usd(trace: Dict[str, Any]) -> float:
     return (
-        (trace["input_tokens"] / 1_000_000) * DEEPSEEK_INPUT_PRICE_PER_M
-        + (trace["output_tokens"] / 1_000_000) * DEEPSEEK_OUTPUT_PRICE_PER_M
+        (trace["input_tokens"] / 1_000_000) * OPENAI_INPUT_PRICE_PER_M
+        + (trace["output_tokens"] / 1_000_000) * OPENAI_OUTPUT_PRICE_PER_M
     )
 
 
