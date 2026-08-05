@@ -11,7 +11,7 @@ from sqlalchemy.orm import Session
 from sqlalchemy import text
 
 from chatbot_module.chatbot_agentic import answer_question
-from report_module.report import generate_report_content
+from report_module.report import generate_report_content, normalize_mobile_report_format
 # import our refactored pieces
 from api_module.utilities import (
     hash_pw, new_salt, now_iso, get_user_email_by_id, delete_user_everywhere, get_bearer_token, revoke_session,
@@ -1789,6 +1789,9 @@ def create_player_pool_report(
                 db.commit()
                 row = None
             else:
+                normalized_content = normalize_mobile_report_format(row["content"] or "", row["language"] or lang)
+                normalized_content_json = dict(content_json)
+                normalized_content_json["report_text"] = normalized_content
                 record_analytics_event(
                     user_id=user_id,
                     event_type="scouting_report_direct_cached",
@@ -1800,8 +1803,8 @@ def create_player_pool_report(
                 return {
                     "favorite_player_id": cache_key,
                     "status": row["status"],
-                    "content": row["content"],
-                    "content_json": row["content_json"],
+                    "content": normalized_content,
+                    "content_json": normalized_content_json,
                     "language": row["language"],
                     "version": row["version"],
                     "player": payload,
@@ -1998,6 +2001,9 @@ def get_or_create_report(
                 db.commit()
                 row = None  # regenerate with the newly available score fields
             else:
+                normalized_content = normalize_mobile_report_format(row["content"] or "", row["language"] or lang)
+                normalized_content_json = dict(content_json)
+                normalized_content_json["report_text"] = normalized_content
                 record_analytics_event(
                     user_id=user_id,
                     event_type="scouting_report_cached",
@@ -2010,8 +2016,8 @@ def get_or_create_report(
                 return {
                     "favorite_player_id": favorite_id,
                     "status": row["status"],
-                    "content": row["content"],
-                    "content_json": row["content_json"],
+                    "content": normalized_content,
+                    "content_json": normalized_content_json,
                     "language": row["language"],
                     "version": row["version"],
                     "player": payload,  # NEW

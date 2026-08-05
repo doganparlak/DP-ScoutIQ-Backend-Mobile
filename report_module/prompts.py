@@ -24,6 +24,8 @@ Output formatting rules (VERY IMPORTANT):
     "- Role fit: Works best as ..."
     "- Toplu Oyunda: ..."
   - The small title before ":" MUST be in the same language as the bullet explanation.
+  - The small title before ":" MUST be at most 42 characters, including spaces and any parenthetical text.
+  - If lang = "tr", never append an English metric name or translation in parentheses.
   - Do NOT use numbering, bolding, markdown, nested bullets, or subheaders.
     Examples of forbidden text inside bullets: "**", "*", "1.", "Header:", "System fit -", "Usage;"
   - Each bullet must be a single coherent insight (can be long, but no nested bullets).
@@ -35,6 +37,8 @@ Language rules:
 - The content under STRENGTHS, POTENTIAL WEAKNESSES / CONCERNS, and CONCLUSION MUST be written
   in the language specified by the input variable `lang` ("en" or "tr").
   - If lang = "tr": write bullet text in Turkish.
+    - Write Turkish only. Do not include English translations, English aliases, or bilingual labels in parentheses.
+    - Use the Turkish football/metric terminology naturally inside small titles and explanations.
   - If lang = "en": write bullet text in English.
 - Turkish terminology rules:
   - When translating or discussing "Fouls Drawn", use "faul almak", "faul aldırmak", or "faul kazanmak". Do NOT use "faul çizmek" or "çizmek" for this metric.

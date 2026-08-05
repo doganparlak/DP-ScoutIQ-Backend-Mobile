@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import os
+import re
 from typing import Any, Dict, List, Optional, Tuple
 
 from dotenv import load_dotenv
@@ -29,6 +30,82 @@ _report_prompt = ChatPromptTemplate.from_messages(
 )
 
 report_chain = _report_prompt | CHAT_LLM | StrOutputParser()
+
+_NARRATIVE_SECTIONS = {
+    "STRENGTHS",
+    "POTENTIAL WEAKNESSES / CONCERNS",
+    "CONCLUSION",
+}
+_MOBILE_NARRATIVE_TITLE_MAX_LENGTH = 42
+_MOBILE_CONCLUSION_TITLES: Dict[str, Tuple[str, ...]] = {
+    "en": (
+        "Role & System",
+        "Development Focus",
+        "Usage Recommendation",
+        "In Possession",
+        "Out of Possession",
+    ),
+    "tr": (
+        "Rol & Sistem",
+        "Gelişim Odağı",
+        "Kullanım Önerisi",
+        "Toplu Oyunda",
+        "Topsuz Oyunda",
+    ),
+}
+
+
+def _shorten_narrative_title(title: str, lang: str) -> str:
+    title = re.sub(r"\s+", " ", title).strip()
+
+    # Turkish report prose must not contain bilingual title annotations. UI
+    # terminology translation belongs to the clients, not to model prose.
+    if lang == "tr":
+        without_parenthetical = re.sub(r"\s*\([^()]*[A-Za-z][^()]*\)\s*$", "", title).strip()
+        if without_parenthetical:
+            title = without_parenthetical
+    if len(title) <= _MOBILE_NARRATIVE_TITLE_MAX_LENGTH:
+        return title
+
+    shortened = title[:_MOBILE_NARRATIVE_TITLE_MAX_LENGTH].rstrip()
+    if " " in shortened:
+        shortened = shortened.rsplit(" ", 1)[0].rstrip()
+    return shortened.rstrip("-–—,;/") or title[:_MOBILE_NARRATIVE_TITLE_MAX_LENGTH]
+
+
+def normalize_mobile_report_format(report_text: str, lang: str) -> str:
+    """Enforce the title/body contract consumed by the existing mobile app."""
+    if not report_text:
+        return report_text
+
+    active_section: Optional[str] = None
+    conclusion_index = 0
+    output: List[str] = []
+    for line in report_text.splitlines():
+        stripped = line.strip()
+        if stripped in _NARRATIVE_SECTIONS:
+            active_section = stripped
+            if stripped == "CONCLUSION":
+                conclusion_index = 0
+            output.append(line)
+            continue
+        if stripped and not stripped.startswith("-") and stripped.isupper():
+            active_section = None
+
+        if active_section and re.match(r"^\s*-\s+", line):
+            item = re.sub(r"^\s*-\s+", "", line).strip()
+            match = re.match(r"^([^:：]+)[:：]\s*(.+)$", item)
+            if match:
+                conclusion_titles = _MOBILE_CONCLUSION_TITLES.get(lang, ())
+                if active_section == "CONCLUSION" and conclusion_index < len(conclusion_titles):
+                    title = conclusion_titles[conclusion_index]
+                    conclusion_index += 1
+                else:
+                    title = _shorten_narrative_title(match.group(1), lang)
+                output.append(f"- {title}: {match.group(2).strip()}")
+                continue
+        output.append(line)
+    return "\n".join(output)
 
 ROLE_USAGE_CONSTRAINTS: Dict[str, Dict[str, Any]] = {
     "GK": {
@@ -448,6 +525,7 @@ def generate_report_content(
             player_card[score_key] = identity[score_key]
 
     report_text = (report_chain.invoke({"input_text": _build_llm_input(player_card, docs), "lang": lang}) or "").strip()
+    report_text = normalize_mobile_report_format(report_text, lang)
     content_json = {
         "favorite_player_id": favorite_id,
         "language": lang,
