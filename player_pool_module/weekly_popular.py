@@ -119,18 +119,29 @@ def record_player_search(db: Session, player_id: str, world_cup_mode: bool = Fal
     table_name = player_pool_table(False)
     player = db.execute(
         text(f"""
-        SELECT metadata->>'player_name' AS player_name
+        SELECT
+            metadata->>'player_name' AS player_name,
+            NULLIF(metadata->>'player_id', '')::bigint AS metadata_player_id
         FROM {table_name}
         WHERE id = :player_id
         LIMIT 1
         """),
         {"player_id": player_id_int},
     ).mappings().first()
-    player_name = player["player_name"] if player else None
+    if not player or player.get("metadata_player_id") is None:
+        logger.warning(
+            "Skipping weekly popular search hit without metadata.player_id: player_data_id=%s",
+            player_id_int,
+        )
+        return
+
+    player_name = player["player_name"]
+    stable_player_id = int(player["metadata_player_id"])
 
     logger.info(
-        "Recording weekly popular player search hit: player_id=%s player_name=%s",
+        "Recording weekly popular player search hit: player_data_id=%s metadata_player_id=%s player_name=%s",
         player_id_int,
+        stable_player_id,
         player_name or "unknown",
     )
 
@@ -147,7 +158,7 @@ def record_player_search(db: Session, player_id: str, world_cup_mode: bool = Fal
         SET search_count = player_pool_weekly_searches.search_count + 1,
             last_searched_at = NOW()
         """),
-        {"player_id": player_id_int},
+        {"player_id": stable_player_id},
     )
 
 
@@ -182,12 +193,18 @@ def get_weekly_popular_players(db: Session, limit: int = DEFAULT_LIMIT, world_cu
     rows = db.execute(
         text(f"""
         SELECT
-            pd.id,
-            pd.metadata AS content
+            current_pd.id,
+            current_pd.metadata AS content
         FROM player_pool_weekly_searches pws
-        JOIN {table_name} pd ON pd.id = pws.player_id
+        JOIN LATERAL (
+            SELECT pd.id, pd.metadata
+            FROM {table_name} pd
+            WHERE NULLIF(pd.metadata->>'player_id', '')::bigint = pws.player_id
+            ORDER BY pd.id DESC
+            LIMIT 1
+        ) current_pd ON TRUE
         WHERE pws.week_start = DATE_TRUNC('week', NOW())::date
-        ORDER BY pws.search_count DESC, pws.last_searched_at DESC, pd.id DESC
+        ORDER BY pws.search_count DESC, pws.last_searched_at DESC, current_pd.id DESC
         LIMIT :limit
         """),
         {"limit": int(limit or DEFAULT_LIMIT)},
