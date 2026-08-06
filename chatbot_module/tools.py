@@ -421,8 +421,11 @@ def is_same_club(club_a: Optional[str], club_b: Optional[str]) -> bool:
     if a in b or b in a:
         return True
     def _similar_token(left: str, right: str) -> bool:
-        if not left or not right or left[0] != right[0]:
+        if not left or not right:
             return False
+        if left[0] != right[0]:
+            return False
+        # Local import keeps the helper light and avoids changing module-level imports.
         from difflib import SequenceMatcher
         return SequenceMatcher(None, left, right).ratio() >= 0.72
 
@@ -542,6 +545,11 @@ def is_generic_alternative_request(question: Optional[str]) -> bool:
         r"\bother\b",
         r"\bnext player\b",
         r"\bnext\b",
+        r"\bbaska(?:si)?\b",
+        r"\bbaska kim\b",
+        r"\bkim olabilir\b",
+        r"\balternatif\b",
+        r"\bdiger(?:i)?\b",
     ]
     return any(re.search(pattern, text) for pattern in patterns)
 
@@ -671,59 +679,57 @@ def _canonical_role_group(role: Optional[str]) -> Optional[str]:
     if not text:
         return None
     role_group_by_short = {
-        "GK": "goalkeeper",
-        "LWB": "left_wing_back",
-        "LB": "left_back",
-        "LCB": "center_back",
-        "CB": "center_back",
-        "RCB": "center_back",
-        "RB": "right_back",
-        "RWB": "right_wing_back",
-        "LDM": "defensive_midfield",
-        "CDM": "defensive_midfield",
-        "RDM": "defensive_midfield",
-        "LCM": "central_midfield",
-        "CM": "central_midfield",
-        "RCM": "central_midfield",
-        "LAM": "attacking_midfield",
-        "CAM": "attacking_midfield",
-        "RAM": "attacking_midfield",
-        "LM": "left_midfield",
-        "RM": "right_midfield",
-        "LW": "left_wing",
-        "RW": "right_wing",
-        "LCF": "center_forward",
-        "CF": "center_forward",
-        "RCF": "center_forward",
-        "ST": "center_forward",
+        "gk": "goalkeeper",
+        "lwb": "left_wing_back",
+        "lb": "left_back",
+        "lcb": "center_back",
+        "cb": "center_back",
+        "rcb": "center_back",
+        "rb": "right_back",
+        "rwb": "right_wing_back",
+        "ldm": "defensive_midfield",
+        "cdm": "defensive_midfield",
+        "rdm": "defensive_midfield",
+        "lcm": "central_midfield",
+        "cm": "central_midfield",
+        "rcm": "central_midfield",
+        "lam": "attacking_midfield",
+        "cam": "attacking_midfield",
+        "ram": "attacking_midfield",
+        "lm": "left_midfield",
+        "rm": "right_midfield",
+        "lw": "left_wing",
+        "rw": "right_wing",
+        "cf": "center_forward",
+        "lcf": "center_forward",
+        "rcf": "center_forward",
+        "st": "center_forward",
     }
-    role_group_by_key = {
-        normalize_search_text(short): group
-        for short, group in role_group_by_short.items()
-    }
-    role_group_by_key.update({
-        normalize_search_text(long_name): role_group_by_short.get(short)
+    role_group_by_long = {
+        normalize_search_text(long_name): role_group_by_short.get(short.lower())
         for short, long_name in ROLE_SHORT_TO_LONG.items()
-        if role_group_by_short.get(short)
-    })
-    role_group_by_key.update({
+        if role_group_by_short.get(short.lower())
+    }
+    role_group_by_long.update({
+        "goalkeeper": "goalkeeper",
         "goal keeper": "goalkeeper",
         "centre back": "center_back",
+        "central midfield": "central_midfield",
+        "central midfielder": "central_midfield",
         "centre forward": "center_forward",
         "striker": "center_forward",
-        "forward": "center_forward",
         "attacker": "center_forward",
         "left midfielder": "left_midfield",
         "right midfielder": "right_midfield",
-        "central midfielder": "central_midfield",
-        "central midfield": "central_midfield",
-        "centre midfield": "central_midfield",
-        "centre midfielder": "central_midfield",
+        "defensive midfield": "defensive_midfield",
         "defensive midfielder": "defensive_midfield",
+        "attacking midfield": "attacking_midfield",
         "attacking midfielder": "attacking_midfield",
     })
-    if text in role_group_by_key:
-        return role_group_by_key[text]
+    if text in role_group_by_short:
+        return role_group_by_short[text]
+    if text in role_group_by_long:
+        return role_group_by_long[text]
     if "goalkeeper" in text or text == "goal keeper":
         return "goalkeeper"
     if "left wing back" in text:
@@ -810,7 +816,7 @@ def get_requested_position_groups(question: Optional[str]) -> Optional[set[str]]
         ([r"\bcenter back\b", r"\bcentre back\b", r"\bcenter half\b", r"\bcentre half\b", r"\bcb\b"], {"center_back"}),
         ([r"\bright winger\b"], {"right_wing", "right_midfield"}),
         ([r"\bleft winger\b"], {"left_wing", "left_midfield"}),
-        ([r"\bwinger\b", r"\bwing\b"], {"left_wing", "right_wing"}),
+        ([r"\bwinger\b", r"\bwing\b", r"\bkanat\b"], {"left_wing", "left_midfield", "right_midfield", "right_wing"}),
         ([r"\bcenter forward\b", r"\bcentre forward\b", r"\bcenterforward\b", r"\bcentreforward\b", r"\bstriker\b", r"\bforward\b", r"\bsantrafor\b", r"\bst\b", r"\bcf\b"], {"center_forward"}),
         ([r"\bmidfielder\b", r"\bmidfield\b"], {"defensive_midfield", "central_midfield", "attacking_midfield"}),
     ]

@@ -86,10 +86,10 @@ Age and stat requirements:
 
 ROLE_METRIC_POLICY = """
 Allowed metrics:
-Duels Won, Clearances, Chances Created, Accurate Crosses, Clearance Offline, Ball Recovery, Saves Insidebox, Man Of Match, Penalties Committed, Dispossessed, Fouls, Goals Conceded, Shots On Target, Shots On Target (%), Accurate Passes, Penalties Scored, Tackles Won, Aerials Won (%), Through Balls, Offsides Provoked, Penalties Missed, Good High Claim, Big Chances Created, Penalties Won, Dribbled Past, Punches, Yellow Cards, Assists, Blocked Shots, Backward Passes, Hit Woodwork, Shots Total, Shots Blocked, Dribble Attempts, Penalties Saved, Long Balls Won (%), Long Balls Won, Long Balls, Tackles, Aerials, Offsides, Possession Lost, Successful Dribbles, Goalkeeper Goals Conceded, Total Crosses, Total Duels, Error Lead To Goal, Saves, Successful Crosses (%), Big Chances Missed, Own Goals, Key Passes, Yellow & Red Cards, Minutes Played, Accurate Passes (%), Aerials Won, Goals, Touches, Passes, Duels Lost, Last Man Tackle, Shots Off Target, Interceptions, Turn Over, Tackles Won (%), Aerials Lost, Duels Won (%), Red Cards, Captain, Passes In Final Third, Rating, Fouls Drawn, Error Lead To Shot, Through Balls Won.
+Duels Won, Clearances, Chances Created, Accurate Crosses, Clearance Offline, Ball Recovery, Saves Insidebox, Man Of Match, Penalties Committed, Dispossessed, Fouls, Goals Conceded, Shots On Target, Shots On Target (%), Expected Goals, Expected Goals On Target, Shooting Performance, Shot Quality (%), On-Target Shot Quality (%), Goal Conversion (%), On-Target to Goal Conversion (%), Assist Efficiency (%), Dribble Accuracy (%), Accurate Passes, Penalties Scored, Tackles Won, Aerials Won (%), Through Balls, Offsides Provoked, Penalties Missed, Good High Claim, Big Chances Created, Penalties Won, Dribbled Past, Punches, Yellow Cards, Assists, Blocked Shots, Backward Passes, Hit Woodwork, Shots Total, Shots Blocked, Dribble Attempts, Penalties Saved, Long Balls Won (%), Long Balls Won, Long Balls, Tackles, Aerials, Offsides, Possession Lost, Successful Dribbles, Goalkeeper Goals Conceded, Total Crosses, Total Duels, Error Lead To Goal, Saves, Successful Crosses (%), Big Chances Missed, Own Goals, Key Passes, Yellow & Red Cards, Minutes Played, Accurate Passes (%), Aerials Won, Goals, Touches, Passes, Duels Lost, Last Man Tackle, Shots Off Target, Interceptions, Turn Over, Tackles Won (%), Aerials Lost, Duels Won (%), Red Cards, Captain, Passes In Final Third, Rating, Fouls Drawn, Error Lead To Shot, Through Balls Won.
 
 Role-based metric emphasis:
-- Wingers/forwards: Shots Total, Shots On Target, Shots On Target (%), Shots Off Target, Big Chances Created, Big Chances Missed, Goals, Assists, Key Passes, Chances Created, Passes, Passes In Final Third, Accurate Passes, Accurate Passes (%), Total Crosses, Accurate Crosses, Successful Crosses (%), Dribble Attempts, Successful Dribbles, Hit Woodwork.
+- Wingers/forwards: Shots Total, Shots On Target, Shots On Target (%), Expected Goals, Expected Goals On Target, Shooting Performance, Shot Quality (%), On-Target Shot Quality (%), Goal Conversion (%), On-Target to Goal Conversion (%), Assist Efficiency (%), Dribble Accuracy (%), Shots Off Target, Big Chances Created, Big Chances Missed, Goals, Assists, Key Passes, Chances Created, Passes, Passes In Final Third, Accurate Passes, Accurate Passes (%), Total Crosses, Accurate Crosses, Successful Crosses (%), Dribble Attempts, Successful Dribbles, Hit Woodwork.
 - Midfielders: attacking metrics such as Passes, Key Passes, Chances Created, Dribble Attempts, Successful Dribbles, plus defending metrics such as Interceptions, Tackles, Tackles Won, Tackles Won (%), Ball Recovery, Duels Won, Duels Lost, Duels Won (%), Total Duels, Blocked Shots, Shots Blocked, Fouls, Fouls Drawn, Clearances, Possession Lost, Turn Over.
 - Defenders: Tackles, Tackles Won, Tackles Won (%), Goals Conceded, Interceptions, Clearances, Last Man Tackle, Duels Won, Duels Lost, Duels Won (%), Total Duels, Aerials, Aerials Won, Aerials Lost, Aerials Won (%), Blocked Shots, Shots Blocked, Error Lead To Shot, Error Lead To Goal, Dispossessed, Fouls, Offsides Provoked, Dribbled Past.
 - Goalkeepers: Saves, Saves Insidebox, Goalkeeper Goals Conceded, Penalties Saved, Penalties Committed, Penalties Won, Penalties Missed, Punches, Good High Claim, Long Balls, Long Balls Won, Long Balls Won (%), Accurate Passes, Accurate Passes (%), Backward Passes, Passes, Touches, Possession Lost.
@@ -207,6 +207,8 @@ Comparison mode:
 AGENTIC_CONTROLLER_PROMPT = (
     CURRENT_YEAR_POLICY
     + INTENT_AND_MEMORY_POLICY
+    + TRANSFER_AND_ENTITY_POLICY
+    + ROLE_METRIC_POLICY
     + """
 
 CONTROLLER TASK:
@@ -219,11 +221,40 @@ Return strict JSON only, with this schema:
   "comparison_players": ["Name A", "Name B"],
   "carry_recent_constraints": true,
   "mentions_seen_players": ["Name"],
-  "needs_new_player": true
+  "needs_new_player": true,
+  "target_team": null,
+  "source_team": null,
+  "constraints": {
+    "gender": null,
+    "position": null,
+    "age_min": null,
+    "age_max": null,
+    "nationality": null,
+    "excluded_nationalities": [],
+    "league": null,
+    "excluded_leagues": [],
+    "team": null,
+    "excluded_teams": [],
+    "excluded_positions": [],
+    "height_min": null,
+    "height_max": null,
+    "weight_min": null,
+    "weight_max": null,
+    "preferred_stats": [],
+    "stat_requirements": [],
+    "notes": ""
+  }
 }
 
 Rules:
-- Use the current user question, translated English question, recent chat memory, seen player names, and strategy.
+- Use the current user question, translated English question, recent chat memory, seen player names, and strategy together.
+- Extract intent, team roles, and constraints together in this single response.
+- "for/to CLUB" means target_team. "playing at/from/currently with CLUB" means source_team and constraints.team.
+- Never put a target team in source_team or constraints.team.
+- Set constraints.league only when the current translated user question explicitly asks for players from/in a league. Do not infer a positive league from a target club, strategy, club level, or phrases such as "league-ready" and "adaptable to".
+- Do not add hard constraints merely to improve or expand the retrieval query.
+- Keep preferred_stats to at most four allowed metric names, and use stat_requirements only for explicit numeric thresholds.
+- Use null or an empty list for absent constraints.
 - For comparison questions, fill comparison_players with exactly the named players when the question names them.
 - Examples of comparison questions: "Icardi or Osimhen who is better", "compare Icardi and Osimhen", "Icardi vs Osimhen".
 - Do not invent players. Do not answer the user. JSON only.
@@ -308,7 +339,7 @@ Return strict JSON only:
 Selection requirements:
 - Apply every selector policy before choosing.
 - Prefer candidates satisfying the extracted constraints. If constraints were relaxed by the tool layer, choose the best remaining fit and mention the relaxation only in risk_flags.
-- Prefer candidates with stronger role-relevant metrics, correct position, age fit, and high potential/form outlook.
+- Prefer candidates with stronger role-relevant metrics, correct position, age fit, match volume, and rating.
 - Respect target-team exclusion, Turkish exclusion, premium restrictions, squad-level restrictions, seen-player exclusion, explicit age constraints, and stat requirements.
 - If an invalid candidate appears attractive, skip it and choose a valid one.
 - The selected_index is one-based and must match the candidate list.

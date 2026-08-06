@@ -11,6 +11,7 @@ from sqlalchemy.orm import Session
 from sqlalchemy import text
 
 from chatbot_module.chatbot_agentic import answer_question
+from chatbot_module.tools_agentic import ensure_player_position_label_cache
 from report_module.report import generate_report_content, normalize_mobile_report_format
 # import our refactored pieces
 from api_module.utilities import (
@@ -97,6 +98,7 @@ def ensure_favorite_players_columns() -> None:
         db.execute(text("ALTER TABLE users ADD COLUMN IF NOT EXISTS tutorial_completed BOOLEAN NOT NULL DEFAULT FALSE"))
         db.execute(text("ALTER TABLE favorite_players ADD COLUMN IF NOT EXISTS league TEXT"))
         db.execute(text("ALTER TABLE favorite_players ADD COLUMN IF NOT EXISTS form INTEGER CHECK (form BETWEEN 0 AND 100)"))
+        ensure_player_position_label_cache(db)
         db.commit()
     finally:
         db.close()

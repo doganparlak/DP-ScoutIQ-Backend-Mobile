@@ -10,6 +10,7 @@ from typing import Any, Dict, Iterable, List, Optional, Tuple
 from langchain_core.documents import Document
 from langchain_core.retrievers import BaseRetriever
 from sqlalchemy import text
+from sqlalchemy.orm import Session
 
 from api_module.utilities import get_db
 from chatbot_module.tools import (
@@ -24,6 +25,7 @@ from chatbot_module.tools import (
     is_premium_request,
     is_same_club,
     is_turkish,
+    get_requested_position_groups,
     player_matches_requested_position,
     request_allows_non_senior_squads,
     request_allows_turkish_entities,
@@ -45,6 +47,7 @@ from constants_module.constants import (
     POSITION_NEGATION_ALIASES,
     ROLE_SHORT_TO_LONG,
 )
+from player_pool_module.player_pool import role_value_short_sql
 
 
 SQL_FOLD_FROM = "ÁÀÂÃÄÅĀĂĄáàâãäåāăąÉÈÊËĒĖĘĚéèêëēėęěÍÌÎÏĪİıíìîïīÓÒÔÕÖØŌóòôõöøōÚÙÛÜŪúùûüūÇĆČçćčÑñĞğŞŠşšÝŸýÿŽŹŻžźżÐð"
@@ -54,7 +57,126 @@ SQL_FOLD_TO = "AAAAAAAAAaaaaaaaaaEEEEEEEEeeeeeeeeIIIIIIiiiiiiOOOOOOOoooooooUUUUU
 AGENTIC_LOOKUP_DEBUG = os.getenv("AGENTIC_LOOKUP_DEBUG", "1").lower() not in {"0", "false", "no", "off"}
 AGENTIC_LOOKUP_VERBOSE = os.getenv("AGENTIC_LOOKUP_VERBOSE", "0").lower() in {"1", "true", "yes", "on"}
 AGENTIC_QUALITY_DEBUG = os.getenv("AGENTIC_QUALITY_DEBUG", "0").lower() not in {"0", "false", "no", "off"}
-SELECTOR_CANDIDATE_LIMIT = 24
+SELECTOR_CANDIDATE_LIMIT = 10
+
+POSITION_CODES_BY_GROUP = {
+    "goalkeeper": ["GK"],
+    "left_wing_back": ["LWB"],
+    "left_back": ["LB"],
+    "center_back": ["LCB", "CB", "RCB"],
+    "right_back": ["RB"],
+    "right_wing_back": ["RWB"],
+    "defensive_midfield": ["LDM", "CDM", "RDM"],
+    "central_midfield": ["LCM", "CM", "RCM"],
+    "attacking_midfield": ["LAM", "CAM", "RAM"],
+    "left_midfield": ["LM"],
+    "right_midfield": ["RM"],
+    "left_wing": ["LW"],
+    "right_wing": ["RW"],
+    "center_forward": ["LCF", "CF", "RCF"],
+}
+
+
+def ensure_player_position_label_cache(db: Session) -> None:
+    counted_role_sql = role_value_short_sql("counted_position.role_value")
+    fallback_primary_sql = role_value_short_sql("changed.metadata->>'primary_position_code'")
+    fallback_name_sql = role_value_short_sql("changed.metadata->>'position_name'")
+    db.execute(text("""
+        CREATE TABLE IF NOT EXISTS public.mobile_player_position_labels (
+            player_data_id TEXT PRIMARY KEY,
+            source_counts JSONB NOT NULL DEFAULT '{}'::jsonb,
+            position_codes TEXT[] NOT NULL DEFAULT ARRAY[]::TEXT[],
+            updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+        )
+    """))
+    db.execute(text("""
+        CREATE INDEX IF NOT EXISTS idx_mobile_player_position_labels_codes
+        ON public.mobile_player_position_labels
+        USING GIN (position_codes)
+    """))
+    db.execute(text(f"""
+        WITH changed AS (
+            SELECT
+                pd.id::text AS player_data_id,
+                pd.metadata,
+                CASE
+                    WHEN jsonb_typeof(pd.metadata->'position_counts') = 'object'
+                    THEN pd.metadata->'position_counts'
+                    ELSE '{{}}'::jsonb
+                END AS source_counts
+            FROM player_data pd
+            LEFT JOIN mobile_player_position_labels cached
+              ON cached.player_data_id = pd.id::text
+            WHERE cached.player_data_id IS NULL
+               OR cached.source_counts IS DISTINCT FROM CASE
+                    WHEN jsonb_typeof(pd.metadata->'position_counts') = 'object'
+                    THEN pd.metadata->'position_counts'
+                    ELSE '{{}}'::jsonb
+                  END
+        ),
+        role_counts AS (
+            SELECT
+                changed.player_data_id,
+                {counted_role_sql} AS role_code,
+                SUM(
+                    CASE
+                        WHEN counted_position.count_value ~ '^-?[0-9]+([.][0-9]+)?$'
+                        THEN counted_position.count_value::numeric
+                        ELSE 0
+                    END
+                ) AS role_count
+            FROM changed
+            CROSS JOIN LATERAL jsonb_each_text(changed.source_counts)
+                AS counted_position(role_value, count_value)
+            GROUP BY changed.player_data_id, 2
+        ),
+        ranked AS (
+            SELECT
+                player_data_id,
+                role_code,
+                role_count,
+                ROW_NUMBER() OVER (PARTITION BY player_data_id ORDER BY role_count DESC, role_code) AS role_rank,
+                role_count * 100.0 / NULLIF(SUM(role_count) OVER (PARTITION BY player_data_id), 0) AS role_share
+            FROM role_counts
+            WHERE role_code IS NOT NULL AND role_count > 0
+        ),
+        scored AS (
+            SELECT
+                ranked.*,
+                MAX(role_share) FILTER (WHERE role_rank = 1) OVER (PARTITION BY player_data_id) AS primary_share
+            FROM ranked
+        ),
+        labels AS (
+            SELECT
+                player_data_id,
+                ARRAY_AGG(role_code ORDER BY role_rank) FILTER (
+                    WHERE role_rank = 1 OR (role_rank = 2 AND primary_share - role_share <= 10.0)
+                ) AS position_codes
+            FROM scored
+            GROUP BY player_data_id
+        )
+        INSERT INTO mobile_player_position_labels (
+            player_data_id, source_counts, position_codes, updated_at
+        )
+        SELECT
+            changed.player_data_id,
+            changed.source_counts,
+            COALESCE(
+                labels.position_codes,
+                ARRAY_REMOVE(ARRAY[
+                    {fallback_primary_sql},
+                    {fallback_name_sql}
+                ]::TEXT[], NULL),
+                ARRAY[]::TEXT[]
+            ),
+            NOW()
+        FROM changed
+        LEFT JOIN labels USING (player_data_id)
+        ON CONFLICT (player_data_id) DO UPDATE
+        SET source_counts = EXCLUDED.source_counts,
+            position_codes = EXCLUDED.position_codes,
+            updated_at = NOW()
+    """))
 
 
 def _lookup_debug(event: str, payload: Dict[str, Any]) -> None:
@@ -126,11 +248,11 @@ NEGATIVE_METRICS = {
 
 ROLE_METRICS = {
     "attacker": {
-        "Shots Total", "Shots On Target", "Shots On Target (%)", "Shots Off Target",
+        "Shots Total", "Shots On Target", "Shots On Target (%)", "Expected Goals", "Expected Goals On Target", "Shooting Performance", "Shot Quality (%)", "On-Target Shot Quality (%)", "Goal Conversion (%)", "On-Target to Goal Conversion (%)", "Shots Off Target",
         "Big Chances Created", "Goals", "Assists", "Key Passes", "Chances Created",
         "Passes In Final Third", "Accurate Passes", "Accurate Passes (%)",
         "Total Crosses", "Accurate Crosses", "Successful Crosses (%)",
-        "Dribble Attempts", "Successful Dribbles", "Hit Woodwork",
+        "Dribble Attempts", "Successful Dribbles", "Dribble Accuracy (%)", "Hit Woodwork",
     },
     "midfielder": {
         "Passes", "Key Passes", "Chances Created", "Dribble Attempts",
@@ -180,10 +302,10 @@ class AgenticContext:
     premium_only: bool = False
     quality_discovery_mode: bool = False
     allow_all_selection_leagues: bool = False
+    hard_team_constraint: bool = False
     retrieval_debug: List[Dict[str, Any]] = field(default_factory=list)
     constraints: Dict[str, Any] = field(default_factory=dict)
     constraint_relaxation_level: int = 0
-    hard_team_constraint: bool = False
 
 
 class StaticDocsRetriever(BaseRetriever):
@@ -336,6 +458,103 @@ def _mentions_club_as_source_team(question: Optional[str], team_name: Optional[s
     return any(re.search(pattern, text) for pattern in source_patterns)
 
 
+def _looks_like_league_text(value: Optional[Any]) -> bool:
+    key = norm_name(str(value or ""))
+    if not key:
+        return False
+    if canonical_league(key):
+        return True
+    compact = re.sub(r"[^a-z0-9]+", "", key)
+    if key in LEAGUE_BY_KEY or compact in LEAGUE_COMPACT_BY_KEY:
+        return True
+    for league_key in LEAGUE_BY_KEY:
+        if league_key and re.search(rf"\b{re.escape(league_key)}\b", key):
+            return True
+    for league_compact in LEAGUE_COMPACT_BY_KEY:
+        if league_compact and league_compact in compact:
+            return True
+    return False
+
+
+def _looks_like_invalid_source_team_text(value: Optional[Any]) -> bool:
+    key = norm_name(str(value or ""))
+    if not key:
+        return True
+    if _looks_like_league_text(key):
+        return True
+    if re.search(r"\d", key):
+        return True
+    tokens = [token for token in key.split() if token]
+    if len(tokens) > 4:
+        return True
+    invalid_tokens = {
+        "a", "an", "the", "this", "that", "these", "those", "their", "his", "her", "our", "your",
+        "prime", "replacement", "later", "today", "tomorrow", "under", "over", "born", "sold",
+        "signing", "looking", "look", "strong", "best", "such", "players", "player", "footballer",
+        "defender", "midfielder", "forward", "striker", "winger", "goalkeeper", "right", "left",
+        "technical", "technically", "sound", "duels", "wins", "recommend", "suggest", "oner",
+        "öner", "yas", "yaş", "altinda", "altında", "ustunde", "üstünde",
+    }
+    if any(token in invalid_tokens for token in tokens):
+        return True
+    return False
+
+
+def extract_source_team_from_question(question: Optional[str]) -> Optional[str]:
+    text = re.sub(r"\s+", " ", norm_name(question or "")).strip()
+    if not text:
+        return None
+
+    source_cues = (
+        r"(?:oynayan|forma\s+giyen|top\s+oynayan|oyuncu|oyuncusu|futbolcu|futbolcusu|"
+        r"player|footballer|winger|striker|forward|midfielder|defender|goalkeeper)"
+    )
+    suffixes = r"(?:de|da|te|ta|den|dan|ten|tan)"
+
+    for alias_key, canonical in sorted(SOURCE_TEAM_ALIAS_BY_KEY.items(), key=lambda item: len(item[0]), reverse=True):
+        alias = re.escape(norm_name(alias_key))
+        if re.search(rf"\b{alias}\s*{suffixes}\b", text) or re.search(rf"\b{alias}\s+{source_cues}\b", text):
+            return canonical
+
+    suffix_recommendation_pattern = (
+        rf"\b(?P<team>[a-z0-9][a-z0-9 .&'’-]{{2,40}}?)\s*{suffixes}\s+"
+        rf"(?:bir\s+)?(?:[a-z0-9 .&'’-]+\s+)?(?:oner|öner|recommend|suggest|find|show|give)\b"
+    )
+    match = re.search(suffix_recommendation_pattern, text, flags=re.IGNORECASE)
+    if match:
+        team = re.sub(r"\s+", " ", (match.group("team") or "").strip(" .,!?:;\"'"))
+        for prefix in ("bana bir", "bana", "bir", "please", "lutfen", "lütfen"):
+            if team.startswith(prefix + " "):
+                team = team[len(prefix):].strip()
+        if not _looks_like_invalid_source_team_text(team):
+            canonical = canonical_source_team(team)
+            if canonical:
+                return canonical
+
+    generic_patterns = [
+        rf"\b(?P<team>[a-z0-9][a-z0-9 .&'’-]{{2,40}}?)\s*{suffixes}\s+(?:bir\s+)?(?:[a-z0-9 .&'’-]+\s+)?{source_cues}\b",
+        rf"\b(?:from|at|in)\s+(?P<team>[a-z0-9][a-z0-9 .&'’-]{{2,40}}?)(?=$|\s+(?:player|footballer|winger|striker|forward|midfielder|defender|goalkeeper|who|that|with|but|and)\b|[,.!?])",
+    ]
+    stop_prefixes = {
+        "bana", "bana bir", "bir", "oner", "öner", "suggest", "recommend", "find",
+        "show", "give me", "please", "lutfen", "lütfen",
+    }
+    for pattern in generic_patterns:
+        match = re.search(pattern, text, flags=re.IGNORECASE)
+        if not match:
+            continue
+        team = re.sub(r"\s+", " ", (match.group("team") or "").strip(" .,!?:;\"'"))
+        for prefix in sorted(stop_prefixes, key=len, reverse=True):
+            if team.startswith(prefix + " "):
+                team = team[len(prefix):].strip()
+        if _looks_like_invalid_source_team_text(team):
+            continue
+        canonical = canonical_source_team(team)
+        if canonical:
+            return canonical
+    return None
+
+
 def _has_search_constraints(constraints: Dict[str, Any]) -> bool:
     cleaned = clean_constraints(constraints)
     scalar_keys = (
@@ -434,7 +653,7 @@ def _compact_key(value: Optional[Any]) -> str:
 def _strip_constraint_suffixes(token: str) -> str:
     token = norm_name(token)
     suffixes = (
-        "lerinden", "larindan", "lerinden", "lerden",
+        "lerinden", "larindan", "lerinden", "lerinden", "lerinden",
         "lardan", "lerden", "indan", "inden", "undan", "unden",
         "dan", "den", "tan", "ten", "da", "de", "ta", "te",
     )
@@ -545,102 +764,6 @@ def canonical_source_team(value: Optional[Any]) -> Optional[str]:
     )
 
 
-def _looks_like_league_text(value: Optional[Any]) -> bool:
-    key = norm_name(str(value or ""))
-    if not key:
-        return False
-    if canonical_league(key):
-        return True
-    compact = re.sub(r"[^a-z0-9]+", "", key)
-    if key in LEAGUE_BY_KEY or compact in LEAGUE_COMPACT_BY_KEY:
-        return True
-    for league_key in LEAGUE_BY_KEY:
-        if league_key and re.search(rf"\b{re.escape(league_key)}\b", key):
-            return True
-    for league_compact in LEAGUE_COMPACT_BY_KEY:
-        if league_compact and league_compact in compact:
-            return True
-    return False
-
-
-def _looks_like_invalid_source_team_text(value: Optional[Any]) -> bool:
-    key = norm_name(str(value or ""))
-    if not key:
-        return True
-    if _looks_like_league_text(key):
-        return True
-    if re.search(r"\d", key):
-        return True
-    tokens = [token for token in key.split() if token]
-    if len(tokens) > 4:
-        return True
-    invalid_tokens = {
-        "a", "an", "the", "this", "that", "these", "those", "their", "his", "her", "our", "your",
-        "prime", "replacement", "later", "today", "tomorrow", "under", "over", "born", "sold",
-        "signing", "looking", "look", "strong", "best", "such", "players", "player", "footballer",
-        "defender", "midfielder", "forward", "striker", "winger", "goalkeeper", "right", "left",
-        "technical", "technically", "sound", "duels", "wins", "recommend", "suggest", "oner",
-        "öner", "yas", "yaş", "altinda", "altında", "ustunde", "üstünde",
-    }
-    if any(token in invalid_tokens for token in tokens):
-        return True
-    return False
-
-
-def extract_source_team_from_question(question: Optional[str]) -> Optional[str]:
-    text_value = re.sub(r"\s+", " ", norm_name(question or "")).strip()
-    if not text_value:
-        return None
-
-    source_cues = (
-        r"(?:oynayan|forma\s+giyen|top\s+oynayan|oyuncu|oyuncusu|futbolcu|futbolcusu|"
-        r"player|footballer|winger|striker|forward|midfielder|defender|goalkeeper)"
-    )
-    suffixes = r"(?:de|da|te|ta|den|dan|ten|tan)"
-
-    for alias_key, canonical in sorted(SOURCE_TEAM_ALIAS_BY_KEY.items(), key=lambda item: len(item[0]), reverse=True):
-        alias = re.escape(norm_name(alias_key))
-        if re.search(rf"\b{alias}\s*{suffixes}\b", text_value) or re.search(rf"\b{alias}\s+{source_cues}\b", text_value):
-            return canonical
-
-    suffix_recommendation_pattern = (
-        rf"\b(?P<team>[a-z0-9][a-z0-9 .&'’-]{{2,40}}?)\s*{suffixes}\s+"
-        rf"(?:bir\s+)?(?:[a-z0-9 .&'’-]+\s+)?(?:oner|öner|recommend|suggest|find|show|give)\b"
-    )
-    match = re.search(suffix_recommendation_pattern, text_value, flags=re.IGNORECASE)
-    if match:
-        team = re.sub(r"\s+", " ", (match.group("team") or "").strip(" .,!?:;\"'"))
-        for prefix in ("bana bir", "bana", "bir", "please", "lutfen", "lütfen"):
-            if team.startswith(prefix + " "):
-                team = team[len(prefix):].strip()
-        if not _looks_like_invalid_source_team_text(team):
-            canonical = canonical_source_team(team)
-            if canonical:
-                return canonical
-
-    generic_patterns = [
-        rf"\b(?P<team>[a-z0-9][a-z0-9 .&'’-]{{2,40}}?)\s*{suffixes}\s+(?:bir\s+)?(?:[a-z0-9 .&'’-]+\s+)?{source_cues}\b",
-        rf"\b(?:from|at|in)\s+(?P<team>[a-z0-9][a-z0-9 .&'’-]{{2,40}}?)(?=$|\s+(?:player|footballer|winger|striker|forward|midfielder|defender|goalkeeper|who|that|with|but|and)\b|[,.!?])",
-    ]
-    stop_prefixes = {
-        "bana", "bana bir", "bir", "oner", "öner", "suggest", "recommend", "find",
-        "show", "give me", "please", "lutfen", "lütfen",
-    }
-    for pattern in generic_patterns:
-        match = re.search(pattern, text_value, flags=re.IGNORECASE)
-        if not match:
-            continue
-        team = re.sub(r"\s+", " ", (match.group("team") or "").strip(" .,!?:;\"'"))
-        for prefix in sorted(stop_prefixes, key=len, reverse=True):
-            if team.startswith(prefix + " "):
-                team = team[len(prefix):].strip()
-        if _looks_like_invalid_source_team_text(team):
-            continue
-        canonical = canonical_source_team(team)
-        if canonical:
-            return canonical
-    return None
-
 
 def canonical_position(value: Optional[Any]) -> Optional[str]:
     text = str(value or "").strip()
@@ -713,6 +836,7 @@ def infer_position_from_text(*texts: Optional[str]) -> Optional[str]:
 
 NATIONALITY_BY_KEY = {norm_name(name): name for name in CANONICAL_NATIONALITIES}
 NATIONALITY_ALIAS_KEYS = {norm_name(key): value for key, value in NATIONALITY_ALIASES.items()}
+
 
 
 
@@ -803,9 +927,9 @@ def infer_excluded_constraints_from_text(*texts: Optional[str]) -> Dict[str, Lis
 
 STAT_PREFERENCE_PATTERNS: List[Tuple[str, List[str]]] = [
     (r"\b(pass|passing|build.?up|distribution|playmaker|tempo)\b", ["Passes", "Accurate Passes", "Key Passes", "Passes In Final Third"]),
-    (r"\b(creativ|chance|vision|final ball)\b", ["Chances Created", "Big Chances Created", "Key Passes", "Assists"]),
-    (r"\b(shoot|shot|finishing|finish|scor|goal)\b", ["Goals", "Shots On Target", "Shots Total", "Big Chances Created"]),
-    (r"\b(dribbl|carry|take.?on|1v1)\b", ["Successful Dribbles", "Dribble Attempts", "Dispossessed"]),
+    (r"\b(creativ|chance|vision|final ball|assist)\b", ["Chances Created", "Big Chances Created", "Key Passes", "Assists", "Assist Efficiency (%)"]),
+    (r"\b(shoot|shot|finishing|finish|scor|goal|xg|expected)\b", ["Goals", "Expected Goals", "Expected Goals On Target", "Shooting Performance", "Shot Quality (%)", "On-Target Shot Quality (%)", "Goal Conversion (%)", "On-Target to Goal Conversion (%)", "Shots On Target", "Shots Total", "Big Chances Created"]),
+    (r"\b(dribbl|carry|take.?on|1v1)\b", ["Successful Dribbles", "Dribble Attempts", "Dribble Accuracy (%)", "Dispossessed"]),
     (r"\b(cross|crossing|wide delivery)\b", ["Accurate Crosses", "Total Crosses", "Successful Crosses (%)"]),
     (r"\b(defend|tackl|ball.?win|press|intercept)\b", ["Tackles", "Tackles Won", "Interceptions", "Ball Recovery"]),
     (r"\b(aerial|header|duel|physical)\b", ["Aerials Won", "Aerials Won (%)", "Duels Won", "Total Duels"]),
@@ -1233,7 +1357,7 @@ def build_agentic_context(
     if named_lookup_query:
         direct_lookup = True
 
-    target_team = extract_target_team_from_question(translated)
+    target_team = canonical_source_team(planner_data.get("target_team")) or extract_target_team_from_question(translated)
     if target_team and (
         _looks_like_invalid_source_team_text(target_team)
         or bool(infer_position_from_text(target_team))
@@ -1314,17 +1438,14 @@ def build_agentic_context(
         if values:
             cleaned_constraints[key] = _unique_list([*(cleaned_constraints.get(key) or []), *values])
     cleaned_constraints = clean_constraints(cleaned_constraints)
-    explicit_source_team = (
-        extract_source_team_from_question(original_question)
-        or extract_source_team_from_question(translated)
-    )
+    explicit_source_team = canonical_source_team(planner_data.get("source_team")) or extract_source_team_from_question(translated)
     source_team_phrase = bool(
         explicit_source_team
         or (
             target_team
             and (
-                _mentions_club_as_source_team(original_question, target_team)
-                or _mentions_club_as_source_team(translated, target_team)
+            _mentions_club_as_source_team(original_question, target_team)
+            or _mentions_club_as_source_team(translated, target_team)
             )
         )
     )
@@ -1410,7 +1531,6 @@ def filter_candidate_docs(
         team_name = str(md.get("team_name") or md.get("team") or md.get("club") or "").strip()
         nationality = str(md.get("nationality_name") or md.get("nationality") or md.get("country") or "").strip()
         position_name, constraint_position_names = metadata_position_signals(md)
-        position_name = str(position_name or "").strip()
         league_name = _league_from_metadata(md)
         if player_name.lower() in seen_names_norm and ctx.intent in {"new_recommendation", "alternative_recommendation"}:
             rejection_counts["already_seen"] += 1
@@ -1537,7 +1657,6 @@ def fetch_quality_suggestion_docs_from_db(ctx: AgenticContext, *, limit: int = S
         team_name = str(md.get("team_name") or md.get("team") or md.get("club") or "").strip()
         nationality = str(md.get("nationality_name") or md.get("nationality") or md.get("country") or "").strip()
         position_name, constraint_position_names = metadata_position_signals(md)
-        position_name = str(position_name or "").strip()
         league_name = _league_from_metadata(md)
         if not player_name or player_name.lower() in seen_names_norm:
             rejection_counts["missing_name_or_seen"] += 1
@@ -1636,6 +1755,7 @@ def fetch_selection_suggestion_docs_from_db(
     constraints = clean_constraints(ctx.constraints)
     relaxation_level = int(ctx.constraint_relaxation_level or 0)
     where_parts = ["TRUE"]
+    join_parts: List[str] = []
     params: Dict[str, Any] = {"lim": 1200}
     sql_filters_applied: List[str] = []
 
@@ -1712,10 +1832,35 @@ def fetch_selection_suggestion_docs_from_db(
         params[param] = numeric_value
         sql_filters_applied.append(param)
 
+    def add_position_filter() -> None:
+        if relaxation_level >= 6 or not constraints.get("position"):
+            return
+        requested_groups = get_requested_position_groups(
+            f"{constraints.get('position') or ''} {ctx.effective_query or ''}"
+        ) or set()
+        position_codes = sorted({
+            code
+            for group in requested_groups
+            for code in POSITION_CODES_BY_GROUP.get(group, [])
+        })
+        if not position_codes:
+            return
+        params["position_codes"] = position_codes
+        params["lim"] = 300
+        join_parts.append("""
+            JOIN mobile_player_position_labels position_labels
+              ON position_labels.player_data_id = player_data.id::text
+        """)
+        where_parts.append(
+            "position_labels.position_codes && CAST(:position_codes AS text[])"
+        )
+        sql_filters_applied.append("position")
+
     if relaxation_level < 8:
         add_text_filter("gender", "gender", constraints.get("gender"))
     if relaxation_level < 5:
         add_nationality_filter(constraints.get("nationality"))
+    add_position_filter()
     add_text_filter("league_name", "league", constraints.get("league"))
     if relaxation_level < 7 or getattr(ctx, "hard_team_constraint", False):
         add_team_filter(constraints.get("team"))
@@ -1730,11 +1875,13 @@ def fetch_selection_suggestion_docs_from_db(
         add_numeric_max("weight", "weight_max", constraints.get("weight_max"))
 
     where_sql = "\n                AND ".join(where_parts)
+    join_sql = "\n".join(join_parts)
     db = get_db()
     try:
         rows = db.execute(text(f"""
             SELECT id, metadata, content
             FROM player_data
+            {join_sql}
             WHERE
                 {where_sql}
             ORDER BY COALESCE((metadata->>'Rating')::numeric, 0) DESC
@@ -1754,7 +1901,6 @@ def fetch_selection_suggestion_docs_from_db(
         team_name = str(md.get("team_name") or md.get("team") or md.get("club") or "").strip()
         nationality = str(md.get("nationality_name") or md.get("nationality") or md.get("country") or "").strip()
         position_name, constraint_position_names = metadata_position_signals(md)
-        position_name = str(position_name or "").strip()
         league_name = _league_from_metadata(md)
         if not player_name or player_name.lower() in seen_names_norm:
             rejection_counts["missing_name_or_seen"] += 1
@@ -1913,8 +2059,24 @@ def build_filtered_retriever_agentic(
 ) -> Tuple[BaseRetriever, List[Document]]:
     docs: List[Document] = []
     diversify_teams = not bool(clean_constraints(ctx.constraints).get("team"))
+    constraints = clean_constraints(ctx.constraints)
+    relaxation_levels = [0]
+    for level, active in (
+        (1, bool(constraints.get("preferred_stats") or constraints.get("stat_requirements"))),
+        (2, constraints.get("weight_min") is not None or constraints.get("weight_max") is not None),
+        (3, constraints.get("height_min") is not None or constraints.get("height_max") is not None),
+        (4, constraints.get("age_min") is not None or constraints.get("age_max") is not None),
+        (5, bool(constraints.get("nationality"))),
+        (6, bool(constraints.get("position"))),
+        (7, bool(constraints.get("team")) and not ctx.hard_team_constraint),
+        (8, bool(constraints.get("gender"))),
+    ):
+        if active:
+            relaxation_levels.append(level)
+    relaxation_levels = sorted(set(level for level in relaxation_levels if level >= int(ctx.constraint_relaxation_level or 0)))
+    if not relaxation_levels:
+        relaxation_levels = [int(ctx.constraint_relaxation_level or 0)]
     if ctx.discovery_mode and not ctx.direct_player_lookup:
-        original_level = int(ctx.constraint_relaxation_level or 0)
         if ctx.quality_discovery_mode:
             docs = fetch_quality_suggestion_docs_from_db(ctx)
             if not docs:
@@ -1925,7 +2087,7 @@ def build_filtered_retriever_agentic(
                     "returned_count": 0,
                     "top_rejections": [("quality_docs_empty", 1)],
                 })
-                for level in range(original_level, 9):
+                for level in relaxation_levels:
                     ctx.constraint_relaxation_level = level
                     db_docs = fetch_selection_suggestion_docs_from_db(ctx, enforce_allowed_leagues=True)
                     docs = _merge_docs(docs, db_docs)
@@ -1934,7 +2096,7 @@ def build_filtered_retriever_agentic(
                         break
             if not docs:
                 ctx.allow_all_selection_leagues = True
-                for level in range(original_level, 9):
+                for level in relaxation_levels:
                     ctx.constraint_relaxation_level = level
                     db_docs = fetch_selection_suggestion_docs_from_db(ctx, enforce_allowed_leagues=False)
                     docs = _merge_docs(docs, db_docs)
@@ -1947,7 +2109,7 @@ def build_filtered_retriever_agentic(
                 docs = _merge_docs(docs, db_docs)
                 docs = _diverse_doc_cap(docs, limit=SELECTOR_CANDIDATE_LIMIT, diversify_teams=diversify_teams)
         else:
-            for level in range(original_level, 9):
+            for level in relaxation_levels:
                 ctx.constraint_relaxation_level = level
                 db_docs = fetch_selection_suggestion_docs_from_db(ctx, enforce_allowed_leagues=True)
                 docs = _merge_docs(docs, db_docs)
@@ -1956,7 +2118,7 @@ def build_filtered_retriever_agentic(
                     break
             if not docs:
                 ctx.allow_all_selection_leagues = True
-                for level in range(original_level, 9):
+                for level in relaxation_levels:
                     ctx.constraint_relaxation_level = level
                     db_docs = fetch_selection_suggestion_docs_from_db(ctx, enforce_allowed_leagues=False)
                     docs = _merge_docs(docs, db_docs)
@@ -2011,10 +2173,34 @@ def _num(value: Any) -> Optional[float]:
         return None
 
 
+DERIVED_STAT_FORMULAS = {
+    "Shot Quality (%)": ("Expected Goals", "Shots Total"),
+    "On-Target Shot Quality (%)": ("Expected Goals On Target", "Shots On Target"),
+    "Goal Conversion (%)": ("Goals", "Shots Total"),
+    "On-Target to Goal Conversion (%)": ("Goals", "Shots On Target"),
+    "Assist Efficiency (%)": ("Assists", "Key Passes"),
+    "Dribble Accuracy (%)": ("Successful Dribbles", "Dribble Attempts"),
+}
+
+
+def _derived_stat_value(metric: str, metadata: Dict[str, Any]) -> Optional[float]:
+    formula = DERIVED_STAT_FORMULAS.get(metric)
+    if not formula:
+        return None
+    numerator_key, denominator_key = formula
+    numerator = _num((metadata or {}).get(numerator_key))
+    denominator = _num((metadata or {}).get(denominator_key))
+    if numerator is None or denominator is None or abs(denominator) <= 1e-9:
+        return None
+    return round((numerator / denominator) * 100.0, 2)
+
+
 def extract_allowed_stats_from_metadata(metadata: Dict[str, Any]) -> List[Dict[str, Any]]:
     stats = []
     for metric in ALLOWED_METRICS:
         value = _num((metadata or {}).get(metric))
+        if value is None:
+            value = _derived_stat_value(metric, metadata or {})
         if value is None:
             continue
         if abs(value) <= 0.05:
@@ -2027,6 +2213,7 @@ def doc_to_candidate(doc: Document, index: int) -> Dict[str, Any]:
     md = doc.metadata or {}
     stats = extract_allowed_stats_from_metadata(md)
     age = _num(md.get("age"))
+    position_counts = md.get("position_counts")
     position, constraint_position_names = metadata_position_signals(md)
     return {
         "index": index,
@@ -2041,7 +2228,7 @@ def doc_to_candidate(doc: Document, index: int) -> Dict[str, Any]:
         "league_name": md.get("league_name") or md.get("league"),
         "position_name": position,
         "constraint_position_names": constraint_position_names,
-        "position_counts": md.get("position_counts"),
+        "position_counts": position_counts,
         "position_count_total": md.get("position_count_total"),
         "position_names_seen": md.get("position_names_seen"),
         "primary_position_code": md.get("primary_position_code"),
@@ -2554,7 +2741,9 @@ def validate_candidate(candidate: Dict[str, Any], ctx: AgenticContext) -> Option
     pos_ok, _, _ = player_matches_requested_position(
         ctx.effective_query,
         candidate.get("position_name"),
-        candidate.get("constraint_position_names") or ([candidate.get("position_name")] if candidate.get("position_name") else []),
+        candidate.get("constraint_position_names") or (
+            [candidate.get("position_name")] if candidate.get("position_name") else []
+        ),
     )
     if not pos_ok and not ctx.direct_player_lookup:
         return "position mismatch"

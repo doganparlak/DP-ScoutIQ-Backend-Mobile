@@ -4,8 +4,12 @@ load_dotenv()
 import os
 from langchain_openai import ChatOpenAI
 from langchain_core.prompts import ChatPromptTemplate
-from langchain_classic.memory import ConversationBufferMemory
-from langchain_classic.chains import ConversationalRetrievalChain
+try:
+    from langchain_classic.memory import ConversationBufferMemory
+    from langchain_classic.chains import ConversationalRetrievalChain
+except ModuleNotFoundError:
+    ConversationBufferMemory = None
+    ConversationalRetrievalChain = None
 from langchain_core.documents import Document
 from langchain_core.messages import AIMessage, HumanMessage
 from langchain_core.output_parsers import StrOutputParser
@@ -72,17 +76,20 @@ OPENAI_CHAT_MODEL = os.getenv("OPENAI_CHAT_MODEL", "gpt-5-mini")
 
 CHAT_LLM = ChatOpenAI(
     model=OPENAI_CHAT_MODEL,
-    temperature=0.3,
+    api_key=os.environ["OPENAI_API_KEY"],
+    reasoning_effort="low",
 )
 
 PARSER_LLM = ChatOpenAI(
     model=OPENAI_CHAT_MODEL,
-    temperature=0,   # keep it deterministic for JSON-style parsing
+    api_key=os.environ["OPENAI_API_KEY"],
+    reasoning_effort="low",
 )
 
 TRANSLATE_LLM = ChatOpenAI(
     model=OPENAI_CHAT_MODEL,
-    temperature=0,
+    api_key=os.environ["OPENAI_API_KEY"],
+    reasoning_effort="low",
 )
 
 SHARED_RETRIEVER = get_retriever(k=12, filter=None)
@@ -312,7 +319,7 @@ def get_session_state(session_id: str) -> tuple[str, list]:
 def translate_to_english_if_needed(text: Optional[str], lang: str) -> str:
     """If text is Turkish, translate to English; if already English, return unchanged.
 
-    Uses the shared OpenAI translation model when the session language is Turkish.
+    Always logs before/after and prints an approximate DeepSeek cost.
     """
     original = text or ""
     if not is_turkish(lang):  # <--- prevent translation unless TR
