@@ -31,7 +31,7 @@ METADATA_SKIP = {
 
 OPENAI_API_KEY = os.getenv("OPENAI_API_KEY", "")
 OPENAI_API_BASE = os.getenv("OPENAI_API_BASE", "https://api.openai.com/v1").rstrip("/")
-OPENAI_CHAT_MODEL = os.getenv("OPENAI_CHAT_MODEL", "gpt-5-mini")
+OPENAI_CHAT_MODEL = os.getenv("OPENAI_CHAT_MODEL", "gpt-5.6-luna")
 QUIZ_LLM_TIMEOUT_SECONDS = float(os.getenv("DAILY_SCOUT_LLM_TIMEOUT_SECONDS", "20"))
 
 

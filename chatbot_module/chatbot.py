@@ -72,7 +72,7 @@ from chatbot_module.vectorstore_small import get_retriever
 
 
 
-OPENAI_CHAT_MODEL = os.getenv("OPENAI_CHAT_MODEL", "gpt-5-mini")
+OPENAI_CHAT_MODEL = os.getenv("OPENAI_CHAT_MODEL", "gpt-5.6-luna")
 
 CHAT_LLM = ChatOpenAI(
     model=OPENAI_CHAT_MODEL,

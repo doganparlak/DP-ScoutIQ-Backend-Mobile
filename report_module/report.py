@@ -17,7 +17,7 @@ from report_module.utilities import _first_non_empty, _normalize_roles, _score_c
 load_dotenv()
 
 CHAT_LLM = ChatOpenAI(
-    model=os.getenv("OPENAI_CHAT_MODEL", "gpt-5-mini"),
+    model=os.getenv("OPENAI_REPORT_MODEL", "gpt-5.6-luna"),
     api_key=os.environ["OPENAI_API_KEY"],
     temperature=0.3,
 )
