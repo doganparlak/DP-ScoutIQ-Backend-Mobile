@@ -1,4 +1,4 @@
-player_pool_shared_scoring_guidance = """
+player_pool_age_scoring_guidance = """
 Component guidance (aim for wider spread; avoid clustering):
 - AgeUpsideScore (30-100; minor contextual upside input; strong upside through age 27, explicit ranges through 35): choose a value from this table (do NOT interpolate):
   16: 99-100
@@ -23,7 +23,9 @@ Component guidance (aim for wider spread; avoid clustering):
   35: 34-36
   36+: 34-38
   Pick within the range based on athletic indicators and performance evidence in the provided info.
+"""
 
+player_pool_potential_metrics_guidance = """
 - MetricsUpsideScore (0 or 30-100): if the player has no available performance metrics, set MetricsUpsideScore to exactly 0. Otherwise, score using detailed tiers based on how many role-relevant metrics are clearly strong vs weak:
   46-50 = minimal valid evidence, very weak role-relevant profile
   51-55 = weak profile with few meaningful positives
@@ -39,6 +41,30 @@ Component guidance (aim for wider spread; avoid clustering):
   Use trend/consistency cues, league_name, and team_name if available, but never mention sample size.
 """
 
+player_pool_form_metrics_guidance = """
+- MetricsUpsideScore (0 or 30-100): if the player has no available performance metrics, set MetricsUpsideScore to exactly 0. Otherwise, score using these detailed tiers based on how many role-relevant metrics are clearly strong vs weak:
+  42-46 = minimal valid evidence, very weak role-relevant profile
+  46-50 = weak profile with few meaningful positives
+  51-55 = thin or mostly neutral profile, but still valid football evidence
+  60-64 = limited positives with several weak or missing role-relevant signals
+  65-69 = some positives, but not yet a clearly convincing profile
+  70-74 = decent role-relevant evidence with more positives than negatives
+  75-79 = okay profile with clear positive signs
+  80-84 = clearly positive profile with reliable role-relevant strengths
+  85-89 = strong profile with several useful role-relevant metrics
+  90-94 = very strong profile with broad and credible metric support
+  95-99 = exceptional, dominant role-relevant profile with elite and comprehensive metric support
+  Never score MetricsUpsideScore below 30 when at least one valid role-relevant performance metric is available.
+  Use trend/consistency cues, league_name, and team_name if available, but never mention sample size.
+"""
+
+player_pool_potential_scoring_guidance = (
+    player_pool_age_scoring_guidance + player_pool_potential_metrics_guidance
+)
+player_pool_form_scoring_guidance = (
+    player_pool_age_scoring_guidance + player_pool_form_metrics_guidance
+)
+
 
 player_pool_potential_system_prompt = f"""
 You are a football scouting evaluator computing a single player's Potential from the provided player metadata.
@@ -48,14 +74,14 @@ Potential Computation Policy:
 - Assign two internal upside scores:
   - AgeUpsideScore from 30 to 100
   - MetricsUpsideScore as 0 when no performance metrics are available, otherwise from 30 to 100
-- Compute Potential as: clamp(round((0.75 * AgeUpsideScore) + (0.25 * MetricsUpsideScore)), 30, 100).
+- Compute Potential as: clamp(round((0.70 * AgeUpsideScore) + (0.30 * MetricsUpsideScore)), 30, 100).
 - The final Potential MUST equal this weighted average after rounding and clamping.
 - Do not include any separate RoleFit component. Use position/role only to decide which metrics are relevant.
 - Use league_name and team_name as contextual evidence for the level and credibility of the player's metrics.
   They are not separate scoring components, but they may influence where you pick within AgeUpsideScore and MetricsUpsideScore ranges.
   Strong metrics from a stronger league/team context should be treated more generously; weaker or unknown context should not collapse the score.
 
-{player_pool_shared_scoring_guidance}
+{player_pool_potential_scoring_guidance}
 
 Final scoring consistency rules:
 - Since there is no cross-player session memory here, do not force artificial uniqueness across players.
@@ -101,7 +127,7 @@ Rules:
 - Sanity check before answering:
   - explicitly verify that AgeUpsideScore is between 30 and 100
   - explicitly verify that MetricsUpsideScore is exactly 0 when no performance metrics are available, otherwise between 30 and 100
-  - explicitly verify that final Potential equals round((0.75 * AgeUpsideScore) + (0.25 * MetricsUpsideScore)) after clamping to the 30-100 range
+  - explicitly verify that final Potential equals round((0.70 * AgeUpsideScore) + (0.30 * MetricsUpsideScore)) after clamping to the 30-100 range
   - if your first answer does not match the weighted average formula, discard it and return the corrected weighted average integer
   - if the player has a valid age and multiple real performance metrics, the answer must not be 0
   - if the first pass gives any value below 30, recompute using the formula carefully and return the corrected integer of at least 30
@@ -131,7 +157,7 @@ Form Computation Policy:
   They are not separate scoring components, but they may influence where you pick within AgeUpsideScore and MetricsUpsideScore ranges.
   Strong metrics from a stronger league/team context should be treated more generously; weaker or unknown context should not collapse the score.
 
-{player_pool_shared_scoring_guidance}
+{player_pool_form_scoring_guidance}
 
 Final scoring consistency rules:
 - Since there is no cross-player session memory here, do not force artificial uniqueness across players.

@@ -19,7 +19,7 @@ from potential_form_module.tools import (
 
 
 CHAT_LLM = ChatOpenAI(
-    model=os.getenv("OPENAI_POTENTIAL_FORM_MODEL", "gpt-5-mini"),
+    model=os.getenv("OPENAI_POTENTIAL_FORM_MODEL", "gpt-5.6-luna"),
     api_key=os.environ["OPENAI_API_KEY"],
     temperature=0,
 )
