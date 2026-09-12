@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from decimal import Decimal, InvalidOperation
 from typing import Any, Dict, List
 
 from sqlalchemy import text
@@ -21,11 +22,24 @@ from player_pool_module.utilities import (
 )
 
 
+def _sportmonks_id(value: Any) -> int | None:
+    try:
+        number = Decimal(str(value))
+        if not number.is_finite() or number <= 0 or number != number.to_integral_value():
+            return None
+        return int(number)
+    except (InvalidOperation, ValueError, TypeError):
+        return None
+
+
 def search_players(db: Session, filters: Dict[str, Any]) -> List[Dict[str, Any]]:
     world_cup_mode = bool(filters.get("worldCupMode"))
     table_name = player_pool_table(world_cup_mode)
     name = clean_str(filters.get("name"))
     gender = clean_str(filters.get("gender"))
+    contract_status = None if world_cup_mode else clean_str(filters.get("contractStatus"))
+    loan_end_date = None if world_cup_mode else clean_str(filters.get("loanEndDate"))
+    contract_end_date = None if world_cup_mode else clean_str(filters.get("contractEndDate"))
     nationality = None if world_cup_mode else clean_str(filters.get("nationality"))
     league = None if world_cup_mode else clean_str(filters.get("league"))
     team = clean_str(filters.get("team"))
@@ -108,6 +122,31 @@ def search_players(db: Session, filters: Dict[str, Any]) -> List[Dict[str, Any]]
           AND {numeric_filter_sql("height", "max_height", "<=")}
           AND {numeric_filter_sql("weight", "min_weight", ">=")}
           AND {numeric_filter_sql("weight", "max_weight", "<=")}
+          AND (
+                :contract_status IS NULL
+                OR (
+                    :contract_status = 'loan'
+                    AND LOWER(COALESCE(metadata->>'is_on_loan', '')) IN ('true', '1', 'yes')
+                )
+                OR (
+                    :contract_status = 'permanent'
+                    AND LOWER(COALESCE(metadata->>'is_on_loan', '')) IN ('false', '0', 'no')
+                )
+              )
+          AND (
+                :loan_end_date IS NULL
+                OR (
+                    COALESCE(metadata->>'loan_end_date', '') ~ '^[0-9]{{4}}-[0-9]{{2}}-[0-9]{{2}}'
+                    AND SUBSTRING(metadata->>'loan_end_date' FROM 1 FOR 10)::date <= CAST(:loan_end_date AS date)
+                )
+              )
+          AND (
+                :contract_end_date IS NULL
+                OR (
+                    COALESCE(metadata->>'contract_end_date', '') ~ '^[0-9]{{4}}-[0-9]{{2}}-[0-9]{{2}}'
+                    AND SUBSTRING(metadata->>'contract_end_date' FROM 1 FOR 10)::date <= CAST(:contract_end_date AS date)
+                )
+              )
         ORDER BY
             CASE
                 WHEN :position_short IS NOT NULL THEN COALESCE((
@@ -142,6 +181,9 @@ def search_players(db: Session, filters: Dict[str, Any]) -> List[Dict[str, Any]]
             "name_norm_q": f"%{name_norm}%" if name_norm else None,
             "name_folded_q": f"%{name_norm}%" if name_norm else None,
             "gender": gender,
+            "contract_status": contract_status,
+            "loan_end_date": loan_end_date,
+            "contract_end_date": contract_end_date,
             "nationality": nationality,
             "nationality_folded_q": f"%{nationality_norm}%" if nationality_norm else None,
             "league": league,
@@ -164,7 +206,35 @@ def search_players(db: Session, filters: Dict[str, Any]) -> List[Dict[str, Any]]
         },
     ).mappings().all()
 
-    return [{"id": row["id"], "content": row["content"] or {}} for row in rows]
+    provider_ids = {
+        provider_id
+        for row in rows
+        if (provider_id := _sportmonks_id((row["content"] or {}).get("player_id"))) is not None
+    }
+    image_rows = db.execute(
+        text("""
+            SELECT player_id, image_url
+            FROM enterprise_player_images
+            WHERE player_id = ANY(:provider_ids)
+              AND image_status = 'available'
+        """),
+        {"provider_ids": list(provider_ids)},
+    ).mappings().all() if provider_ids else []
+    images = {
+        int(row["player_id"]): str(row["image_url"]).strip()
+        for row in image_rows
+        if row.get("image_url")
+    }
+
+    results = []
+    for row in rows:
+        content = dict(row["content"] or {})
+        provider_id = _sportmonks_id(content.get("player_id"))
+        image_url = images.get(provider_id, "")
+        if image_url:
+            content["image_url"] = image_url
+        results.append({"id": row["id"], "content": content})
+    return results
 
 
 def get_player_pool_filter_options(db: Session, world_cup_mode: bool = False) -> Dict[str, List[str]]:

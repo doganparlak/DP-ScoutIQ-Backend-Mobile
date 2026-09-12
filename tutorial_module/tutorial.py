@@ -70,6 +70,7 @@ def _content_to_player(content: Dict[str, Any]) -> Dict[str, Any]:
     return {
         "name": name,
         "meta": {
+            "imageUrl": content.get("image_url") or content.get("imageUrl"),
             "gender": content.get("gender") or "Male",
             "age": content.get("age") or 27,
             "nationality": content.get("nationality") or content.get("nationality_name") or "Sweden",

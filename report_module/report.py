@@ -11,6 +11,7 @@ from langchain_openai import ChatOpenAI
 from sqlalchemy import text
 
 from constants_module.constants import ROLE_LONG_TO_SHORT, ROLE_SHORT_TO_LONG
+from report_module.phases import with_phase_distributions
 from report_module.prompts import report_system_prompt
 from report_module.utilities import _first_non_empty, _normalize_roles, _score_candidate, norm_name
 
@@ -341,6 +342,12 @@ def fetch_docs_for_favorite(
     player_identity: Dict[str, Any],
     limit_docs: int = 30,
 ) -> List[Dict[str, Any]]:
+    from report_module.identity import report_sportmonks_id, fetch_report_player
+    provider_id = report_sportmonks_id(player_identity)
+    if provider_id is not None:
+        row = fetch_report_player(db, provider_id)
+        return [{"id": row["id"], "content": row.get("content"), "metadata": row.get("metadata")}]
+
     club_player_id = player_identity.get("club_player_id") or player_identity.get("clubPlayerId")
     if club_player_id is not None:
         row = db.execute(
@@ -535,4 +542,4 @@ def generate_report_content(
         "metrics_docs": docs,
         "report_text": report_text,
     }
-    return {"content": report_text, "content_json": content_json}
+    return {"content": report_text, "content_json": with_phase_distributions(content_json)}

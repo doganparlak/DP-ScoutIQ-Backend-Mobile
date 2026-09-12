@@ -5,6 +5,9 @@ from api_module.utilities import PlanLiteral
 from datetime import datetime
 
 class ScoutingReportIn(BaseModel):
+    sportmonksId: Optional[int] = Field(default=None, gt=0)
+    sportmonksPlayerId: Optional[int] = Field(default=None, gt=0)
+    sportmonks_player_id: Optional[int] = Field(default=None, gt=0)
     playerId: Optional[str] = None
     clubPlayerId: Optional[int] = None
     club_player_id: Optional[int] = None
@@ -33,6 +36,7 @@ class ScoutingReportOut(BaseModel):
 
 # ---- Favorite Players I/O ----
 class FavoritePlayerIn(BaseModel):
+    sportmonksId: Optional[int] = Field(default=None, gt=0)
     playerId: Optional[str] = None
     name: str
     nationality: Optional[str] = None
@@ -50,7 +54,14 @@ class FavoritePlayerIn(BaseModel):
     roles: List[str] = Field(default_factory=list)
 
 class FavoritePlayerOut(BaseModel):
+    sportmonksId: Optional[int] = Field(default=None, gt=0)
     id: str
+    playerId: Optional[str] = None
+    imageUrl: Optional[str] = None
+    isOnLoan: Optional[bool] = None
+    contractTeamName: Optional[str] = None
+    loanEndDate: Optional[str] = None
+    contractEndDate: Optional[str] = None
     name: str
     nationality: Optional[str] = None
     age: Optional[int] = None
@@ -156,6 +167,9 @@ class Query(BaseModel):
 
 
 class PlayerPoolSearchIn(BaseModel):
+    contractStatus: Optional[Literal["loan", "permanent"]] = None
+    loanEndDate: Optional[str] = Field(default=None, pattern=r"^\d{4}-\d{2}-\d{2}$")
+    contractEndDate: Optional[str] = Field(default=None, pattern=r"^\d{4}-\d{2}-\d{2}$")
     name: Optional[str] = None
     gender: Optional[Literal["male", "female"]] = None
     nationality: Optional[str] = None
@@ -207,6 +221,8 @@ class PlayerPoolFormOut(BaseModel):
 
 
 class MatchupComparisonIn(BaseModel):
+    player1SportmonksId: Optional[int] = Field(default=None, gt=0)
+    player2SportmonksId: Optional[int] = Field(default=None, gt=0)
     player1Id: str
     player2Id: str
     worldCupMode: Optional[bool] = False

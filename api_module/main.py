@@ -1,3 +1,4 @@
+from report_module.phases import with_phase_distributions
 # api_module/main.py
 from typing import Optional, Dict, Any, List
 import time
@@ -5,7 +6,9 @@ from fastapi import FastAPI, HTTPException, Depends, Header, status, Response, B
 from fastapi.middleware.cors import CORSMiddleware
 from dotenv import load_dotenv
 
-load_dotenv() 
+load_dotenv()
+from api_module.favorite_identity import resolve_favorite_player, sportmonks_id
+from report_module.identity import report_sportmonks_id, fetch_report_player, owned_report_identity
 
 from sqlalchemy.orm import Session
 from sqlalchemy import text
@@ -78,6 +81,21 @@ ANDROID_NO_ADS_MONTHLY_PRODUCT_ID = os.getenv("ANDROID_NO_ADS_MONTHLY_PRODUCT_ID
 
 
 app = FastAPI()
+
+from league_pool_module.router import router as league_pool_router
+app.include_router(league_pool_router)
+from player_comp_season_module.router import router as season_data_router
+app.include_router(season_data_router)
+from team_pool_module.router import router as team_pool_router
+app.include_router(team_pool_router)
+from match_pool_module.router import router as match_pool_router
+app.include_router(match_pool_router)
+from team_analysis_module.router import router as team_analysis_router
+app.include_router(team_analysis_router)
+from api_module.profile_summary import router as profile_summary_router
+app.include_router(profile_summary_router)
+from matchup_module.router import router as matchup_sources_router
+app.include_router(matchup_sources_router)
 
 # CORS
 origins_env = os.environ.get("CORS_ORIGINS")
@@ -558,6 +576,58 @@ def _chat_session_label(session_id: str) -> str:
     return f"{session_id[:6]}...{session_id[-4:]}"
 
 
+def _attach_chat_player_images(db: Session, payload: Dict[str, Any]) -> Dict[str, Any]:
+    players = payload.get("players") if isinstance(payload, dict) else None
+    if not isinstance(players, list):
+        return payload
+    for player in players:
+        if not isinstance(player, dict):
+            continue
+        meta = player.setdefault("meta", {})
+        if not isinstance(meta, dict):
+            continue
+        pool_id = str(player.get("id") or "").strip()
+        provider_id = sportmonks_id(meta.get("sportmonksId") or meta.get("player_id"))
+        name = str(player.get("name") or "").strip()
+        team = str(meta.get("team") or meta.get("team_name") or "").strip()
+        row = db.execute(
+            text("""
+                SELECT
+                    CASE
+                        WHEN COALESCE(pd.metadata->>'player_id', '') ~ '^[0-9]+([.]0+)?$'
+                        THEN trunc((pd.metadata->>'player_id')::numeric)::bigint
+                        ELSE NULL
+                    END AS sportmonks_id,
+                    epi.image_url
+                FROM player_data pd
+                LEFT JOIN enterprise_player_images epi
+                  ON epi.player_id = CASE
+                      WHEN COALESCE(pd.metadata->>'player_id', '') ~ '^[0-9]+([.]0+)?$'
+                      THEN trunc((pd.metadata->>'player_id')::numeric)::bigint
+                      ELSE NULL
+                  END
+                 AND epi.image_status = 'available'
+                WHERE (:pool_id <> '' AND pd.id::text = :pool_id)
+                   OR (:provider_id IS NOT NULL AND
+                       COALESCE(pd.metadata->>'player_id', '') ~ '^[0-9]+([.]0+)?$' AND
+                       trunc((pd.metadata->>'player_id')::numeric) = :provider_id)
+                   OR (:name <> '' AND
+                       lower(trim(COALESCE(pd.metadata->>'player_name', pd.metadata->>'name', ''))) = lower(:name)
+                       AND (:team = '' OR lower(trim(COALESCE(pd.metadata->>'team_name', pd.metadata->>'team', ''))) = lower(:team)))
+                ORDER BY CASE WHEN pd.id::text = :pool_id THEN 0 ELSE 1 END, pd.id DESC
+                LIMIT 1
+            """),
+            {"pool_id": pool_id, "provider_id": provider_id, "name": name, "team": team},
+        ).mappings().first()
+        if row:
+            resolved_provider_id = sportmonks_id(row.get("sportmonks_id"))
+            if resolved_provider_id is not None:
+                meta["sportmonksId"] = resolved_provider_id
+            if row.get("image_url") and not (meta.get("imageUrl") or meta.get("image_url")):
+                meta["imageUrl"] = str(row["image_url"]).strip()
+    return payload
+
+
 @app.post("/chat")
 async def chat(body: ChatIn,
                user_id: int = Depends(require_auth),
@@ -665,6 +735,8 @@ async def chat(body: ChatIn,
     elapsed_answer_ms = int((time.perf_counter() - started_at) * 1000)
     answer_text = (result.get("answer") or "").strip()
     payload = result.get("data") or {"players": []}
+    if isinstance(payload, dict):
+        payload = _attach_chat_player_images(db, payload)
     players = payload.get("players") if isinstance(payload, dict) else []
     player_count = len(players) if isinstance(players, list) else 0
     print(
@@ -788,9 +860,9 @@ def player_pool_matchup_comparison(
 ):
     try:
         world_cup_mode = bool(payload.worldCupMode)
-        result = get_matchup_comparison(db, payload.player1Id, payload.player2Id, world_cup_mode)
-        player1 = get_player_snapshot(db, payload.player1Id, world_cup_mode)
-        player2 = get_player_snapshot(db, payload.player2Id, world_cup_mode)
+        result = get_matchup_comparison(db, payload.player1Id, payload.player2Id, world_cup_mode, payload.player1SportmonksId, payload.player2SportmonksId)
+        player1 = get_player_snapshot(db, str(result["player1"]["id"]), world_cup_mode)
+        player2 = get_player_snapshot(db, str(result["player2"]["id"]), world_cup_mode)
         record_analytics_event(
             user_id=user_id,
             event_type="matchup_comparison",
@@ -928,21 +1000,38 @@ def daily_scout_challenge_leaderboard(
 def list_favorites(user_id: int = Depends(require_auth), db: Session = Depends(get_db)):
     rows = db.execute(
         text("""
-        SELECT id,
-               name,
-               nationality,
-               age,
-               potential,
-               form,
-               gender,
-               height,
-               weight,
-               team,
-               league,
-               roles_json
-        FROM favorite_players
-        WHERE user_id = :uid
-        ORDER BY created_at DESC
+        WITH saved AS (
+            SELECT * FROM favorite_players WHERE user_id = :uid
+        ), matched_rows AS (
+            SELECT f.id AS favorite_id, p.id, p.metadata
+            FROM saved f
+            JOIN player_data p
+              ON CASE WHEN p.metadata->>'player_id' ~ '^[0-9]+([.]0+)?$'
+                      THEN trunc((p.metadata->>'player_id')::numeric)::text END = f.player_id
+            WHERE f.player_id IS NOT NULL
+            UNION ALL
+            SELECT f.id AS favorite_id, p.id, p.metadata
+            FROM saved f
+            JOIN player_data p
+              ON lower(trim(COALESCE(p.metadata->>'player_name', p.metadata->>'name', ''))) = lower(trim(f.name))
+             AND (NULLIF(trim(f.nationality), '') IS NULL OR lower(trim(COALESCE(p.metadata->>'nationality_name', p.metadata->>'nationality', ''))) = lower(trim(f.nationality)))
+             AND (NULLIF(trim(f.gender), '') IS NULL OR lower(trim(COALESCE(p.metadata->>'gender', ''))) = lower(trim(f.gender)))
+            WHERE f.player_id IS NULL
+        ), matches AS (
+            SELECT *, count(*) OVER (PARTITION BY favorite_id) AS match_count
+            FROM matched_rows
+        )
+        SELECT f.*, p.id::text AS source_player_id, p.metadata AS player_metadata, epi.image_url
+        FROM saved f
+        LEFT JOIN matches p ON p.favorite_id = f.id AND p.match_count = 1
+        LEFT JOIN enterprise_player_images epi
+          ON epi.player_id = CASE
+              WHEN COALESCE(f.player_id, p.metadata->>'player_id', '') ~ '^[0-9]+([.]0+)?$'
+              THEN trunc(COALESCE(f.player_id, p.metadata->>'player_id')::numeric)::bigint
+              ELSE NULL
+          END
+         AND epi.image_status = 'available'
+        ORDER BY f.created_at DESC
         """),
         {"uid": user_id}
     ).mappings().all()
@@ -965,8 +1054,21 @@ def list_favorites(user_id: int = Depends(require_auth), db: Session = Depends(g
             except Exception:
                 roles = []
 
+        # Saved IDs belong to favorite_players, not player_data. Only expose a
+        # pool ID and live contract details when the identity match is unique.
+        metadata = r["player_metadata"] or {}
+        resolved_provider_id = sportmonks_id(r["player_id"]) or sportmonks_id(metadata.get("player_id"))
+        loan_status = str(metadata.get("is_on_loan", "")).strip().lower()
+        is_on_loan = True if loan_status in ("true", "1", "yes") else False if loan_status in ("false", "0", "no") else None
         out.append(FavoritePlayerOut(
             id=r["id"],
+            playerId=r["source_player_id"],
+            imageUrl=str(r["image_url"]).strip() if r.get("image_url") else None,
+            sportmonksId=resolved_provider_id,
+            isOnLoan=is_on_loan,
+            contractTeamName=metadata.get("contract_team_name"),
+            loanEndDate=metadata.get("loan_end_date"),
+            contractEndDate=metadata.get("contract_end_date"),
             name=r["name"],
             nationality=r["nationality"],
             age=r["age"],
@@ -1003,61 +1105,23 @@ def add_favorite(
         "roles": roles_long,
     }
 
-    player_row_by_id = None
-    if payload.playerId:
-        player_row_by_id = db.execute(
-            text("""
-            SELECT id, metadata
-            FROM player_data
-            WHERE id = :id
-            LIMIT 1
-            """),
-            {"id": payload.playerId},
-        ).mappings().first()
+    # New clients send a stable provider/pool identity. Old clients, most
+    # notably the original Pro chat, send only the player snapshot. Preserve
+    # that legacy save path when the snapshot cannot be resolved uniquely.
+    has_stable_identity = payload.sportmonksId is not None or bool(payload.playerId)
+    identity_row = None
+    try:
+        identity_row = resolve_favorite_player(db, payload)
+    except ValueError as exc:
+        if has_stable_identity:
+            raise HTTPException(status_code=422, detail=str(exc)) from exc
 
-    def player_row_matches_payload(row: Any) -> bool:
-        if not row or not row.get("metadata"):
-            return False
-        metadata = row["metadata"] or {}
-        row_name = metadata.get("player_name") or metadata.get("name")
-        if not row_name or str(row_name).strip().lower() != payload.name.strip().lower():
-            return False
-        payload_nat = (payload.nationality or "").strip().lower()
-        row_nat = str(metadata.get("nationality_name") or metadata.get("nationality") or "").strip().lower()
-        return not payload_nat or not row_nat or payload_nat == row_nat
+    provider_id = sportmonks_id(identity_row['metadata'].get('player_id')) if identity_row else None
+    if has_stable_identity and provider_id is None:
+        raise HTTPException(status_code=422, detail='SportMonks player ID is unavailable.')
 
-    if payload.formRevealed and not payload.worldCupMode:
-        player_row = db.execute(
-            text("""
-            SELECT id, metadata
-            FROM player_data
-            WHERE lower(COALESCE(metadata->>'player_name', '')) = lower(:name)
-              AND (:gender IS NULL OR lower(COALESCE(metadata->>'gender', '')) = lower(:gender))
-              AND (:age IS NULL OR (
-                    COALESCE(metadata->>'age', '') ~ '^-?[0-9]+(\.[0-9]+)?$'
-                    AND (metadata->>'age')::numeric = :age
-                  ))
-              AND (:height IS NULL OR (
-                    COALESCE(metadata->>'height', '') ~ '^-?[0-9]+(\.[0-9]+)?$'
-                    AND (metadata->>'height')::numeric = :height
-                  ))
-              AND (:weight IS NULL OR (
-                    COALESCE(metadata->>'weight', '') ~ '^-?[0-9]+(\.[0-9]+)?$'
-                    AND (metadata->>'weight')::numeric = :weight
-                  ))
-            ORDER BY id DESC
-            LIMIT 1
-            """),
-            {
-                "name": payload.name,
-                "gender": payload.gender,
-                "age": payload.age,
-                "height": payload.height,
-                "weight": payload.weight,
-            },
-        ).mappings().first()
-        if not player_row and player_row_matches_payload(player_row_by_id):
-            player_row = player_row_by_id
+    if payload.formRevealed and not payload.worldCupMode and identity_row is not None:
+        player_row = identity_row
 
         if player_row and player_row.get("metadata"):
             player_meta = player_row["metadata"] or {}
@@ -1105,38 +1169,8 @@ def add_favorite(
                 "potential": potential_result.get("potential"),
             })
 
-    if payload.worldCupMode:
-        club_row = db.execute(
-            text("""
-            SELECT id, metadata
-            FROM player_data
-            WHERE lower(COALESCE(metadata->>'player_name', '')) = lower(:name)
-              AND (:gender IS NULL OR lower(COALESCE(metadata->>'gender', '')) = lower(:gender))
-              AND (:age IS NULL OR (
-                    COALESCE(metadata->>'age', '') ~ '^-?[0-9]+(\\.[0-9]+)?$'
-                    AND (metadata->>'age')::numeric = :age
-                  ))
-              AND (:height IS NULL OR (
-                    COALESCE(metadata->>'height', '') ~ '^-?[0-9]+(\\.[0-9]+)?$'
-                    AND (metadata->>'height')::numeric = :height
-                  ))
-              AND (:weight IS NULL OR (
-                    COALESCE(metadata->>'weight', '') ~ '^-?[0-9]+(\\.[0-9]+)?$'
-                    AND (metadata->>'weight')::numeric = :weight
-                  ))
-            ORDER BY id DESC
-            LIMIT 1
-            """),
-            {
-                "name": payload.name,
-                "gender": payload.gender,
-                "age": payload.age,
-                "height": payload.height,
-                "weight": payload.weight,
-            },
-        ).mappings().first()
-        if not club_row and player_row_matches_payload(player_row_by_id):
-            club_row = player_row_by_id
+    if payload.worldCupMode and identity_row is not None:
+        club_row = identity_row
 
         if club_row and club_row.get("metadata"):
             club_meta = club_row["metadata"] or {}
@@ -1194,12 +1228,23 @@ def add_favorite(
         SELECT id, name, nationality, age, potential, form, gender, height, weight, team, league, roles_json
         FROM favorite_players
         WHERE user_id = :uid
-          AND lower(name) = lower(:name)
-          AND lower(COALESCE(nationality, '')) = lower(COALESCE(:nat, ''))
+          AND (
+              (:sportmonks_id IS NOT NULL AND player_id = :sportmonks_id)
+              OR (
+                  lower(name) = lower(:name)
+                  AND lower(COALESCE(nationality, '')) = lower(COALESCE(:nat, ''))
+                  AND (:sportmonks_id IS NULL OR player_id IS NULL)
+              )
+          )
+        ORDER BY
+          CASE WHEN :sportmonks_id IS NOT NULL AND player_id = :sportmonks_id THEN 0
+               WHEN player_id IS NOT NULL THEN 1
+               ELSE 2 END
         LIMIT 1
         """),
         {
             "uid": user_id,
+            "sportmonks_id": str(provider_id) if provider_id is not None else None,
             "name": favorite_values["name"],
             "nat": favorite_values["nationality"],
         }
@@ -1210,6 +1255,7 @@ def add_favorite(
             text("""
             UPDATE favorite_players
             SET
+                player_id = COALESCE(:sportmonks_id, player_id),
                 name = :name,
                 nationality = :nat,
                 age = :age,
@@ -1227,6 +1273,7 @@ def add_favorite(
             {
                 "id": existing["id"],
                 "uid": user_id,
+                "sportmonks_id": str(provider_id) if provider_id is not None else None,
                 "name": favorite_values["name"],
                 "nat": favorite_values["nationality"],
                 "age": favorite_values["age"],
@@ -1246,6 +1293,8 @@ def add_favorite(
             response.status_code = status.HTTP_200_OK
         return FavoritePlayerOut(
             id=existing["id"],
+            playerId=str(identity_row["id"]) if identity_row else None,
+            sportmonksId=provider_id,
             name=favorite_values["name"],
             nationality=favorite_values["nationality"],
             age=favorite_values["age"],
@@ -1262,11 +1311,12 @@ def add_favorite(
     fav_id = uuid.uuid4().hex
     created_at = now_iso()
 
-    db.execute(
+    saved_id = db.execute(
         text("""
         INSERT INTO favorite_players (
             id,
             user_id,
+            player_id,
             name,
             nationality,
             age,
@@ -1283,6 +1333,7 @@ def add_favorite(
         VALUES (
             :id,
             :uid,
+            :sportmonks_id,
             :name,
             :nat,
             :age,
@@ -1296,10 +1347,24 @@ def add_favorite(
             :roles,
             :ts
         )
+        ON CONFLICT (user_id, player_id) DO UPDATE SET
+            name = EXCLUDED.name,
+            nationality = EXCLUDED.nationality,
+            age = EXCLUDED.age,
+            potential = EXCLUDED.potential,
+            form = EXCLUDED.form,
+            gender = EXCLUDED.gender,
+            height = EXCLUDED.height,
+            weight = EXCLUDED.weight,
+            team = EXCLUDED.team,
+            league = EXCLUDED.league,
+            roles_json = EXCLUDED.roles_json
+        RETURNING id
         """),
         {
             "id": fav_id,
             "uid": user_id,
+            "sportmonks_id": str(provider_id) if provider_id is not None else None,
             "name": favorite_values["name"],
             "nat": favorite_values["nationality"],
             "age": favorite_values["age"],
@@ -1313,11 +1378,15 @@ def add_favorite(
             "roles": json.dumps(favorite_values["roles"], ensure_ascii=False),
             "ts": created_at,
         }
-    )
+    ).scalar_one()
     db.commit()
+    if response is not None and str(saved_id) != fav_id:
+        response.status_code = status.HTTP_200_OK
 
     return FavoritePlayerOut(
-        id=fav_id,
+        id=str(saved_id),
+        playerId=str(identity_row["id"]) if identity_row else None,
+        sportmonksId=provider_id,
         name=favorite_values["name"],
         nationality=favorite_values["nationality"],
         age=favorite_values["age"],
@@ -1616,6 +1685,12 @@ def _get_player_pool_metadata(db: Session, player_id: str, world_cup_mode: bool)
 
 
 def _resolve_player_pool_report_club_row(db: Session, player_payload: Dict[str, Any]) -> Optional[Any]:
+    try:
+        provider_id = report_sportmonks_id(player_payload)
+        if provider_id is not None:
+            return fetch_report_player(db, provider_id)
+    except ValueError as exc:
+        raise HTTPException(status_code=404, detail=str(exc)) from exc
     club_player_id = player_payload.get("club_player_id") or player_payload.get("clubPlayerId")
     if club_player_id is not None:
         row = db.execute(
@@ -1693,6 +1768,7 @@ def _apply_club_row_to_report_payload(
 ) -> Dict[str, Any]:
     metadata = dict(club_row["metadata"] or {})
     next_payload = dict(player_payload)
+    next_payload["sportmonksId"] = sportmonks_id(metadata.get("player_id"))
     next_payload["club_player_id"] = int(club_row["id"])
     next_payload["playerId"] = str(club_row["id"])
     next_payload["worldCupMode"] = False
@@ -1747,7 +1823,7 @@ def create_player_pool_report(
     db: Session = Depends(get_db),
 ):
     lang = normalize_lang(accept_language) or normalize_lang(get_user_language(db, user_id)) or "en"
-    version = 2
+    version = 3
     player_payload = payload.model_dump(exclude_none=True)
     player_payload.pop("tutorial_mode", None)
 
@@ -1806,7 +1882,7 @@ def create_player_pool_report(
                     "favorite_player_id": cache_key,
                     "status": row["status"],
                     "content": normalized_content,
-                    "content_json": normalized_content_json,
+                    "content_json": with_phase_distributions(normalized_content_json),
                     "language": row["language"],
                     "version": row["version"],
                     "player": payload,
@@ -1824,7 +1900,7 @@ def create_player_pool_report(
                 "favorite_player_id": cache_key,
                 "status": row["status"],
                 "content": row["content"],
-                "content_json": row["content_json"],
+                "content_json": with_phase_distributions(row["content_json"]),
                 "language": row["language"],
                 "version": row["version"],
                 "player": payload,
@@ -1945,15 +2021,15 @@ def get_or_create_report(
     db: Session = Depends(get_db),
 ):
     lang = normalize_lang(accept_language) or normalize_lang(get_user_language(db, user_id)) or "en"
-    version = 2
+    version = 3
     player_payload = payload.model_dump(exclude_none=True)
     tutorial_mode = bool(player_payload.pop("tutorial_mode", False))
 
     # Ensure favorite belongs to user
     owned = db.execute(
-        text("SELECT 1 FROM favorite_players WHERE id = :fid AND user_id = :uid"),
+        text("SELECT * FROM favorite_players WHERE id = :fid AND user_id = :uid"),
         {"fid": favorite_id, "uid": user_id},
-    ).first()
+    ).mappings().first()
     if not owned:
         raise HTTPException(status_code=404, detail="Favorite not found")
     favorite_snapshot = get_favorite_player_snapshot(db, favorite_id, user_id)
@@ -1967,6 +2043,11 @@ def get_or_create_report(
                 lang=lang,
                 player_identity=player_payload,
             )
+
+    player_payload = owned_report_identity(player_payload, owned)
+    club_row = _resolve_player_pool_report_club_row(db, player_payload)
+    if club_row is not None:
+        player_payload = _apply_club_row_to_report_payload(db, player_payload, club_row)
 
     # Check cache
     row = db.execute(text("""
@@ -2019,7 +2100,7 @@ def get_or_create_report(
                     "favorite_player_id": favorite_id,
                     "status": row["status"],
                     "content": normalized_content,
-                    "content_json": normalized_content_json,
+                    "content_json": with_phase_distributions(normalized_content_json),
                     "language": row["language"],
                     "version": row["version"],
                     "player": payload,  # NEW
@@ -2038,7 +2119,7 @@ def get_or_create_report(
                 "favorite_player_id": favorite_id,
                 "status": row["status"],
                 "content": row["content"],
-                "content_json": row["content_json"],
+                "content_json": with_phase_distributions(row["content_json"]),
                 "language": row["language"],
                 "version": row["version"],
                 "player": payload,  # NEW

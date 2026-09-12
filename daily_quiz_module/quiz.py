@@ -296,8 +296,32 @@ def _ai_decision(choices: List[Dict[str, Any]], theme: Dict[str, Any]) -> Dict[s
     }
 
 
-def _challenge_payload(row: Dict[str, Any], attempt: Dict[str, Any] | None = None, skipped: bool = False) -> Dict[str, Any]:
+def _challenge_payload(db: Session, row: Dict[str, Any], attempt: Dict[str, Any] | None = None, skipped: bool = False) -> Dict[str, Any]:
     choices = row["choices_json"] if isinstance(row["choices_json"], list) else json.loads(row["choices_json"] or "[]")
+    choice_ids = [str(choice.get("id")) for choice in choices if choice.get("id") is not None]
+    image_rows = db.execute(
+        text("""
+            SELECT pd.id::text AS id, epi.image_url
+            FROM player_data pd
+            JOIN enterprise_player_images epi
+              ON epi.player_id = CASE
+                  WHEN COALESCE(pd.metadata->>'player_id', '') ~ '^[0-9]+([.]0+)?$'
+                  THEN trunc((pd.metadata->>'player_id')::numeric)::bigint
+                  ELSE NULL
+              END
+             AND epi.image_status = 'available'
+            WHERE pd.id::text = ANY(:choice_ids)
+        """),
+        {"choice_ids": choice_ids},
+    ).mappings().all() if choice_ids else []
+    images = {str(image["id"]): str(image["image_url"]).strip() for image in image_rows if image.get("image_url")}
+    visible_choices = []
+    for choice in choices:
+        content = dict(choice.get("content") or {})
+        image_url = images.get(str(choice.get("id")))
+        if image_url:
+            content["image_url"] = image_url
+        visible_choices.append({"id": choice["id"], "content": content})
     winner_id = str(row["winner_player_id"])
     chosen_id = str(attempt["chosen_player_id"]) if attempt and attempt.get("chosen_player_id") is not None else None
     completed = bool(attempt and attempt.get("completed_at"))
@@ -306,7 +330,7 @@ def _challenge_payload(row: Dict[str, Any], attempt: Dict[str, Any] | None = Non
         "challengeDate": row["challenge_date"].isoformat() if hasattr(row["challenge_date"], "isoformat") else str(row["challenge_date"]),
         "strategy": {"en": row.get("strategy_en") or "", "tr": row.get("strategy_tr") or ""},
         "question": {"en": row["question_en"], "tr": row["question_tr"]},
-        "choices": [{"id": c["id"], "content": c["content"]} for c in choices],
+        "choices": visible_choices,
         "winnerPlayerId": winner_id if completed else None,
         "explanation": {"en": row["explanation_en"], "tr": row["explanation_tr"]} if completed else None,
         "attempt": {
@@ -405,7 +429,7 @@ def get_daily_status(db: Session, user_id: int) -> Dict[str, Any]:
         """),
         {"uid": user_id, "cid": challenge["id"]},
     ).mappings().first()
-    return _challenge_payload(challenge, dict(attempt) if attempt else None, skipped=bool(attempt and attempt.get("skipped_at")))
+    return _challenge_payload(db, challenge, dict(attempt) if attempt else None, skipped=bool(attempt and attempt.get("skipped_at")))
 
 
 def skip_daily_challenge(db: Session, user_id: int) -> Dict[str, Any]:

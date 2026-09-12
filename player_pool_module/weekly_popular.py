@@ -194,7 +194,8 @@ def get_weekly_popular_players(db: Session, limit: int = DEFAULT_LIMIT, world_cu
         text(f"""
         SELECT
             current_pd.id,
-            current_pd.metadata AS content
+            current_pd.metadata AS content,
+            epi.image_url
         FROM player_pool_weekly_searches pws
         JOIN LATERAL (
             SELECT pd.id, pd.metadata
@@ -203,6 +204,9 @@ def get_weekly_popular_players(db: Session, limit: int = DEFAULT_LIMIT, world_cu
             ORDER BY pd.id DESC
             LIMIT 1
         ) current_pd ON TRUE
+        LEFT JOIN enterprise_player_images epi
+          ON epi.player_id = pws.player_id
+         AND epi.image_status = 'available'
         WHERE pws.week_start = DATE_TRUNC('week', NOW())::date
         ORDER BY pws.search_count DESC, pws.last_searched_at DESC, current_pd.id DESC
         LIMIT :limit
@@ -210,7 +214,16 @@ def get_weekly_popular_players(db: Session, limit: int = DEFAULT_LIMIT, world_cu
         {"limit": int(limit or DEFAULT_LIMIT)},
     ).mappings().all()
 
-    return [{"id": row["id"], "content": row["content"] or {}} for row in rows]
+    return [
+        {
+            "id": row["id"],
+            "content": {
+                **dict(row["content"] or {}),
+                **({"image_url": str(row["image_url"])} if row.get("image_url") else {}),
+            },
+        }
+        for row in rows
+    ]
 
 
 def record_weekly_popular_reveal(db: Session, user_id: int, world_cup_mode: bool = False) -> None:
