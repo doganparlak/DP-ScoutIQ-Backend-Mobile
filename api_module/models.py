@@ -55,6 +55,9 @@ class FavoritePlayerIn(BaseModel):
 
 class FavoritePlayerOut(BaseModel):
     sportmonksId: Optional[int] = Field(default=None, gt=0)
+    teamId: Optional[int] = Field(default=None, gt=0)
+    leagueId: Optional[int] = Field(default=None, gt=0)
+    contractTeamId: Optional[int] = Field(default=None, gt=0)
     id: str
     playerId: Optional[str] = None
     imageUrl: Optional[str] = None

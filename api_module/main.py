@@ -1065,6 +1065,9 @@ def list_favorites(user_id: int = Depends(require_auth), db: Session = Depends(g
             playerId=r["source_player_id"],
             imageUrl=str(r["image_url"]).strip() if r.get("image_url") else None,
             sportmonksId=resolved_provider_id,
+            teamId=sportmonks_id(metadata.get("team_id")),
+            leagueId=sportmonks_id(metadata.get("league_id")),
+            contractTeamId=sportmonks_id(metadata.get("contract_team_id")),
             isOnLoan=is_on_loan,
             contractTeamName=metadata.get("contract_team_name"),
             loanEndDate=metadata.get("loan_end_date"),
@@ -1116,7 +1119,8 @@ def add_favorite(
         if has_stable_identity:
             raise HTTPException(status_code=422, detail=str(exc)) from exc
 
-    provider_id = sportmonks_id(identity_row['metadata'].get('player_id')) if identity_row else None
+    identity_metadata = identity_row['metadata'] if identity_row else {}
+    provider_id = sportmonks_id(identity_metadata.get('player_id'))
     if has_stable_identity and provider_id is None:
         raise HTTPException(status_code=422, detail='SportMonks player ID is unavailable.')
 
@@ -1295,6 +1299,9 @@ def add_favorite(
             id=existing["id"],
             playerId=str(identity_row["id"]) if identity_row else None,
             sportmonksId=provider_id,
+            teamId=sportmonks_id(identity_metadata.get("team_id")),
+            leagueId=sportmonks_id(identity_metadata.get("league_id")),
+            contractTeamId=sportmonks_id(identity_metadata.get("contract_team_id")),
             name=favorite_values["name"],
             nationality=favorite_values["nationality"],
             age=favorite_values["age"],
@@ -1387,6 +1394,9 @@ def add_favorite(
         id=str(saved_id),
         playerId=str(identity_row["id"]) if identity_row else None,
         sportmonksId=provider_id,
+        teamId=sportmonks_id(identity_metadata.get("team_id")),
+        leagueId=sportmonks_id(identity_metadata.get("league_id")),
+        contractTeamId=sportmonks_id(identity_metadata.get("contract_team_id")),
         name=favorite_values["name"],
         nationality=favorite_values["nationality"],
         age=favorite_values["age"],

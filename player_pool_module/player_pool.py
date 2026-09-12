@@ -136,6 +136,8 @@ def search_players(db: Session, filters: Dict[str, Any]) -> List[Dict[str, Any]]
           AND (
                 :loan_end_date IS NULL
                 OR (
+                    LOWER(COALESCE(metadata->>'is_on_loan', '')) IN ('true', '1', 'yes')
+                    AND
                     COALESCE(metadata->>'loan_end_date', '') ~ '^[0-9]{{4}}-[0-9]{{2}}-[0-9]{{2}}'
                     AND SUBSTRING(metadata->>'loan_end_date' FROM 1 FOR 10)::date <= CAST(:loan_end_date AS date)
                 )

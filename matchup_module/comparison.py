@@ -9,6 +9,50 @@ from sqlalchemy.orm import Session
 from player_pool_module.utilities import player_pool_table
 
 
+def _enrich_visual_identity(db: Session, content: Dict[str, Any]) -> Dict[str, Any]:
+    """Attach the current competition identity used by comparison slot logos."""
+    result = dict(content or {})
+    try:
+        sportmonks_id = int(float(result.get("player_id")))
+    except (TypeError, ValueError):
+        return result
+
+    league_name = str(result.get("league_name") or result.get("league") or "").strip()
+    try:
+        team_id = int(float(result.get("team_id")))
+    except (TypeError, ValueError):
+        team_id = None
+
+    row = db.execute(
+        text(
+            """
+            SELECT pc.league_id, eli.image_url AS league_image_path
+            FROM player_comp_data pc
+            LEFT JOIN enterprise_league_images eli
+              ON eli.league_id = pc.league_id
+             AND eli.image_status = 'available'
+            WHERE pc.player_id = :player_id
+            ORDER BY
+              CASE WHEN :league_name <> '' AND LOWER(BTRIM(pc.league_name)) = LOWER(BTRIM(:league_name)) THEN 0 ELSE 1 END,
+              CASE WHEN :team_id IS NOT NULL AND pc.team_id = :team_id THEN 0 ELSE 1 END,
+              pc.match_count DESC NULLS LAST
+            LIMIT 1
+            """
+        ),
+        {
+            "player_id": sportmonks_id,
+            "league_name": league_name,
+            "team_id": team_id,
+        },
+    ).mappings().first()
+    if row:
+        if result.get("league_id") is None and row.get("league_id") is not None:
+            result["league_id"] = row["league_id"]
+        if not result.get("league_image_path") and row.get("league_image_path"):
+            result["league_image_path"] = row["league_image_path"]
+    return result
+
+
 def _fetch_player_metadata(db: Session, player_id: str, world_cup_mode: bool = False) -> Dict[str, Any]:
     try:
         player_id_int = int(player_id)
@@ -31,7 +75,7 @@ def _fetch_player_metadata(db: Session, player_id: str, world_cup_mode: bool = F
 
     return {
         "id": row["id"],
-        "content": row["content"] or {},
+        "content": _enrich_visual_identity(db, row["content"] or {}),
     }
 
 
@@ -45,7 +89,10 @@ def _fetch_player_by_sportmonks_id(db: Session, sportmonks_id: int, world_cup_mo
     """), {"sportmonks_id": sportmonks_id}).mappings().all()
     if len(rows) != 1:
         raise ValueError(f"Expected one current player for SportMonks ID {sportmonks_id}; found {len(rows)}")
-    return {"id": rows[0]["id"], "content": rows[0]["content"] or {}}
+    return {
+        "id": rows[0]["id"],
+        "content": _enrich_visual_identity(db, rows[0]["content"] or {}),
+    }
 
 
 def get_matchup_comparison(db: Session, player1_id: str, player2_id: str, world_cup_mode: bool = False, player1_sportmonks_id: int | None = None, player2_sportmonks_id: int | None = None) -> Dict[str, Any]:
@@ -168,6 +215,25 @@ def _selected_comp_metadata(
             "league_name": ", ".join(dict.fromkeys(str(row.get("league_name") or "") for row in rows if row.get("league_name"))),
         }
     )
+    team_ids = list(dict.fromkeys(row.get("team_id") for row in rows if row.get("team_id") is not None))
+    league_ids = list(dict.fromkeys(row.get("league_id") for row in rows if row.get("league_id") is not None))
+    if len(team_ids) == 1:
+        result["team_id"] = team_ids[0]
+    if len(league_ids) == 1:
+        result["league_id"] = league_ids[0]
+        image = db.execute(
+            text(
+                """
+                SELECT image_url
+                FROM enterprise_league_images
+                WHERE league_id = :league_id AND image_status = 'available'
+                LIMIT 1
+                """
+            ),
+            {"league_id": league_ids[0]},
+        ).scalar()
+        if image:
+            result["league_image_path"] = image
 
     total_matches = sum(_number(row.get("match_count")) or 0 for row in rows)
     result["match_count"] = total_matches
