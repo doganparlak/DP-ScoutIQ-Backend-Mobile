@@ -12,14 +12,20 @@ from .pre_match_standings import get_league_standings
 VERSION = 1
 _EXECUTOR = ThreadPoolExecutor(max_workers=3, thread_name_prefix="mobile-match-report")
 _PENDING = set()
+_LAZY_PENDING = set()
 _MUTEX = threading.Lock()
 SECTIONS = ('data', 'squad', 'form', 'players', 'momentum', 'team_analysis')
+FOUNDATION_SECTIONS = ('data','squad','form')
+AI_SECTIONS = ('players','momentum','team_analysis')
 
 def now():
     return datetime.now(timezone.utc).isoformat()
 
 def compatible(content, language):
     return content.get('format') == 'mobile_pre_match' and content.get('version') == VERSION and content.get('language') == language and isinstance(content.get('sections'), dict)
+
+def complete(content):
+    return all((content.get('sections') or {}).get(section,{}).get('status') == 'ready' and section in content for section in SECTIONS)
 
 def read_report(favorite_id, user_id):
     with engine.connect() as db:
@@ -104,7 +110,7 @@ def run(favorite_id, user_id, language, retry_failed):
             if not row:
                 return
             content = row.get('report_content') or {}
-            if compatible(content,language) and row['report_status']=='ready':
+            if compatible(content,language) and row['report_status']=='ready' and complete(content):
                 return
             if compatible(content,language) and row['report_status']=='failed' and not retry_failed:
                 return
@@ -134,3 +140,51 @@ def run(favorite_id, user_id, language, retry_failed):
     finally:
         with _MUTEX:
             _PENDING.discard(favorite_id)
+
+def schedule_lazy(favorite_id, user_id, language, section='foundation'):
+    if section != 'foundation' and section not in AI_SECTIONS:
+        raise ValueError('Unknown report section')
+    key = f'{favorite_id}:{section}'
+    with _MUTEX:
+        if key in _LAZY_PENDING:
+            return
+        _LAZY_PENDING.add(key)
+    try:
+        _EXECUTOR.submit(run_lazy,str(favorite_id),user_id,language,section,key)
+    except Exception:
+        with _MUTEX:
+            _LAZY_PENDING.discard(key)
+        raise
+
+def run_lazy(favorite_id, user_id, language, requested, pending_key):
+    try:
+        with engine.begin() as owner:
+            owner.execute(text('SELECT pg_advisory_xact_lock(hashtextextended(:key, 0))'), {'key':'mobile-match-report:'+favorite_id})
+            row = read_report(favorite_id,user_id)
+            if not row:
+                return
+            content = row.get('report_content') or {}
+            if not compatible(content,language):
+                content = {'format':'mobile_pre_match','version':VERSION,'language':language,'generation_mode':'lazy_sections','sections':{k:{'status':'pending'} for k in SECTIONS}}
+            targets = list(FOUNDATION_SECTIONS)
+            if requested != 'foundation':
+                targets.append(requested)
+            for section in targets:
+                if content['sections'].get(section,{}).get('status') == 'ready' and section in content:
+                    continue
+                content['sections'][section] = {'status':'processing','started_at':now()}
+                foundation_ready = all(content['sections'].get(key,{}).get('status') == 'ready' and key in content for key in FOUNDATION_SECTIONS)
+                if not save(favorite_id,user_id,content,'ready' if foundation_ready else 'processing'):
+                    return
+                try:
+                    content[section] = build_section(section,content,int(row['fixture_id']),user_id,language)
+                    content['sections'][section] = {'status':'ready','ready_at':now()}
+                    foundation_ready = all(content['sections'].get(key,{}).get('status') == 'ready' and key in content for key in FOUNDATION_SECTIONS)
+                    save(favorite_id,user_id,content,'ready' if foundation_ready else 'processing')
+                except Exception:
+                    content['sections'][section] = {'status':'failed','failed_at':now()}
+                    save(favorite_id,user_id,content,'failed' if section in FOUNDATION_SECTIONS else 'ready')
+                    return
+    finally:
+        with _MUTEX:
+            _LAZY_PENDING.discard(pending_key)

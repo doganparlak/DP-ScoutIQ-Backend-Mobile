@@ -353,8 +353,8 @@ def post_match_player_perspectives(fixture_id: int, language: str = "tr", user_i
 
 
 @router.post("/match-pool/fixtures/{fixture_id}/saved-report")
-def open_saved_post_match_report(fixture_id: int, language: str = "tr", user_id=Depends(require_auth), db: Session=Depends(get_db)):
-    from .persistent_reports import schedule, public_report
+def open_saved_post_match_report(fixture_id: int, language: str = "tr", lazy: bool = False, user_id=Depends(require_auth), db: Session=Depends(get_db)):
+    from .persistent_reports import schedule, schedule_lazy, public_report, complete
     if fixture_id <= 0 or language not in {"tr", "en"}:
         raise HTTPException(400, "Invalid fixture or language")
     row = db.execute(text("SELECT id, fixture_id, report_status, report_content FROM favorite_matches WHERE user_id=:uid AND fixture_id=:fid AND report_type='post_match'"), {'uid':user_id,'fid':fixture_id}).mappings().first()
@@ -366,15 +366,18 @@ def open_saved_post_match_report(fixture_id: int, language: str = "tr", user_id=
         row = db.execute(text("SELECT id, fixture_id, report_status, report_content FROM favorite_matches WHERE id=:id AND user_id=:uid"), {'id':saved.favoriteId,'uid':user_id}).mappings().one()
     result = public_report(row,language)
     db.commit()
-    schedule(str(row['id']),user_id,language,retry_failed=True)
-    if result['status'] != 'ready':
+    if lazy:
+        schedule_lazy(str(row['id']),user_id,language,'data')
+    else:
+        schedule(str(row['id']),user_id,language,retry_failed=True)
+    if result['status'] != 'ready' or (not lazy and result.get('content') and not complete(result['content'])):
         result['status'] = 'processing'
     return result
 
 
 @router.get("/match-pool/fixtures/{fixture_id}/saved-report")
-def poll_saved_post_match_report(fixture_id: int, language: str = "tr", user_id=Depends(require_auth), db: Session=Depends(get_db)):
-    from .persistent_reports import schedule, public_report, compatible
+def poll_saved_post_match_report(fixture_id: int, language: str = "tr", lazy: bool = False, user_id=Depends(require_auth), db: Session=Depends(get_db)):
+    from .persistent_reports import schedule, schedule_lazy, public_report, compatible, complete
     if fixture_id <= 0 or language not in {"tr", "en"}:
         raise HTTPException(400, "Invalid fixture or language")
     row = db.execute(text("SELECT id, fixture_id, report_status, report_content FROM favorite_matches WHERE user_id=:uid AND fixture_id=:fid AND report_type='post_match'"), {'uid':user_id,'fid':fixture_id}).mappings().first()
@@ -382,9 +385,31 @@ def poll_saved_post_match_report(fixture_id: int, language: str = "tr", user_id=
         raise HTTPException(404, "Saved report not found")
     result = public_report(row,language)
     db.commit()
-    if row['report_status'] not in {'ready','failed'} or not compatible(row.get('report_content') or {},language):
+    if lazy:
+        content = row.get('report_content') or {}
+        if not compatible(content,language) or (content.get('sections') or {}).get('data',{}).get('status') != 'ready':
+            schedule_lazy(str(row['id']),user_id,language,'data')
+    elif row['report_status'] not in {'ready','failed'} or not compatible(row.get('report_content') or {},language) or not complete(row.get('report_content') or {}):
         schedule(str(row['id']),user_id,language)
+        result['status'] = 'processing'
     return result
+
+
+@router.post("/match-pool/fixtures/{fixture_id}/saved-report/sections/{section}")
+def ensure_saved_post_match_section(fixture_id: int, section: str, language: str = "tr", user_id=Depends(require_auth), db: Session=Depends(get_db)):
+    from .persistent_reports import schedule_lazy, public_report, compatible, section_ready, AI_SECTIONS
+    if fixture_id <= 0 or language not in {"tr","en"} or section not in AI_SECTIONS:
+        raise HTTPException(400,"Invalid report section")
+    row = db.execute(text("SELECT id,fixture_id,report_status,report_content FROM favorite_matches WHERE user_id=:uid AND fixture_id=:fid AND report_type='post_match'"),{'uid':user_id,'fid':fixture_id}).mappings().first()
+    if not row:
+        raise HTTPException(404,"Saved report not found")
+    content = dict(row.get('report_content') or {})
+    if compatible(content,language) and not section_ready(content,section):
+        sections = dict(content.get('sections') or {});sections[section]={'status':'processing'};content['sections']=sections
+        row = {**dict(row),'report_content':content,'report_status':'ready'}
+    if not section_ready(content,section):
+        schedule_lazy(str(row['id']),user_id,language,section)
+    return public_report(row,language)
 
 
 @router.get("/match-pool/fixtures/{fixture_id}/pre-match-card")
@@ -484,8 +509,8 @@ def pre_match_team_analysis(fixture_id: int, language: str = 'tr', user_id=Depen
     return {'teams':_pre_match_team_analysis(usages,teams,language)}
 
 @router.post("/match-pool/fixtures/{fixture_id}/saved-pre-report")
-def open_saved_pre_match_report(fixture_id: int, language: str = "tr", user_id=Depends(require_auth), db: Session=Depends(get_db)):
-    from .persistent_pre_reports import schedule, public_report
+def open_saved_pre_match_report(fixture_id: int, language: str = "tr", lazy: bool = False, user_id=Depends(require_auth), db: Session=Depends(get_db)):
+    from .persistent_pre_reports import schedule, schedule_lazy, public_report, complete
     if fixture_id <= 0 or language not in {"tr", "en"}:
         raise HTTPException(400, "Invalid fixture or language")
     row = db.execute(text("SELECT id, fixture_id, report_status, report_content FROM favorite_matches WHERE user_id=:uid AND fixture_id=:fid AND report_type='pre_match'"), {'uid':user_id,'fid':fixture_id}).mappings().first()
@@ -502,15 +527,18 @@ def open_saved_pre_match_report(fixture_id: int, language: str = "tr", user_id=D
             raise HTTPException(409, "A new pre-match report must be created before kickoff")
     result = public_report(row,language)
     db.commit()
-    schedule(str(row['id']),user_id,language,retry_failed=True)
-    if result['status'] != 'ready':
+    if lazy:
+        schedule_lazy(str(row['id']),user_id,language,'foundation')
+    else:
+        schedule(str(row['id']),user_id,language,retry_failed=True)
+    if result['status'] != 'ready' or (not lazy and result.get('content') and not complete(result['content'])):
         result['status'] = 'processing'
     return result
 
 
 @router.get("/match-pool/fixtures/{fixture_id}/saved-pre-report")
-def poll_saved_pre_match_report(fixture_id: int, language: str = "tr", user_id=Depends(require_auth), db: Session=Depends(get_db)):
-    from .persistent_pre_reports import schedule, public_report, compatible
+def poll_saved_pre_match_report(fixture_id: int, language: str = "tr", lazy: bool = False, user_id=Depends(require_auth), db: Session=Depends(get_db)):
+    from .persistent_pre_reports import schedule, schedule_lazy, public_report, compatible, complete, FOUNDATION_SECTIONS
     if fixture_id <= 0 or language not in {"tr", "en"}:
         raise HTTPException(400, "Invalid fixture or language")
     row = db.execute(text("SELECT id, fixture_id, report_status, report_content FROM favorite_matches WHERE user_id=:uid AND fixture_id=:fid AND report_type='pre_match'"), {'uid':user_id,'fid':fixture_id}).mappings().first()
@@ -521,8 +549,28 @@ def poll_saved_pre_match_report(fixture_id: int, language: str = "tr", user_id=D
             raise HTTPException(409, "A new pre-match report must be created before kickoff")
     result = public_report(row,language)
     db.commit()
-    if row['report_status'] not in {'ready','failed'} or not compatible(row.get('report_content') or {},language):
+    if lazy:
+        content = row.get('report_content') or {}
+        if not compatible(content,language) or not all((content.get('sections') or {}).get(key,{}).get('status') == 'ready' for key in FOUNDATION_SECTIONS):
+            schedule_lazy(str(row['id']),user_id,language,'foundation')
+    elif row['report_status'] not in {'ready','failed'} or not compatible(row.get('report_content') or {},language) or not complete(row.get('report_content') or {}):
         schedule(str(row['id']),user_id,language)
+        result['status'] = 'processing'
     return result
 
 
+@router.post("/match-pool/fixtures/{fixture_id}/saved-pre-report/sections/{section}")
+def ensure_saved_pre_match_section(fixture_id: int, section: str, language: str = "tr", user_id=Depends(require_auth), db: Session=Depends(get_db)):
+    from .persistent_pre_reports import schedule_lazy, public_report, compatible, AI_SECTIONS
+    if fixture_id <= 0 or language not in {"tr","en"} or section not in AI_SECTIONS:
+        raise HTTPException(400,"Invalid report section")
+    row = db.execute(text("SELECT id,fixture_id,report_status,report_content FROM favorite_matches WHERE user_id=:uid AND fixture_id=:fid AND report_type='pre_match'"),{'uid':user_id,'fid':fixture_id}).mappings().first()
+    if not row:
+        raise HTTPException(404,"Saved report not found")
+    content = dict(row.get('report_content') or {})
+    if compatible(content,language) and (content.get('sections') or {}).get(section,{}).get('status') != 'ready':
+        sections = dict(content.get('sections') or {});sections[section]={'status':'processing'};content['sections']=sections
+        row = {**dict(row),'report_content':content,'report_status':'ready'}
+    if (content.get('sections') or {}).get(section,{}).get('status') != 'ready':
+        schedule_lazy(str(row['id']),user_id,language,section)
+    return public_report(row,language)

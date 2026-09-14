@@ -10,16 +10,28 @@ from .team_analysis import build_team_analysis
 from .player_perspectives import build_player_perspectives
 
 VERSION = 2
+TEAM_ANALYSIS_VERSION = 2
 _EXECUTOR = ThreadPoolExecutor(max_workers=3, thread_name_prefix="mobile-match-report")
 _PENDING = set()
+_LAZY_PENDING = set()
 _MUTEX = threading.Lock()
 SECTIONS = ('data', 'team_analysis', 'player_perspectives')
+AI_SECTIONS = ('team_analysis', 'player_perspectives')
 
 def now():
     return datetime.now(timezone.utc).isoformat()
 
 def compatible(content, language):
     return content.get('format') == 'mobile_post_match' and content.get('version') == VERSION and content.get('language') == language and isinstance(content.get('sections'), dict)
+
+def section_ready(content, section):
+    ready = (content.get('sections') or {}).get(section,{}).get('status') == 'ready' and section in content
+    if section == 'team_analysis':
+        return ready and (content.get(section) or {}).get('analysis_version') == TEAM_ANALYSIS_VERSION
+    return ready
+
+def complete(content):
+    return all(section_ready(content, section) for section in SECTIONS)
 
 def read_report(favorite_id, user_id):
     with engine.connect() as db:
@@ -76,7 +88,7 @@ def run(favorite_id, user_id, language, retry_failed):
             if not row:
                 return
             content = row.get('report_content') or {}
-            if compatible(content,language) and row['report_status']=='ready':
+            if compatible(content,language) and row['report_status']=='ready' and complete(content):
                 return
             if compatible(content,language) and row['report_status']=='failed' and not retry_failed:
                 return
@@ -84,7 +96,7 @@ def run(favorite_id, user_id, language, retry_failed):
                 content = {'format':'mobile_post_match','version':VERSION,'language':language,'sections':{k:{'status':'pending'} for k in SECTIONS}}
             for section in SECTIONS:
                 state = content['sections'].get(section, {})
-                if state.get('status')=='ready' and section in content:
+                if section_ready(content, section):
                     continue
                 content['sections'][section] = {'status':'processing','started_at':now()}
                 if not save(favorite_id,user_id,content,'processing'):
@@ -97,7 +109,7 @@ def run(favorite_id, user_id, language, retry_failed):
                             raise ValueError('Match is not completed')
                         value = clean_data(report)
                     elif section=='team_analysis':
-                        value = {'teams':build_team_analysis(content['data'],language)}
+                        value = {'teams':build_team_analysis(content['data'],language),'analysis_version':TEAM_ANALYSIS_VERSION}
                     else:
                         data=content['data']
                         value = {'teams':build_player_perspectives(data.get('teams') or [],data.get('lineups') or [],data.get('events') or [],language, strict=True)}
@@ -116,3 +128,57 @@ def run(favorite_id, user_id, language, retry_failed):
     finally:
         with _MUTEX:
             _PENDING.discard(favorite_id)
+
+def schedule_lazy(favorite_id, user_id, language, section='data'):
+    if section not in SECTIONS:
+        raise ValueError('Unknown report section')
+    key = f'{favorite_id}:{section}'
+    with _MUTEX:
+        if key in _LAZY_PENDING:
+            return
+        _LAZY_PENDING.add(key)
+    try:
+        _EXECUTOR.submit(run_lazy, str(favorite_id), user_id, language, section, key)
+    except Exception:
+        with _MUTEX:
+            _LAZY_PENDING.discard(key)
+        raise
+
+def run_lazy(favorite_id, user_id, language, requested, pending_key):
+    try:
+        with engine.begin() as owner:
+            owner.execute(text('SELECT pg_advisory_xact_lock(hashtextextended(:key, 0))'), {'key':'mobile-match-report:'+favorite_id})
+            row = read_report(favorite_id,user_id)
+            if not row:
+                return
+            content = row.get('report_content') or {}
+            if not compatible(content,language):
+                content = {'format':'mobile_post_match','version':VERSION,'language':language,'generation_mode':'lazy_sections','sections':{k:{'status':'pending'} for k in SECTIONS}}
+            targets = ['data'] if requested == 'data' else ['data',requested]
+            for section in targets:
+                if section_ready(content, section):
+                    continue
+                content['sections'][section] = {'status':'processing','started_at':now()}
+                if not save(favorite_id,user_id,content,'processing' if section == 'data' else 'ready'):
+                    return
+                try:
+                    if section == 'data':
+                        report = generate_match_report(int(row['fixture_id']),lang=language,build_narratives=False)
+                        from .router import _is_completed_enterprise_fixture
+                        if not _is_completed_enterprise_fixture({'state':report.get('state') or {}}):
+                            raise ValueError('Match is not completed')
+                        content[section] = clean_data(report)
+                    elif section == 'team_analysis':
+                        content[section] = {'teams':build_team_analysis(content['data'],language),'analysis_version':TEAM_ANALYSIS_VERSION}
+                    else:
+                        data = content['data']
+                        content[section] = {'teams':build_player_perspectives(data.get('teams') or [],data.get('lineups') or [],data.get('events') or [],language,strict=True)}
+                    content['sections'][section] = {'status':'ready','ready_at':now()}
+                    save(favorite_id,user_id,content,'ready')
+                except Exception:
+                    content['sections'][section] = {'status':'failed','failed_at':now()}
+                    save(favorite_id,user_id,content,'failed' if section == 'data' else 'ready')
+                    return
+    finally:
+        with _MUTEX:
+            _LAZY_PENDING.discard(pending_key)

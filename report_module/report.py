@@ -32,6 +32,48 @@ _report_prompt = ChatPromptTemplate.from_messages(
 
 report_chain = _report_prompt | CHAT_LLM | StrOutputParser()
 
+_section_prompt = ChatPromptTemplate.from_messages(
+    [
+        ("system", """You are an expert football scouting analyst. Produce only the requested report section.
+Use only the supplied player card and metric evidence. Never invent numeric facts or mention missing data.
+Every line after the exact English section header must start with '- ' and use '- Short title: explanation'.
+Write the header in English exactly as requested. Write every bullet title and explanation in the requested language.
+Keep titles under 42 characters. Use professional tactical interpretation tied to the player's actual role.
+When lang is tr, use natural Turkish football terminology and comma decimal separators; do not leave English
+metric or tactical terms in the prose.
+For strengths, every bullet must combine metric evidence, the match phase or game situation where the quality
+matters, and its tactical benefit or usage implication. Give strengths the same depth and approximate length
+as weakness bullets; target roughly 30-45 words per explanation.
+For weaknesses, prioritize CONCERN_CANDIDATES from the metric guide. If there are fewer than five, use
+role-relevant positive/output metrics as conditional development limits or tactical trade-offs. Ground every
+point in an actual supplied value, describe the game situation where it matters, and add a practical mitigation.
+Do not relabel LOW_RISK_NEGATIVES as poor performance. Never fill a weakness bullet by saying that a concern,
+weakness, metric, or evidence is absent, unverified, unavailable, or not a problem.
+For role usage, never recommend a role family outside ROLE_CONSTRAINTS."""),
+        ("human", """lang: {lang}
+SECTION_HEADER: {heading}
+SECTION_RULES: {rules}
+
+{input_text}"""),
+    ]
+)
+section_report_chain = _section_prompt | CHAT_LLM | StrOutputParser()
+
+LAZY_NARRATIVE_SECTIONS: Dict[str, Tuple[str, str]] = {
+    "strengths": (
+        "STRENGTHS",
+        "Provide exactly 5 distinct strengths. Each explanation must be roughly 30-45 words and include at least one supplied metric value, a relevant match phase or game situation, and the resulting tactical benefit or usage implication.",
+    ),
+    "weaknesses": (
+        "POTENTIAL WEAKNESSES / CONCERNS",
+        "Provide exactly 5 distinct, evidence-led concerns or development limits. Every bullet must cite at least one supplied metric value, explain a relevant match situation, and give a mitigation or coaching cue. Never output a no-concern or no-evidence placeholder.",
+    ),
+    "role_usage": (
+        "CONCLUSION",
+        "Provide exactly 5 bullets in this order: Role & System, Development Focus, Usage Recommendation, In Possession, Out of Possession. Use the corresponding Turkish titles when lang is tr.",
+    ),
+}
+
 _NARRATIVE_SECTIONS = {
     "STRENGTHS",
     "POTENTIAL WEAKNESSES / CONCERNS",
@@ -508,7 +550,7 @@ def _build_llm_input(player_card: Dict[str, Any], metric_docs: List[Dict[str, An
     return "\n".join(parts)
 
 
-def generate_report_content(
+def build_report_foundation(
     db,
     favorite_id: str,
     lang: str = "en",
@@ -531,8 +573,6 @@ def generate_report_content(
         if score_key not in player_card and identity.get(score_key) is not None:
             player_card[score_key] = identity[score_key]
 
-    report_text = (report_chain.invoke({"input_text": _build_llm_input(player_card, docs), "lang": lang}) or "").strip()
-    report_text = normalize_mobile_report_format(report_text, lang)
     content_json = {
         "favorite_player_id": favorite_id,
         "language": lang,
@@ -540,6 +580,87 @@ def generate_report_content(
         "player_identity": identity,
         "player_card": player_card,
         "metrics_docs": docs,
-        "report_text": report_text,
+        "report_text": "",
+        "sections": {
+            "data": {"status": "ready"},
+            "strengths": {"status": "pending"},
+            "weaknesses": {"status": "pending"},
+            "role_usage": {"status": "pending"},
+        },
+    }
+    return {"content": "", "content_json": with_phase_distributions(content_json)}
+
+
+def complete_report_foundation(foundation: Dict[str, Any], lang: str) -> Dict[str, Any]:
+    """Complete a persisted data foundation with the report's narrative layer."""
+    content_json = dict(foundation or {})
+    player_card = dict(content_json.get("player_card") or {})
+    docs = list(content_json.get("metrics_docs") or [])
+    report_text = (report_chain.invoke({"input_text": _build_llm_input(player_card, docs), "lang": lang}) or "").strip()
+    report_text = normalize_mobile_report_format(report_text, lang)
+    content_json["report_text"] = report_text
+    content_json["sections"] = {
+        "data": {"status": "ready"},
+        "analysis": {"status": "ready"},
+        "strengths": {"status": "ready"},
+        "weaknesses": {"status": "ready"},
+        "role_usage": {"status": "ready"},
     }
     return {"content": report_text, "content_json": with_phase_distributions(content_json)}
+
+
+def complete_report_section(foundation: Dict[str, Any], section: str, lang: str) -> Dict[str, Any]:
+    """Generate one optional narrative section and merge it into a persisted report."""
+    if section not in LAZY_NARRATIVE_SECTIONS:
+        raise ValueError(f"Unsupported report section: {section}")
+    content_json = dict(foundation or {})
+    player_card = dict(content_json.get("player_card") or {})
+    docs = list(content_json.get("metrics_docs") or [])
+    heading, rules = LAZY_NARRATIVE_SECTIONS[section]
+    raw_section_text = (section_report_chain.invoke({
+        "input_text": _build_llm_input(player_card, docs),
+        "lang": lang,
+        "heading": heading,
+        "rules": rules,
+    }) or "").strip()
+    bullet_lines = [line.strip() for line in raw_section_text.splitlines() if line.strip().startswith("-")]
+    if len(bullet_lines) != 5:
+        raise ValueError(f"Narrative section must contain exactly 5 bullets: {section}")
+    if section == "weaknesses":
+        normalized_output = raw_section_text.casefold()
+        placeholder_phrases = (
+            "no concern",
+            "not a concern",
+            "not a weakness",
+            "no verified",
+            "endişe yok",
+            "endişe oluşturmamaktadır",
+            "zayıflık adayı değildir",
+            "doğrulanmış bir endişe",
+        )
+        if any(phrase in normalized_output for phrase in placeholder_phrases):
+            raise ValueError("Weakness section contains no-concern placeholder copy")
+    section_text = f"{heading}\n" + "\n".join(bullet_lines)
+    section_text = normalize_mobile_report_format(section_text, lang)
+    texts = dict(content_json.get("narrative_sections") or {})
+    texts[section] = section_text
+    content_json["narrative_sections"] = texts
+    content_json["report_text"] = "\n\n".join(
+        texts[key] for key in ("strengths", "weaknesses", "role_usage") if texts.get(key)
+    )
+    sections = dict(content_json.get("sections") or {})
+    sections.setdefault("data", {"status": "ready"})
+    sections[section] = {"status": "ready"}
+    content_json["sections"] = sections
+    return {"content": content_json["report_text"], "content_json": with_phase_distributions(content_json)}
+
+
+def generate_report_content(
+    db,
+    favorite_id: str,
+    lang: str = "en",
+    version: int = 1,
+    player_identity: Optional[Dict[str, Any]] = None,
+) -> Dict[str, Any]:
+    foundation = build_report_foundation(db, favorite_id, lang, version, player_identity)
+    return complete_report_foundation(foundation["content_json"], lang)

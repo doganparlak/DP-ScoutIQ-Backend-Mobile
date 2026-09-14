@@ -15,7 +15,7 @@ from sqlalchemy import text
 
 from chatbot_module.chatbot_agentic import answer_question
 from chatbot_module.tools_agentic import ensure_player_position_label_cache
-from report_module.report import generate_report_content, normalize_mobile_report_format
+from report_module.report import build_report_foundation, complete_report_foundation, complete_report_section, generate_report_content, normalize_mobile_report_format
 # import our refactored pieces
 from api_module.utilities import (
     hash_pw, new_salt, now_iso, get_user_email_by_id, delete_user_everywhere, get_bearer_token, revoke_session,
@@ -32,7 +32,7 @@ from api_module.analytics import (
     get_player_snapshot,
     record_analytics_event,
 )
-from api_module.database import get_db, SessionLocal
+from api_module.database import get_db, SessionLocal, engine
 from api_module.models import (
     SignUpIn, LoginIn, LoginOut, ProfileOut, ProfilePatch, SetNewPasswordIn,
     PasswordResetRequestIn, VerifyResetIn, VerifySignupIn, SignupCodeRequestIn, ChatIn,
@@ -1566,83 +1566,107 @@ def _generate_report_background(
     version: int,
     player_payload: dict,
 ) -> None:
+    _run_report_background("scouting_reports", report_id, favorite_id, user_id, lang, version, player_payload)
+
+
+def _generate_player_pool_report_background(report_id: str, cache_key: str, user_id: int, lang: str, version: int, player_payload: dict) -> None:
+    _run_report_background("player_pool_scouting_reports", report_id, cache_key, user_id, lang, version, player_payload)
+
+
+def _run_report_background(table_name: str, report_id: str, identity_key: str, user_id: int, lang: str, version: int, player_payload: dict) -> None:
+    if table_name not in {"scouting_reports", "player_pool_scouting_reports"}:
+        return
     db = SessionLocal()
     try:
-        generated = generate_report_content(
-            db,
-            favorite_id=favorite_id,
-            lang=lang,
-            version=version,
-            player_identity=player_payload,
-        )
+        # A database lock prevents duplicate AI calls across workers. A crashed
+        # worker releases it, allowing the next open/poll request to resume.
+        with engine.begin() as owner:
+            locked = owner.execute(text("SELECT pg_try_advisory_xact_lock(hashtextextended(:key, 0))"), {"key": f"mobile-player-report:{table_name}:{report_id}"}).scalar()
+            if not locked:
+                return
+            row = db.execute(text(f"SELECT status, content_json FROM {table_name} WHERE id=:id AND user_id=:uid"), {"id": report_id, "uid": user_id}).mappings().first()
+            if not row or row["status"] == "ready":
+                return
+            foundation = row.get("content_json") if isinstance(row.get("content_json"), dict) else None
+            if not foundation or not foundation.get("player_card") or not isinstance(foundation.get("metrics_docs"), list):
+                foundation = build_report_foundation(db, identity_key, lang, version, player_payload)["content_json"]
+                db.execute(text(f"UPDATE {table_name} SET content_json=CAST(:content_json AS jsonb), status='processing', error=NULL, updated_at=NOW() WHERE id=:id AND user_id=:uid"), {
+                    "id": report_id, "uid": user_id, "content_json": json.dumps(foundation, ensure_ascii=False, default=str),
+                })
+                db.commit()
+            generated = complete_report_foundation(foundation, lang)
+            db.execute(text(f"""UPDATE {table_name}
+                SET status='ready', content=:content, content_json=CAST(:content_json AS jsonb), error=NULL, ready_at=NOW(), updated_at=NOW()
+                WHERE id=:id AND user_id=:uid"""), {
+                "id": report_id, "uid": user_id, "content": generated["content"],
+                "content_json": json.dumps(generated["content_json"], ensure_ascii=False, default=str),
+            })
+            db.commit()
+        if table_name == "scouting_reports":
+            favorite_snapshot = get_favorite_player_snapshot(db, identity_key, user_id)
+            record_analytics_event(user_id=user_id,event_type="scouting_report_ready",section="reports",source="scouting_report_generation",report_id=report_id,metadata={"language":lang,"version":version},**favorite_snapshot)
+    except Exception as exc:
+        db.rollback()
+        print(f"[report_generation_failed] report_id={report_id} identity={identity_key} error={exc}", flush=True)
+        try:
+            row = db.execute(text(f"SELECT content_json FROM {table_name} WHERE id=:id AND user_id=:uid"), {"id":report_id,"uid":user_id}).mappings().first()
+            partial = dict(row.get("content_json") or {}) if row else {}
+            sections = dict(partial.get("sections") or {})
+            sections["data"] = sections.get("data") or {"status":"ready"}
+            sections["analysis"] = {"status":"failed"}
+            partial["sections"] = sections
+            db.execute(text(f"UPDATE {table_name} SET status='failed', content_json=CAST(:content_json AS jsonb), error=:err, updated_at=NOW() WHERE id=:id AND user_id=:uid"), {
+                "id":report_id,"uid":user_id,"err":str(exc),"content_json":json.dumps(partial,ensure_ascii=False,default=str),
+            })
+            db.commit()
+        except Exception:
+            db.rollback()
+    finally:
+        db.close()
 
-        db.execute(
-            text("""
-                UPDATE scouting_reports
-                SET status = 'ready',
-                    content = :content,
-                    content_json = CAST(:content_json AS jsonb),
-                    error = NULL,
-                    ready_at = NOW(),
-                    updated_at = NOW()
-                WHERE id = :id
-                  AND user_id = :uid
-                  AND favorite_player_id = :fid
-            """),
-            {
-                "id": report_id,
-                "uid": user_id,
-                "fid": favorite_id,
-                "content": generated["content"],
-                "content_json": json.dumps(
-                    generated["content_json"],
-                    ensure_ascii=False,
-                    default=str,
-                ),
-            },
-        )
-        db.commit()
-        favorite_snapshot = get_favorite_player_snapshot(db, favorite_id, user_id)
-        record_analytics_event(
-            user_id=user_id,
-            event_type="scouting_report_ready",
-            section="reports",
-            source="scouting_report_generation",
-            report_id=report_id,
-            metadata={"language": lang, "version": version},
-            **favorite_snapshot,
-        )
 
-    except Exception as e:
-        print(f"[report_generation_failed] report_id={report_id} favorite_id={favorite_id} error={e}")
-        db.execute(
-            text("""
-                UPDATE scouting_reports
-                SET status = 'failed',
-                    error = :err,
-                    updated_at = NOW()
-                WHERE id = :id
-                  AND user_id = :uid
-                  AND favorite_player_id = :fid
-            """),
-            {
-                "id": report_id,
-                "uid": user_id,
-                "fid": favorite_id,
-                "err": str(e),
-            },
-        )
-        db.commit()
-        favorite_snapshot = get_favorite_player_snapshot(db, favorite_id, user_id)
-        record_analytics_event(
-            user_id=user_id,
-            event_type="scouting_report_failed",
-            section="reports",
-            source="scouting_report_generation",
-            report_id=report_id,
-            metadata={"language": lang, "version": version, "error": str(e)},
-            **favorite_snapshot,
-        )
+def _run_report_section_background(table_name: str, report_id: str, identity_key: str, user_id: int, lang: str, version: int, player_payload: dict, section: str) -> None:
+    if table_name not in {"scouting_reports", "player_pool_scouting_reports"}:
+        return
+    db = SessionLocal()
+    try:
+        # Lock the report, rather than only the section, so concurrent JSONB
+        # updates cannot overwrite another completed narrative page.
+        with engine.begin() as owner:
+            owner.execute(text("SELECT pg_advisory_xact_lock(hashtextextended(:key, 0))"), {"key": f"mobile-player-report:{table_name}:{report_id}"})
+            row = db.execute(text(f"SELECT content_json FROM {table_name} WHERE id=:id AND user_id=:uid"), {"id":report_id,"uid":user_id}).mappings().first()
+            if not row:
+                return
+            foundation = row.get("content_json") if isinstance(row.get("content_json"),dict) else None
+            if not foundation or not foundation.get("player_card") or not isinstance(foundation.get("metrics_docs"),list):
+                foundation = build_report_foundation(db,identity_key,lang,version,player_payload)["content_json"]
+            sections = dict(foundation.get("sections") or {})
+            if sections.get(section,{}).get("status") == "ready" and (foundation.get("narrative_sections") or {}).get(section):
+                return
+            foundation["generation_mode"] = "lazy_sections"
+            sections[section] = {"status":"processing"}
+            foundation["sections"] = sections
+            db.execute(text(f"UPDATE {table_name} SET status='ready',content_json=CAST(:content_json AS jsonb),error=NULL,updated_at=NOW() WHERE id=:id AND user_id=:uid"),{
+                "id":report_id,"uid":user_id,"content_json":json.dumps(foundation,ensure_ascii=False,default=str),
+            })
+            db.commit()
+            generated = complete_report_section(foundation,section,lang)
+            db.execute(text(f"UPDATE {table_name} SET status='ready',content=:content,content_json=CAST(:content_json AS jsonb),error=NULL,ready_at=NOW(),updated_at=NOW() WHERE id=:id AND user_id=:uid"),{
+                "id":report_id,"uid":user_id,"content":generated["content"],"content_json":json.dumps(generated["content_json"],ensure_ascii=False,default=str),
+            })
+            db.commit()
+    except Exception as exc:
+        db.rollback()
+        print(f"[report_section_failed] report_id={report_id} section={section} error={exc}",flush=True)
+        try:
+            row = db.execute(text(f"SELECT content_json FROM {table_name} WHERE id=:id AND user_id=:uid"),{"id":report_id,"uid":user_id}).mappings().first()
+            partial = dict(row.get("content_json") or {}) if row else {}
+            sections = dict(partial.get("sections") or {});sections[section]={"status":"failed"};partial["sections"]=sections
+            db.execute(text(f"UPDATE {table_name} SET status='ready',content_json=CAST(:content_json AS jsonb),error=NULL,updated_at=NOW() WHERE id=:id AND user_id=:uid"),{
+                "id":report_id,"uid":user_id,"content_json":json.dumps(partial,ensure_ascii=False,default=str),
+            });db.commit()
+        except Exception:
+            db.rollback()
     finally:
         db.close()
 
@@ -2021,17 +2045,104 @@ def create_player_pool_report(
         raise HTTPException(status_code=500, detail="Report generation failed") from exc
 
 
+@app.post("/player-pool/report-progress", response_model=ScoutingReportOut)
+def create_player_pool_report_progress(
+    background_tasks: BackgroundTasks,
+    payload: ScoutingReportIn,
+    user_id: int = Depends(require_auth),
+    accept_language: str | None = Header(default=None),
+    db: Session = Depends(get_db),
+):
+    """New-client durable flow. The legacy /player-pool/report contract stays synchronous."""
+    lang = normalize_lang(accept_language) or normalize_lang(get_user_language(db, user_id)) or "en"
+    version = 4
+    player_payload = payload.model_dump(exclude_none=True)
+    player_payload.pop("tutorial_mode", None)
+    club_row = _resolve_player_pool_report_club_row(db, player_payload)
+    if club_row is not None:
+        player_payload = _apply_club_row_to_report_payload(db, player_payload, club_row)
+    elif player_payload.get("worldCupMode"):
+        raise HTTPException(status_code=404, detail="Matching club player not found")
+    name = str(player_payload.get("name") or "").strip()
+    if not name:
+        raise HTTPException(status_code=400, detail="Player name is required")
+    cache_key = _player_pool_report_cache_key(player_payload)
+    row = db.execute(text("""SELECT id,status,content,content_json,language,version
+        FROM player_pool_scouting_reports WHERE user_id=:uid AND cache_key=:cache_key
+        AND COALESCE(language,'en')=:lang AND version=:ver LIMIT 1"""), {
+        "uid":user_id,"cache_key":cache_key,"lang":lang,"ver":version,
+    }).mappings().first()
+    if row and row["status"] == "ready":
+        content_json = row["content_json"] if isinstance(row["content_json"],dict) else {}
+        card = content_json.get("player_card") if isinstance(content_json,dict) else {}
+        missing_score = any(player_payload.get(key) is not None and isinstance(card,dict) and card.get(key) is None for key in ("potential","form"))
+        if not missing_score:
+            normalized = normalize_mobile_report_format(row["content"] or "",row["language"] or lang)
+            normalized_json = dict(content_json); normalized_json["report_text"] = normalized
+            return {"favorite_player_id":cache_key,"status":"ready","content":normalized,"content_json":with_phase_distributions(normalized_json),"language":row["language"],"version":row["version"],"player":payload}
+        db.execute(text("DELETE FROM player_pool_scouting_reports WHERE id=:id"),{"id":row["id"]});db.commit();row=None
+    if not row:
+        report_id = str(uuid.uuid4())
+        foundation = build_report_foundation(db,cache_key,lang,version,player_payload)["content_json"]
+        foundation["generation_mode"] = "lazy_sections"
+        db.execute(text("""INSERT INTO player_pool_scouting_reports
+            (id,user_id,cache_key,status,language,version,player_name,player_payload,content,content_json,created_at,updated_at)
+            VALUES (:id,:uid,:cache_key,'ready',:lang,:ver,:name,CAST(:payload AS jsonb),'',CAST(:content_json AS jsonb),NOW(),NOW())
+            ON CONFLICT (user_id,cache_key,language,version) DO NOTHING"""),{
+            "id":report_id,"uid":user_id,"cache_key":cache_key,"lang":lang,"ver":version,"name":name,
+            "payload":json.dumps(player_payload,ensure_ascii=False,default=str),"content_json":json.dumps(foundation,ensure_ascii=False,default=str),
+        });db.commit()
+        row = db.execute(text("""SELECT id,status,content,content_json,language,version FROM player_pool_scouting_reports
+            WHERE user_id=:uid AND cache_key=:cache_key AND COALESCE(language,'en')=:lang AND version=:ver LIMIT 1"""),{
+            "uid":user_id,"cache_key":cache_key,"lang":lang,"ver":version,
+        }).mappings().one()
+    return {"favorite_player_id":cache_key,"status":"ready","content":row.get("content") or "","content_json":with_phase_distributions(row.get("content_json")),"language":row["language"],"version":row["version"],"player":payload}
+
+
+@app.post("/player-pool/report-progress/sections/{section}", response_model=ScoutingReportOut)
+def create_player_pool_report_section(
+    section: str,
+    background_tasks: BackgroundTasks,
+    payload: ScoutingReportIn,
+    user_id: int = Depends(require_auth),
+    accept_language: str | None = Header(default=None),
+    db: Session = Depends(get_db),
+):
+    if section not in {"strengths","weaknesses","role_usage"}:
+        raise HTTPException(status_code=404,detail="Unknown report section")
+    lang = normalize_lang(accept_language) or normalize_lang(get_user_language(db,user_id)) or "en"
+    version = 4
+    player_payload = payload.model_dump(exclude_none=True);player_payload.pop("tutorial_mode",None)
+    club_row = _resolve_player_pool_report_club_row(db,player_payload)
+    if club_row is not None:
+        player_payload = _apply_club_row_to_report_payload(db,player_payload,club_row)
+    cache_key = _player_pool_report_cache_key(player_payload)
+    row = db.execute(text("""SELECT id,status,content,content_json,language,version FROM player_pool_scouting_reports
+        WHERE user_id=:uid AND cache_key=:key AND COALESCE(language,'en')=:lang AND version=:ver LIMIT 1"""),{
+        "uid":user_id,"key":cache_key,"lang":lang,"ver":version,
+    }).mappings().first()
+    if not row:
+        raise HTTPException(status_code=409,detail="Open the report before requesting a section")
+    content_json = dict(row.get("content_json") or {})
+    state = (content_json.get("sections") or {}).get(section,{}).get("status")
+    if state != "ready":
+        sections = dict(content_json.get("sections") or {});sections[section]={"status":"processing"};content_json["sections"]=sections
+        background_tasks.add_task(_run_report_section_background,"player_pool_scouting_reports",str(row["id"]),cache_key,user_id,lang,version,player_payload,section)
+    return {"favorite_player_id":cache_key,"status":"ready","content":row.get("content") or "","content_json":with_phase_distributions(content_json),"language":row["language"],"version":row["version"],"player":payload}
+
+
 @app.post("/me/favorites/{favorite_id}/report", response_model=ScoutingReportOut)
 def get_or_create_report(
     favorite_id: str,
     background_tasks: BackgroundTasks,
     payload: ScoutingReportIn = Body(default=ScoutingReportIn()),
+    lazy: bool = FastAPIQuery(default=False),
     user_id: int = Depends(require_auth),
     accept_language: str | None = Header(default=None),
     db: Session = Depends(get_db),
 ):
     lang = normalize_lang(accept_language) or normalize_lang(get_user_language(db, user_id)) or "en"
-    version = 3
+    version = 4 if lazy else 3
     player_payload = payload.model_dump(exclude_none=True)
     tutorial_mode = bool(player_payload.pop("tutorial_mode", False))
 
@@ -2116,6 +2227,11 @@ def get_or_create_report(
                     "player": payload,  # NEW
                 }
         else:
+            if not lazy:
+                background_tasks.add_task(
+                    _generate_report_background,
+                    str(row["id"]), favorite_id, user_id, lang, version, player_payload,
+                )
             record_analytics_event(
                 user_id=user_id,
                 event_type="scouting_report_pending",
@@ -2137,10 +2253,16 @@ def get_or_create_report(
 
     # Create processing record
     rid = str(uuid.uuid4())
+    foundation = build_report_foundation(db, favorite_id, lang, version, player_payload)["content_json"]
+    if lazy:
+        foundation["generation_mode"] = "lazy_sections"
+    initial_status = "ready" if lazy else "processing"
     db.execute(text("""
-        INSERT INTO scouting_reports (id, user_id, favorite_player_id, status, language, version, created_at, updated_at)
-        VALUES (:id, :uid, :fid, 'processing', :lang, :ver, NOW(), NOW())
-    """), {"id": rid, "uid": user_id, "fid": favorite_id, "lang": lang, "ver": version})
+        INSERT INTO scouting_reports (id, user_id, favorite_player_id, status, language, version, content, content_json, created_at, updated_at)
+        VALUES (:id, :uid, :fid, :status, :lang, :ver, '', CAST(:content_json AS jsonb), NOW(), NOW())
+    """), {"id": rid, "uid": user_id, "fid": favorite_id, "lang": lang, "ver": version,
+             "status": initial_status,
+             "content_json": json.dumps(foundation, ensure_ascii=False, default=str)})
     db.commit()
     record_analytics_event(
         user_id=user_id,
@@ -2154,22 +2276,57 @@ def get_or_create_report(
 
     # Generate asynchronously with the configured OpenAI chat model and update cache.
 
-    background_tasks.add_task(
-        _generate_report_background,
-        rid,
-        favorite_id,
-        user_id,
-        lang,
-        version,
-        player_payload,
-    )
+    if not lazy:
+        background_tasks.add_task(
+            _generate_report_background,
+            rid,
+            favorite_id,
+            user_id,
+            lang,
+            version,
+            player_payload,
+        )
 
     return {
         "favorite_player_id": favorite_id,
-        "status": "processing",
+        "status": initial_status,
         "content": None,
-        "content_json": None,
+        "content_json": foundation,
         "language": lang,
         "version": version,
         "player": payload,
     }
+
+
+@app.post("/me/favorites/{favorite_id}/report-progress/sections/{section}", response_model=ScoutingReportOut)
+def create_favorite_report_section(
+    favorite_id: str,
+    section: str,
+    background_tasks: BackgroundTasks,
+    payload: ScoutingReportIn = Body(default=ScoutingReportIn()),
+    user_id: int = Depends(require_auth),
+    accept_language: str | None = Header(default=None),
+    db: Session = Depends(get_db),
+):
+    if section not in {"strengths","weaknesses","role_usage"}:
+        raise HTTPException(status_code=404,detail="Unknown report section")
+    lang = normalize_lang(accept_language) or normalize_lang(get_user_language(db,user_id)) or "en"
+    version = 4
+    owned = db.execute(text("SELECT * FROM favorite_players WHERE id=:fid AND user_id=:uid"),{"fid":favorite_id,"uid":user_id}).mappings().first()
+    if not owned:
+        raise HTTPException(status_code=404,detail="Favorite not found")
+    player_payload = owned_report_identity(payload.model_dump(exclude_none=True),owned)
+    club_row = _resolve_player_pool_report_club_row(db,player_payload)
+    if club_row is not None:
+        player_payload = _apply_club_row_to_report_payload(db,player_payload,club_row)
+    row = db.execute(text("""SELECT id,status,content,content_json,language,version FROM scouting_reports
+        WHERE user_id=:uid AND favorite_player_id=:fid AND COALESCE(language,'en')=:lang AND version=:ver LIMIT 1"""),{
+        "uid":user_id,"fid":favorite_id,"lang":lang,"ver":version,
+    }).mappings().first()
+    if not row:
+        raise HTTPException(status_code=409,detail="Open the report before requesting a section")
+    content_json = dict(row.get("content_json") or {})
+    if (content_json.get("sections") or {}).get(section,{}).get("status") != "ready":
+        sections = dict(content_json.get("sections") or {});sections[section]={"status":"processing"};content_json["sections"]=sections
+        background_tasks.add_task(_run_report_section_background,"scouting_reports",str(row["id"]),favorite_id,user_id,lang,version,player_payload,section)
+    return {"favorite_player_id":favorite_id,"status":"ready","content":row.get("content") or "","content_json":with_phase_distributions(content_json),"language":row["language"],"version":row["version"],"player":payload}
