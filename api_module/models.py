@@ -112,6 +112,7 @@ class ProfileOut(BaseModel):
 
     consent: bool = False
     tutorialCompleted: bool = False
+    freeChatMessagesRemaining: int = 0
 
 class ConsentPatch(BaseModel):
     consent: bool
@@ -158,6 +159,7 @@ class IAPActivateIn(BaseModel):
 
 # ---- Chat models (existing) ----
 class ChatIn(BaseModel):
+    request_id: Optional[str] = Field(default=None, min_length=1, max_length=128)
     message: str
     session_id: Optional[str] = "default"
     strategy: Optional[str] = None

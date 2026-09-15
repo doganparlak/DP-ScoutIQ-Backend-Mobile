@@ -2,6 +2,8 @@ from report_module.phases import with_phase_distributions
 # api_module/main.py
 from typing import Optional, Dict, Any, List
 import time
+from uuid import uuid4
+from api_module.chat_trial import reserve_message, finish_message, refund_message
 from fastapi import FastAPI, HTTPException, Depends, Header, status, Response, Body, BackgroundTasks, Query as FastAPIQuery
 from fastapi.middleware.cors import CORSMiddleware
 from dotenv import load_dotenv
@@ -633,6 +635,27 @@ async def chat(body: ChatIn,
                user_id: int = Depends(require_auth),
                accept_language: str | None = Header(default=None),
                db: Session = Depends(get_db)) -> Dict[str, Any]:
+    if body.tutorial_mode:
+        raise HTTPException(403, "CHAT_TUTORIAL_PREVIEW")
+    if not body.message.strip():
+        raise HTTPException(422, "Message cannot be empty")
+    if is_user_pro(db, user_id):
+        response = await _chat_response(body, user_id, accept_language, db)
+        return {**response, "freeChatMessagesRemaining": None}
+    request_id = body.request_id or str(uuid4())
+    cached = reserve_message(db, user_id, request_id, body.message,
+                             body.session_id or "default", body.strategy)
+    if cached is not None:
+        return cached
+    try:
+        response = await _chat_response(body, user_id, accept_language, db)
+        return finish_message(db, user_id, request_id, response)
+    except BaseException:
+        refund_message(db, user_id, request_id)
+        raise
+
+
+async def _chat_response(body: ChatIn, user_id: int, accept_language, db: Session):
     started_at = time.perf_counter()
     session_id = body.session_id or "default"
     session_label = _chat_session_label(session_id)
@@ -645,15 +668,6 @@ async def chat(body: ChatIn,
         f"strategy_chars={strategy_chars}",
         flush=True,
     )
-
-    if not body.tutorial_mode and not is_user_pro(db, user_id):
-        elapsed_ms = int((time.perf_counter() - started_at) * 1000)
-        print(
-            "[mobile_chat] event=blocked_non_pro "
-            f"user_id={user_id} session={session_label} elapsed_ms={elapsed_ms}",
-            flush=True,
-        )
-        raise HTTPException(status_code=403, detail="ScoutWise Pro required")
 
     header_lang = normalize_lang(accept_language)
     user_lang = normalize_lang(get_user_language(db, user_id))
@@ -703,17 +717,6 @@ async def chat(body: ChatIn,
             flush=True,
         )
         raise
-
-    if body.tutorial_mode:
-        print(f"[mobile_chat] event=tutorial_response_start session={session_label}", flush=True)
-        response = tutorial_chat_response(db)
-        elapsed_ms = int((time.perf_counter() - started_at) * 1000)
-        print(
-            "[mobile_chat] event=tutorial_response_done "
-            f"session={session_label} elapsed_ms={elapsed_ms}",
-            flush=True,
-        )
-        return response
 
     print(f"[mobile_chat] event=answer_question_start session={session_label}", flush=True)
     try:

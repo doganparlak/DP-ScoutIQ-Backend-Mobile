@@ -174,6 +174,7 @@ def user_row_to_dict(row: any) -> dict:
         "subscriptionAutoRenew": get("subscription_auto_renew"),
         "consent": bool(get("consent", False)),
         "tutorialCompleted": bool(get("tutorial_completed", False)),
+        "freeChatMessagesRemaining": int(get("free_chat_messages_remaining", 0) or 0),
     }
 
 # ----- deletion helpers -----
