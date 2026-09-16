@@ -1,3 +1,4 @@
+from api_module.report_access import report_tier, player_section_ready
 from report_module.phases import with_phase_distributions
 # api_module/main.py
 from typing import Optional, Dict, Any, List
@@ -1597,7 +1598,7 @@ def _run_report_background(table_name: str, report_id: str, identity_key: str, u
                     "id": report_id, "uid": user_id, "content_json": json.dumps(foundation, ensure_ascii=False, default=str),
                 })
                 db.commit()
-            generated = complete_report_foundation(foundation, lang)
+            generated = complete_report_foundation(foundation, lang, report_tier(db, user_id))
             db.execute(text(f"""UPDATE {table_name}
                 SET status='ready', content=:content, content_json=CAST(:content_json AS jsonb), error=NULL, ready_at=NOW(), updated_at=NOW()
                 WHERE id=:id AND user_id=:uid"""), {
@@ -1644,16 +1645,16 @@ def _run_report_section_background(table_name: str, report_id: str, identity_key
             if not foundation or not foundation.get("player_card") or not isinstance(foundation.get("metrics_docs"),list):
                 foundation = build_report_foundation(db,identity_key,lang,version,player_payload)["content_json"]
             sections = dict(foundation.get("sections") or {})
-            if sections.get(section,{}).get("status") == "ready" and (foundation.get("narrative_sections") or {}).get(section):
+            if player_section_ready(foundation, section, report_tier(db, user_id)):
                 return
             foundation["generation_mode"] = "lazy_sections"
-            sections[section] = {"status":"processing"}
+            sections[section] = {**sections.get(section, {}), "status":"processing"}
             foundation["sections"] = sections
             db.execute(text(f"UPDATE {table_name} SET status='ready',content_json=CAST(:content_json AS jsonb),error=NULL,updated_at=NOW() WHERE id=:id AND user_id=:uid"),{
                 "id":report_id,"uid":user_id,"content_json":json.dumps(foundation,ensure_ascii=False,default=str),
             })
             db.commit()
-            generated = complete_report_section(foundation,section,lang)
+            generated = complete_report_section(foundation,section,lang,report_tier(db,user_id))
             db.execute(text(f"UPDATE {table_name} SET status='ready',content=:content,content_json=CAST(:content_json AS jsonb),error=NULL,ready_at=NOW(),updated_at=NOW() WHERE id=:id AND user_id=:uid"),{
                 "id":report_id,"uid":user_id,"content":generated["content"],"content_json":json.dumps(generated["content_json"],ensure_ascii=False,default=str),
             })
@@ -1664,7 +1665,7 @@ def _run_report_section_background(table_name: str, report_id: str, identity_key
         try:
             row = db.execute(text(f"SELECT content_json FROM {table_name} WHERE id=:id AND user_id=:uid"),{"id":report_id,"uid":user_id}).mappings().first()
             partial = dict(row.get("content_json") or {}) if row else {}
-            sections = dict(partial.get("sections") or {});sections[section]={"status":"failed"};partial["sections"]=sections
+            sections = dict(partial.get("sections") or {});sections[section]={**sections.get(section, {}), "status":"failed"};partial["sections"]=sections
             db.execute(text(f"UPDATE {table_name} SET status='ready',content_json=CAST(:content_json AS jsonb),error=NULL,updated_at=NOW() WHERE id=:id AND user_id=:uid"),{
                 "id":report_id,"uid":user_id,"content_json":json.dumps(partial,ensure_ascii=False,default=str),
             });db.commit()
@@ -1951,6 +1952,7 @@ def create_player_pool_report(
             lang=lang,
             version=version,
             player_identity=player_payload,
+            access_tier=report_tier(db, user_id),
         )
 
         db.execute(text("""
@@ -2128,8 +2130,8 @@ def create_player_pool_report_section(
         raise HTTPException(status_code=409,detail="Open the report before requesting a section")
     content_json = dict(row.get("content_json") or {})
     state = (content_json.get("sections") or {}).get(section,{}).get("status")
-    if state != "ready":
-        sections = dict(content_json.get("sections") or {});sections[section]={"status":"processing"};content_json["sections"]=sections
+    if not player_section_ready(content_json, section, report_tier(db, user_id)):
+        sections = dict(content_json.get("sections") or {});sections[section]={**sections.get(section, {}), "status":"processing"};content_json["sections"]=sections
         background_tasks.add_task(_run_report_section_background,"player_pool_scouting_reports",str(row["id"]),cache_key,user_id,lang,version,player_payload,section)
     return {"favorite_player_id":cache_key,"status":"ready","content":row.get("content") or "","content_json":with_phase_distributions(content_json),"language":row["language"],"version":row["version"],"player":payload}
 
@@ -2329,7 +2331,7 @@ def create_favorite_report_section(
     if not row:
         raise HTTPException(status_code=409,detail="Open the report before requesting a section")
     content_json = dict(row.get("content_json") or {})
-    if (content_json.get("sections") or {}).get(section,{}).get("status") != "ready":
-        sections = dict(content_json.get("sections") or {});sections[section]={"status":"processing"};content_json["sections"]=sections
+    if not player_section_ready(content_json, section, report_tier(db, user_id)):
+        sections = dict(content_json.get("sections") or {});sections[section]={**sections.get(section, {}), "status":"processing"};content_json["sections"]=sections
         background_tasks.add_task(_run_report_section_background,"scouting_reports",str(row["id"]),favorite_id,user_id,lang,version,player_payload,section)
     return {"favorite_player_id":favorite_id,"status":"ready","content":row.get("content") or "","content_json":with_phase_distributions(content_json),"language":row["language"],"version":row["version"],"player":payload}

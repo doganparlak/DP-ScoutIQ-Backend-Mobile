@@ -1060,7 +1060,16 @@ def _pre_match_momentum_perspectives(
         print(f"[pre_match_report] event=momentum_perspective_fallback error={exc}")
     return fallback
 
-def _pre_match_team_analysis(usages: list[dict[str, Any]], teams: list[dict[str, Any]], lang: str, strict: bool = False) -> dict[str, dict[str, str]]:
+def _pre_team_prompt(prompt: str, include_locked: bool) -> str:
+    if include_locked:
+        return prompt
+    return (prompt.replace('exactly positive, strategy, weakness', 'exactly positive, strategy')
+            .replace('positive and weakness must each be', 'positive must be')
+            .replace('In positive and weakness,', 'In positive,')
+            + ' Do not generate a weakness field or any other locked content.')
+
+
+def _pre_match_team_analysis(usages: list[dict[str, Any]], teams: list[dict[str, Any]], lang: str, strict: bool = False, include_locked: bool = True) -> dict[str, dict[str, str]]:
     compact = []
     fallback: dict[str, dict[str, str]] = {}
     for usage, team in zip(usages, teams):
@@ -1073,6 +1082,9 @@ def _pre_match_team_analysis(usages: list[dict[str, Any]], teams: list[dict[str,
             "strategy": "Rakibin alan bırakabildiği anlarda bu üretimi daha sık son bölgeye taşımak belirleyici olacaktır." if lang == "tr" else "Turning this output into more final-third actions when space appears against the opponent will be decisive.",
             "weakness": "Maçlardaki dalgalanan değerler, rakip baskısı altında korunması gereken gelişim alanını işaret ediyor." if lang == "tr" else "Variation across the selected matches identifies the area that must be protected under opponent pressure.",
         }
+    required_fields = ('positive', 'strategy', 'weakness') if include_locked else ('positive', 'strategy')
+    if not include_locked:
+        fallback = {key: {field: row[field] for field in required_fields} for key, row in fallback.items()}
     if len(compact) != 2 or not os.getenv("OPENAI_API_KEY"):
         if strict:
             raise ValueError("Analysis service unavailable")
@@ -1083,13 +1095,12 @@ def _pre_match_team_analysis(usages: list[dict[str, Any]], teams: list[dict[str,
             model=os.getenv("OPENAI_MATCH_REPORT_MODEL", os.getenv("OPENAI_REPORT_MODEL", "gpt-5.6-luna")),
             api_key=os.environ["OPENAI_API_KEY"], temperature=0.2, timeout=180, max_retries=1,
         ).invoke([
-            ("system", "You are ScoutWise's senior pre-match football analyst. Return only valid JSON keyed by team_id. Every team value MUST contain exactly positive, strategy, weakness. Each team's fixture_location specifies whether this upcoming match is home or away. Treat it as mandatory context: do not mention, rely on, or infer from that team's opposite-venue form. For example, an away team must never be described through home strength. positive and weakness must each be a 20-30 word, insight-led analysis; strategy must be an 30-40 word opponent-specific match plan. In positive and weakness, use at most two carefully chosen numbers only when they materially support the conclusion; prioritise tactical meaning, recurring behaviour, matchup implications and risk over metric recitation. strategy is STRICTLY plan and recommendations: do not mention any number, percentage, metric name, stat, or data value. For each team_id, strategy is advice for THAT team and must explicitly refer to the other supplied team by its name as the opponent. In Turkish, never use direct commands or second-person imperatives such as 'kurun', 'sıkıştırın', 'bırakın'; use formal analytical recommendations such as 'daraltılmalı', 'yönlendirilmelidir', 'korunmalıdır', 'uygulanmalı'. State how to defend, progress, press, create advantages and manage likely game states against this specific opponent. Never use the Turkish word 'örneklem'. Never invent unavailable tactics, players, facts, benchmarks or certainty. No markdown, headings, bullets, or leading dashes."),
+            ("system", _pre_team_prompt("You are ScoutWise's senior pre-match football analyst. Return only valid JSON keyed by team_id. Every team value MUST contain exactly positive, strategy, weakness. Each team's fixture_location specifies whether this upcoming match is home or away. Treat it as mandatory context: do not mention, rely on, or infer from that team's opposite-venue form. For example, an away team must never be described through home strength. positive and weakness must each be a 20-30 word, insight-led analysis; strategy must be an 30-40 word opponent-specific match plan. In positive and weakness, use at most two carefully chosen numbers only when they materially support the conclusion; prioritise tactical meaning, recurring behaviour, matchup implications and risk over metric recitation. strategy is STRICTLY plan and recommendations: do not mention any number, percentage, metric name, stat, or data value. For each team_id, strategy is advice for THAT team and must explicitly refer to the other supplied team by its name as the opponent. In Turkish, never use direct commands or second-person imperatives such as 'kurun', 'sıkıştırın', 'bırakın'; use formal analytical recommendations such as 'daraltılmalı', 'yönlendirilmelidir', 'korunmalıdır', 'uygulanmalı'. State how to defend, progress, press, create advantages and manage likely game states against this specific opponent. Never use the Turkish word 'örneklem'. Never invent unavailable tactics, players, facts, benchmarks or certainty. No markdown, headings, bullets, or leading dashes.", include_locked)),
             ("human", f"Language: {'Turkish' if lang == 'tr' else 'English'}\nTeam evidence: {json.dumps(compact, ensure_ascii=False, default=str)}"),
         ])
         parsed = json.loads(re.sub(r"^```(?:json)?\s*|\s*```$", "", str(response.content or "").strip(), flags=re.I))
-        if strict and (not isinstance(parsed, dict) or any(not isinstance(parsed.get(k),dict) or any(not str(parsed[k].get(f) or "").strip() for f in ("positive","strategy","weakness")) for k in fallback)):
+        if strict and (not isinstance(parsed, dict) or any(not isinstance(parsed.get(k),dict) or any(not str(parsed[k].get(f) or "").strip() for f in required_fields) for k in fallback)):
             raise ValueError("Incomplete team analysis")
-        required_fields = ("positive", "strategy", "weakness")
         if isinstance(parsed, dict):
             for key, value in parsed.items():
                 if isinstance(value, dict) and all(str(value.get(field) or "").strip() for field in required_fields):

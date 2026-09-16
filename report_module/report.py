@@ -44,7 +44,7 @@ metric or tactical terms in the prose.
 For strengths, every bullet must combine metric evidence, the match phase or game situation where the quality
 matters, and its tactical benefit or usage implication. Give strengths the same depth and approximate length
 as weakness bullets; target roughly 30-45 words per explanation.
-For weaknesses, prioritize CONCERN_CANDIDATES from the metric guide. If there are fewer than five, use
+For weaknesses, prioritize CONCERN_CANDIDATES from the metric guide. If there are fewer than the requested number, use
 role-relevant positive/output metrics as conditional development limits or tactical trade-offs. Ground every
 point in an actual supplied value, describe the game situation where it matters, and add a practical mitigation.
 Do not relabel LOW_RISK_NEGATIVES as poor performance. Never fill a weakness bullet by saying that a concern,
@@ -124,12 +124,23 @@ def normalize_mobile_report_format(report_text: str, lang: str) -> str:
     active_section: Optional[str] = None
     conclusion_index = 0
     output: List[str] = []
-    for line in report_text.splitlines():
+    report_lines = report_text.splitlines()
+    conclusion_titles = _MOBILE_CONCLUSION_TITLES.get(lang, ())
+    for line_index, line in enumerate(report_lines):
         stripped = line.strip()
         if stripped in _NARRATIVE_SECTIONS:
             active_section = stripped
             if stripped == "CONCLUSION":
                 conclusion_index = 0
+                remaining = []
+                for next_line in report_lines[line_index + 1:]:
+                    if next_line.strip() in _NARRATIVE_SECTIONS:
+                        break
+                    if next_line.strip().startswith('- '):
+                        remaining.append(next_line)
+                original = _MOBILE_CONCLUSION_TITLES.get(lang, ())
+                indices = (0, 3, 4) if len(remaining) == 3 else (0, 1, 3, 4) if len(remaining) == 4 else tuple(range(len(original)))
+                conclusion_titles = tuple(original[i] for i in indices if i < len(original))
             output.append(line)
             continue
         if stripped and not stripped.startswith("-") and stripped.isupper():
@@ -139,7 +150,6 @@ def normalize_mobile_report_format(report_text: str, lang: str) -> str:
             item = re.sub(r"^\s*-\s+", "", line).strip()
             match = re.match(r"^([^:：]+)[:：]\s*(.+)$", item)
             if match:
-                conclusion_titles = _MOBILE_CONCLUSION_TITLES.get(lang, ())
                 if active_section == "CONCLUSION" and conclusion_index < len(conclusion_titles):
                     title = conclusion_titles[conclusion_index]
                     conclusion_index += 1
@@ -591,11 +601,17 @@ def build_report_foundation(
     return {"content": "", "content_json": with_phase_distributions(content_json)}
 
 
-def complete_report_foundation(foundation: Dict[str, Any], lang: str) -> Dict[str, Any]:
+def complete_report_foundation(foundation: Dict[str, Any], lang: str, access_tier: str | None = None) -> Dict[str, Any]:
     """Complete a persisted data foundation with the report's narrative layer."""
     content_json = dict(foundation or {})
     player_card = dict(content_json.get("player_card") or {})
     docs = list(content_json.get("metrics_docs") or [])
+    if access_tier is not None:
+        current = {**foundation, "generation_mode": "lazy_sections"}
+        for section in LAZY_NARRATIVE_SECTIONS:
+            result = complete_report_section(current, section, lang, access_tier)
+            current = result['content_json']
+        return result
     report_text = (report_chain.invoke({"input_text": _build_llm_input(player_card, docs), "lang": lang}) or "").strip()
     report_text = normalize_mobile_report_format(report_text, lang)
     content_json["report_text"] = report_text
@@ -609,7 +625,7 @@ def complete_report_foundation(foundation: Dict[str, Any], lang: str) -> Dict[st
     return {"content": report_text, "content_json": with_phase_distributions(content_json)}
 
 
-def complete_report_section(foundation: Dict[str, Any], section: str, lang: str) -> Dict[str, Any]:
+def complete_report_section(foundation: Dict[str, Any], section: str, lang: str, access_tier: str = 'paid') -> Dict[str, Any]:
     """Generate one optional narrative section and merge it into a persisted report."""
     if section not in LAZY_NARRATIVE_SECTIONS:
         raise ValueError(f"Unsupported report section: {section}")
@@ -617,6 +633,18 @@ def complete_report_section(foundation: Dict[str, Any], section: str, lang: str)
     player_card = dict(content_json.get("player_card") or {})
     docs = list(content_json.get("metrics_docs") or [])
     heading, rules = LAZY_NARRATIVE_SECTIONS[section]
+    if section == 'role_usage':
+        titles = ['Role & System', 'In Possession', 'Out of Possession']
+        if access_tier == 'paid':
+            titles.insert(1, 'Development Focus')
+        expected_bullets = len(titles)
+        rules = (f"Provide exactly {expected_bullets} bullets in this order: " + ', '.join(titles)
+                 + '. Use the corresponding Turkish titles when lang is tr. '
+                 + 'Do not generate Usage Recommendation or any other section.'
+                 + (' Do not generate Development Focus.' if access_tier == 'free' else ''))
+    else:
+        expected_bullets = 2 if access_tier == 'free' else 3
+        rules = rules.replace('exactly 5', f'exactly {expected_bullets}')
     raw_section_text = (section_report_chain.invoke({
         "input_text": _build_llm_input(player_card, docs),
         "lang": lang,
@@ -624,8 +652,8 @@ def complete_report_section(foundation: Dict[str, Any], section: str, lang: str)
         "rules": rules,
     }) or "").strip()
     bullet_lines = [line.strip() for line in raw_section_text.splitlines() if line.strip().startswith("-")]
-    if len(bullet_lines) != 5:
-        raise ValueError(f"Narrative section must contain exactly 5 bullets: {section}")
+    if len(bullet_lines) != expected_bullets:
+        raise ValueError(f"Narrative section must contain exactly {expected_bullets} bullets: {section}")
     if section == "weaknesses":
         normalized_output = raw_section_text.casefold()
         placeholder_phrases = (
@@ -650,7 +678,7 @@ def complete_report_section(foundation: Dict[str, Any], section: str, lang: str)
     )
     sections = dict(content_json.get("sections") or {})
     sections.setdefault("data", {"status": "ready"})
-    sections[section] = {"status": "ready"}
+    sections[section] = {"status": "ready", "access_tier": access_tier}
     content_json["sections"] = sections
     return {"content": content_json["report_text"], "content_json": with_phase_distributions(content_json)}
 
@@ -661,6 +689,7 @@ def generate_report_content(
     lang: str = "en",
     version: int = 1,
     player_identity: Optional[Dict[str, Any]] = None,
+    access_tier: str | None = None,
 ) -> Dict[str, Any]:
     foundation = build_report_foundation(db, favorite_id, lang, version, player_identity)
-    return complete_report_foundation(foundation["content_json"], lang)
+    return complete_report_foundation(foundation["content_json"], lang, access_tier)

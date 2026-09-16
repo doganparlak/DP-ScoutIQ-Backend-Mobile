@@ -1,4 +1,5 @@
 """Durable mobile post-match reports; each completed section is checkpointed."""
+from api_module.report_access import user_report_tier, scope_satisfies
 import json
 import threading
 from concurrent.futures import ThreadPoolExecutor
@@ -24,14 +25,15 @@ def now():
 def compatible(content, language):
     return content.get('format') == 'mobile_post_match' and content.get('version') == VERSION and content.get('language') == language and isinstance(content.get('sections'), dict)
 
-def section_ready(content, section):
-    ready = (content.get('sections') or {}).get(section,{}).get('status') == 'ready' and section in content
+def section_ready(content, section, tier='paid'):
+    state = (content.get('sections') or {}).get(section, {})
+    ready = state.get('status') == 'ready' and section in content and (section not in AI_SECTIONS or scope_satisfies(state, tier))
     if section == 'team_analysis':
         return ready and (content.get(section) or {}).get('analysis_version') == TEAM_ANALYSIS_VERSION
     return ready
 
-def complete(content):
-    return all(section_ready(content, section) for section in SECTIONS)
+def complete(content, tier='paid'):
+    return all(section_ready(content, section, tier) for section in SECTIONS)
 
 def read_report(favorite_id, user_id):
     with engine.connect() as db:
@@ -87,8 +89,9 @@ def run(favorite_id, user_id, language, retry_failed):
             row = read_report(favorite_id,user_id)
             if not row:
                 return
+            tier = user_report_tier(user_id)
             content = row.get('report_content') or {}
-            if compatible(content,language) and row['report_status']=='ready' and complete(content):
+            if compatible(content,language) and row['report_status']=='ready' and complete(content,tier):
                 return
             if compatible(content,language) and row['report_status']=='failed' and not retry_failed:
                 return
@@ -96,9 +99,9 @@ def run(favorite_id, user_id, language, retry_failed):
                 content = {'format':'mobile_post_match','version':VERSION,'language':language,'sections':{k:{'status':'pending'} for k in SECTIONS}}
             for section in SECTIONS:
                 state = content['sections'].get(section, {})
-                if section_ready(content, section):
+                if section_ready(content, section, tier):
                     continue
-                content['sections'][section] = {'status':'processing','started_at':now()}
+                content['sections'][section] = {**content['sections'].get(section, {}), 'status':'processing','started_at':now()}
                 if not save(favorite_id,user_id,content,'processing'):
                     return
                 try:
@@ -109,14 +112,14 @@ def run(favorite_id, user_id, language, retry_failed):
                             raise ValueError('Match is not completed')
                         value = clean_data(report)
                     elif section=='team_analysis':
-                        value = {'teams':build_team_analysis(content['data'],language),'analysis_version':TEAM_ANALYSIS_VERSION}
+                        value = {'teams':build_team_analysis(content['data'],language,include_locked=tier == 'paid'),'analysis_version':TEAM_ANALYSIS_VERSION}
                     else:
                         data=content['data']
-                        value = {'teams':build_player_perspectives(data.get('teams') or [],data.get('lineups') or [],data.get('events') or [],language, strict=True)}
+                        value = {'teams':build_player_perspectives(data.get('teams') or [],data.get('lineups') or [],data.get('events') or [],language, strict=True, include_locked=tier == 'paid')}
                     content[section] = value
-                    content['sections'][section] = {'status':'ready','ready_at':now()}
+                    content['sections'][section] = {'status':'ready','ready_at':now(),'access_tier':tier}
                 except Exception:
-                    content['sections'][section] = {'status':'failed','failed_at':now()}
+                    content['sections'][section] = {**content['sections'].get(section, {}), 'status':'failed','failed_at':now()}
                     # If match data failed there is no evidence for either analysis.
                     if section=='data':
                         save(favorite_id,user_id,content,'failed')
@@ -151,14 +154,15 @@ def run_lazy(favorite_id, user_id, language, requested, pending_key):
             row = read_report(favorite_id,user_id)
             if not row:
                 return
+            tier = user_report_tier(user_id)
             content = row.get('report_content') or {}
             if not compatible(content,language):
                 content = {'format':'mobile_post_match','version':VERSION,'language':language,'generation_mode':'lazy_sections','sections':{k:{'status':'pending'} for k in SECTIONS}}
             targets = ['data'] if requested == 'data' else ['data',requested]
             for section in targets:
-                if section_ready(content, section):
+                if section_ready(content, section, tier):
                     continue
-                content['sections'][section] = {'status':'processing','started_at':now()}
+                content['sections'][section] = {**content['sections'].get(section, {}), 'status':'processing','started_at':now()}
                 if not save(favorite_id,user_id,content,'processing' if section == 'data' else 'ready'):
                     return
                 try:
@@ -169,14 +173,14 @@ def run_lazy(favorite_id, user_id, language, requested, pending_key):
                             raise ValueError('Match is not completed')
                         content[section] = clean_data(report)
                     elif section == 'team_analysis':
-                        content[section] = {'teams':build_team_analysis(content['data'],language),'analysis_version':TEAM_ANALYSIS_VERSION}
+                        content[section] = {'teams':build_team_analysis(content['data'],language,include_locked=tier == 'paid'),'analysis_version':TEAM_ANALYSIS_VERSION}
                     else:
                         data = content['data']
-                        content[section] = {'teams':build_player_perspectives(data.get('teams') or [],data.get('lineups') or [],data.get('events') or [],language,strict=True)}
-                    content['sections'][section] = {'status':'ready','ready_at':now()}
+                        content[section] = {'teams':build_player_perspectives(data.get('teams') or [],data.get('lineups') or [],data.get('events') or [],language,strict=True,include_locked=tier == 'paid')}
+                    content['sections'][section] = {'status':'ready','ready_at':now(),'access_tier':tier}
                     save(favorite_id,user_id,content,'ready')
                 except Exception:
-                    content['sections'][section] = {'status':'failed','failed_at':now()}
+                    content['sections'][section] = {**content['sections'].get(section, {}), 'status':'failed','failed_at':now()}
                     save(favorite_id,user_id,content,'failed' if section == 'data' else 'ready')
                     return
     finally:

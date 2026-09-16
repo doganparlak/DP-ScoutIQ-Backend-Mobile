@@ -1,3 +1,4 @@
+from api_module.report_access import user_report_tier
 from fastapi import APIRouter, Depends, HTTPException, Query
 from api_module.utilities import require_auth
 from .matches import get_current_team_matches
@@ -81,14 +82,15 @@ def report_data(payload: TeamAnalysisIn, user_id=Depends(require_auth), accept_l
 def report_profile(kind: str, payload: TeamAnalysisIn, user_id=Depends(require_auth), accept_language: str | None = Header(default=None)):
     if kind not in {"attack", "defense", "assessment"}:
         raise HTTPException(400, "Invalid profile")
+    paid = user_report_tier(user_id) == 'paid'
     base = report_data(payload, user_id, accept_language, True)
     language = "tr" if (accept_language or "").lower().startswith("tr") else "en"
     reports = base["reports"]
     metrics, _ = build_team_report_metrics(reports, payload.teamId, language, build_narratives=False)
     if kind == "assessment":
-        strengths = build_team_report_strengths(reports, payload.teamId, metrics, language)
+        strengths = build_team_report_strengths(reports, payload.teamId, metrics, language, build_narratives=paid)
         # Preserve enterprise's dependency: weaknesses must respect confirmed strengths.
-        weaknesses = build_team_report_weaknesses(reports, payload.teamId, metrics, strengths, language)
+        weaknesses = build_team_report_weaknesses(reports, payload.teamId, metrics, strengths, language, build_narratives=paid)
         for profile in (strengths, weaknesses):
             profile["themes"] = (profile.get("themes") or [])[:2]
             for item in profile["themes"]:
@@ -96,7 +98,7 @@ def report_profile(kind: str, payload: TeamAnalysisIn, user_id=Depends(require_a
         return {"strengths": strengths, "weaknesses": weaknesses}
     builder = build_team_report_attack_profile if kind == "attack" else build_team_report_defense_profile
     try:
-        profile = builder(reports, payload.teamId, metrics, language)
+        profile = builder(reports, payload.teamId, metrics, language, build_narratives=paid)
         profile["themes"] = (profile.get("themes") or [])[:2]
         for item in [*profile.get("themes", []), *profile.get("players", [])]:
             item["analysis"] = engine._mobile_profile_analysis(item.get("analysis"))

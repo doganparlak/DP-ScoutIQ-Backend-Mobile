@@ -1,3 +1,4 @@
+from api_module.report_access import user_report_tier, report_tier
 from fastapi import APIRouter, Depends, HTTPException
 from sqlalchemy import text
 from sqlalchemy.orm import Session
@@ -315,7 +316,8 @@ def post_match_team_analysis(fixture_id: int, language: str = "tr", user_id=Depe
     from .team_analysis import build_team_analysis, cached_analysis, cache_analysis
     if fixture_id <= 0 or language not in {"tr", "en"}:
         raise HTTPException(400, "Invalid fixture or language")
-    key = (user_id, fixture_id, language)
+    tier = user_report_tier(user_id)
+    key = (user_id, fixture_id, language, tier)
     cached = cached_analysis(key)
     if cached is not None:
         return cached
@@ -323,7 +325,7 @@ def post_match_team_analysis(fixture_id: int, language: str = "tr", user_id=Depe
         report = generate_match_report(fixture_id, lang=language, build_narratives=False)
         if not _is_completed_enterprise_fixture({"state": report.get("state") or {}}):
             raise HTTPException(409, "Team analysis is available after the match finishes")
-        result = {"teams": build_team_analysis(report, language)}
+        result = {"teams": build_team_analysis(report, language, include_locked=tier == 'paid')}
         cache_analysis(key, result)
         return result
     except (MatchReportError, requests.RequestException, ValueError):
@@ -337,7 +339,8 @@ def post_match_player_perspectives(fixture_id: int, language: str = "tr", user_i
     from .team_analysis import cached_analysis, cache_analysis
     if fixture_id <= 0 or language not in {"tr", "en"}:
         raise HTTPException(400, "Invalid fixture or language")
-    key = ("player-perspectives", user_id, fixture_id, language)
+    tier = user_report_tier(user_id)
+    key = ('player-perspectives', user_id, fixture_id, language, tier)
     cached = cached_analysis(key)
     if cached is not None:
         return cached
@@ -345,7 +348,7 @@ def post_match_player_perspectives(fixture_id: int, language: str = "tr", user_i
         report = generate_match_report(fixture_id, lang=language, build_narratives=False)
         if not _is_completed_enterprise_fixture({"state": report.get("state") or {}}):
             raise HTTPException(409, "Player analysis is available after the match finishes")
-        result = {"teams": build_player_perspectives(report.get("teams") or [], report.get("lineups") or [], report.get("events") or [], language)}
+        result = {"teams": build_player_perspectives(report.get("teams") or [], report.get("lineups") or [], report.get("events") or [], language, include_locked=tier == "paid")}
         cache_analysis(key, result)
         return result
     except (MatchReportError, requests.RequestException, ValueError):
@@ -370,7 +373,7 @@ def open_saved_post_match_report(fixture_id: int, language: str = "tr", lazy: bo
         schedule_lazy(str(row['id']),user_id,language,'data')
     else:
         schedule(str(row['id']),user_id,language,retry_failed=True)
-    if result['status'] != 'ready' or (not lazy and result.get('content') and not complete(result['content'])):
+    if result['status'] != 'ready' or (not lazy and result.get('content') and not complete(result['content'], report_tier(db,user_id))):
         result['status'] = 'processing'
     return result
 
@@ -389,7 +392,7 @@ def poll_saved_post_match_report(fixture_id: int, language: str = "tr", lazy: bo
         content = row.get('report_content') or {}
         if not compatible(content,language) or (content.get('sections') or {}).get('data',{}).get('status') != 'ready':
             schedule_lazy(str(row['id']),user_id,language,'data')
-    elif row['report_status'] not in {'ready','failed'} or not compatible(row.get('report_content') or {},language) or not complete(row.get('report_content') or {}):
+    elif row['report_status'] not in {'ready','failed'} or not compatible(row.get('report_content') or {},language) or not complete(row.get('report_content') or {}, report_tier(db,user_id)):
         schedule(str(row['id']),user_id,language)
         result['status'] = 'processing'
     return result
@@ -404,10 +407,10 @@ def ensure_saved_post_match_section(fixture_id: int, section: str, language: str
     if not row:
         raise HTTPException(404,"Saved report not found")
     content = dict(row.get('report_content') or {})
-    if compatible(content,language) and not section_ready(content,section):
-        sections = dict(content.get('sections') or {});sections[section]={'status':'processing'};content['sections']=sections
+    if compatible(content,language) and not section_ready(content,section,report_tier(db,user_id)):
+        sections = dict(content.get('sections') or {});sections[section]={**sections.get(section, {}), 'status':'processing'};content['sections']=sections
         row = {**dict(row),'report_content':content,'report_status':'ready'}
-    if not section_ready(content,section):
+    if not section_ready(content,section,report_tier(db,user_id)):
         schedule_lazy(str(row['id']),user_id,language,section)
     return public_report(row,language)
 
@@ -473,7 +476,7 @@ def pre_match_players(fixture_id: int, language: str = 'tr', user_id=Depends(req
     if language not in {'tr','en'}:
         raise HTTPException(400, 'Invalid language')
     result=pre_match_squad(fixture_id,user_id)
-    return {'teams':result['teams'], 'perspectives':_pre_match_player_perspectives(result['teams'],language)}
+    return {'teams':result['teams'], 'perspectives':(_pre_match_player_perspectives(result['teams'],language) if user_report_tier(user_id) == 'paid' else {})}
 
 
 @router.get("/match-pool/fixtures/{fixture_id}/pre-match-momentum")
@@ -484,7 +487,7 @@ def pre_match_momentum(fixture_id: int, language: str = 'tr', user_id=Depends(re
     result=pre_match_squad(fixture_id,user_id)
     usages=result['teams']
     has_data=any(row.get('average_net_pressure') or row.get('goals_for') or row.get('goals_against') for usage in usages for row in usage.get('momentum') or [])
-    return {'teams':[{k:u.get(k) for k in ('team_id','sample_size','momentum')} for u in usages], 'perspective':_pre_match_momentum_perspectives(usages,[{'id':u['team_id'],'name':u.get('team_name')} for u in usages],language) if has_data else None}
+    return {'teams':[{k:u.get(k) for k in ('team_id','sample_size','momentum')} for u in usages], 'perspective':_pre_match_momentum_perspectives(usages,[{'id':u['team_id'],'name':u.get('team_name')} for u in usages],language) if has_data and user_report_tier(user_id) == 'paid' else None}
 
 
 @router.get("/match-pool/fixtures/{fixture_id}/pre-match-score-flow")
@@ -506,7 +509,7 @@ def pre_match_team_analysis(fixture_id: int, language: str = 'tr', user_id=Depen
         raise HTTPException(400, 'Invalid language')
     usages=pre_match_squad(fixture_id,user_id)['teams']
     teams=[{'id':u['team_id'],'name':u.get('team_name'),'location':u.get('location')} for u in usages]
-    return {'teams':_pre_match_team_analysis(usages,teams,language)}
+    return {'teams':_pre_match_team_analysis(usages,teams,language,include_locked=user_report_tier(user_id) == 'paid')}
 
 @router.post("/match-pool/fixtures/{fixture_id}/saved-pre-report")
 def open_saved_pre_match_report(fixture_id: int, language: str = "tr", lazy: bool = False, user_id=Depends(require_auth), db: Session=Depends(get_db)):
@@ -531,7 +534,7 @@ def open_saved_pre_match_report(fixture_id: int, language: str = "tr", lazy: boo
         schedule_lazy(str(row['id']),user_id,language,'foundation')
     else:
         schedule(str(row['id']),user_id,language,retry_failed=True)
-    if result['status'] != 'ready' or (not lazy and result.get('content') and not complete(result['content'])):
+    if result['status'] != 'ready' or (not lazy and result.get('content') and not complete(result['content'], report_tier(db,user_id))):
         result['status'] = 'processing'
     return result
 
@@ -553,7 +556,7 @@ def poll_saved_pre_match_report(fixture_id: int, language: str = "tr", lazy: boo
         content = row.get('report_content') or {}
         if not compatible(content,language) or not all((content.get('sections') or {}).get(key,{}).get('status') == 'ready' for key in FOUNDATION_SECTIONS):
             schedule_lazy(str(row['id']),user_id,language,'foundation')
-    elif row['report_status'] not in {'ready','failed'} or not compatible(row.get('report_content') or {},language) or not complete(row.get('report_content') or {}):
+    elif row['report_status'] not in {'ready','failed'} or not compatible(row.get('report_content') or {},language) or not complete(row.get('report_content') or {}, report_tier(db,user_id)):
         schedule(str(row['id']),user_id,language)
         result['status'] = 'processing'
     return result
@@ -561,16 +564,16 @@ def poll_saved_pre_match_report(fixture_id: int, language: str = "tr", lazy: boo
 
 @router.post("/match-pool/fixtures/{fixture_id}/saved-pre-report/sections/{section}")
 def ensure_saved_pre_match_section(fixture_id: int, section: str, language: str = "tr", user_id=Depends(require_auth), db: Session=Depends(get_db)):
-    from .persistent_pre_reports import schedule_lazy, public_report, compatible, AI_SECTIONS
+    from .persistent_pre_reports import schedule_lazy, public_report, compatible, AI_SECTIONS, section_ready
     if fixture_id <= 0 or language not in {"tr","en"} or section not in AI_SECTIONS:
         raise HTTPException(400,"Invalid report section")
     row = db.execute(text("SELECT id,fixture_id,report_status,report_content FROM favorite_matches WHERE user_id=:uid AND fixture_id=:fid AND report_type='pre_match'"),{'uid':user_id,'fid':fixture_id}).mappings().first()
     if not row:
         raise HTTPException(404,"Saved report not found")
     content = dict(row.get('report_content') or {})
-    if compatible(content,language) and (content.get('sections') or {}).get(section,{}).get('status') != 'ready':
-        sections = dict(content.get('sections') or {});sections[section]={'status':'processing'};content['sections']=sections
+    if compatible(content,language) and not section_ready(content,section,report_tier(db,user_id)):
+        sections = dict(content.get('sections') or {});sections[section]={**sections.get(section, {}), 'status':'processing'};content['sections']=sections
         row = {**dict(row),'report_content':content,'report_status':'ready'}
-    if (content.get('sections') or {}).get(section,{}).get('status') != 'ready':
+    if not section_ready(content,section,report_tier(db,user_id)):
         schedule_lazy(str(row['id']),user_id,language,section)
     return public_report(row,language)

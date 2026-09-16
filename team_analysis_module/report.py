@@ -1720,11 +1720,39 @@ def _mobile_profile_analysis(value):
     return cleaned[:1]
 
 
+def _profile_prompt(prompt: str, build_narratives: bool) -> str:
+    """Keep AI selection for every plan; only the explanation fields are paid."""
+    if build_narratives:
+        return prompt
+    prompt = prompt.replace('title, metrics and analysis', 'title and metrics')
+    prompt = prompt.replace('playerId, metrics and analysis', 'playerId and metrics')
+    prompt = prompt.replace('title, exactly FOUR single-metric cells, and an analysis array of exactly ONE professional bullet of 20-30 words',
+                            'title and exactly FOUR single-metric cells')
+    # Remove prose-output requirements, preserving shared selection/evidence rules.
+    sentences = re.split(r'(?<=[.!?])\s+', prompt)
+    prompt = ' '.join(sentence for sentence in sentences
+                      if not re.search(r'\banalysis\b|\bbullet(?:s)?\b', sentence, re.I))
+    return prompt + (' Return the same evidence-led selections, dynamic titles, and diagnostic metrics '
+                     'you would choose for a full report. Do not generate explanations or commentary. '
+                     'All supplied volume metrics are already normalized per 90; show numeric values only, never /90. '
+                     'Rate metrics retain percentages. Consider all supplied relevant evidence, including metrics not displayed. '
+                     'Omit every analysis field. Theme objects contain exactly title and metrics; '
+                     'player objects, when requested, contain exactly playerId and metrics.')
+
+
+def _profile_output(value: dict[str, Any], build_narratives: bool) -> dict[str, Any]:
+    if build_narratives:
+        return value
+    from api_module.report_access import without_analysis
+    return without_analysis(value)
+
+
 def build_team_report_attack_profile(
     reports: list[dict[str, Any]],
     team_id: int,
     team_metrics: dict[str, list[dict[str, Any]]],
     lang: str = "en",
+    build_narratives: bool = True,
 ) -> dict[str, Any]:
     attacking_groups = ("contribution_impact", "shooting", "passing", "expected")
     team_name = next((str(team.get("name") or "") for report in reports for team in report.get("teams") or [] if int(team.get("id") or 0) == int(team_id)), "Takım" if lang == "tr" else "The team")
@@ -1885,7 +1913,7 @@ def build_team_report_attack_profile(
         })
     fallback = {"themes": fallback_themes[:2], "players": fallback_players}
     if not team_evidence or not selected or not os.getenv("OPENAI_API_KEY"):
-        return fallback
+        return _profile_output(fallback, build_narratives)
     try:
         from langchain_openai import ChatOpenAI
         language = "Turkish" if lang == "tr" else "English"
@@ -1894,7 +1922,7 @@ def build_team_report_attack_profile(
             model=os.getenv("OPENAI_MATCH_REPORT_MODEL", os.getenv("OPENAI_REPORT_MODEL", "gpt-5.6-luna")),
             api_key=os.environ["OPENAI_API_KEY"], temperature=0.25, timeout=120, max_retries=1,
         ).invoke([
-            ("system", "You are ScoutWise Enterprise's senior professional attacking analyst. Return only valid JSON with exactly themes and players. All supplied volume metrics are already normalized per 90 minutes, but NEVER write '/90' or repeatedly mention normalization in any metric cell or analysis; show only the numeric value. Rate metrics retain percentages. Ignore set-piece data entirely. themes must contain exactly two dynamically named, non-overlapping attacking identities inferred from the complete team dataset. Across them synthesize every available relevant metric from shooting, passing, advanced metrics and contribution-impact. Each theme must have title, metrics and analysis. Theme metrics must contain exactly four objects with label and value, and EVERY theme metric cell must contain exactly one metric label and one numeric value—never combine multiple metrics in a cell. Theme analysis must contain exactly ONE professional bullet string of 20-30 words. Start with a direct team-specific conclusion about how the team creates, progresses or finishes; never define a metric and never write generic statements. Use the entire supplied dataset internally, but do not recite it: each analysis bullet may contain at most ONE short numerical fact and at least 80% of its wording must be football inference. Never write sequences such as '37 passes, 30 accurate passes, 81%, 2 final-third passes'. Explain what the relationships reveal about recurring attacking routes, dependencies, efficiency, risk, chance quality, conversion and threat variety. players must contain exactly two players selected strictly through attacking contribution. For every player copy playerId exactly from the supplied shortlist and return playerId, metrics and analysis. Each player must have exactly four role-specific metric cells, each containing exactly one metric label and one numeric value. Choose different cells when player roles differ. Player analysis must consider all supplied relevant metrics—including those not displayed—but contain exactly ONE bullet of 20-30 words, with at most ONE short numerical fact per bullet. Lead with what the player does in this team's attack, the decisions or spaces the role affects, and the dependency or advantage created; do not narrate a statistical line. Do not mention match count, opponents, unavailable tactics, external benchmarks, coverage counts, raw category names or recommendations. In Turkish translate Touches exactly as 'Topla Buluşma' and use 'başarı oranı', never 'doğruluk'; write advanced metrics with their full Turkish name followed by the correct abbreviation in parentheses, for example 'Akan Oyun Gol Beklentisi (xGOP)'. Preserve distinct xG, xA, xGoT, npxG, xGOP and other supplied advanced metrics. Never output markdown."),
+            ("system", _profile_prompt("You are ScoutWise Enterprise's senior professional attacking analyst. Return only valid JSON with exactly themes and players. All supplied volume metrics are already normalized per 90 minutes, but NEVER write '/90' or repeatedly mention normalization in any metric cell or analysis; show only the numeric value. Rate metrics retain percentages. Ignore set-piece data entirely. themes must contain exactly two dynamically named, non-overlapping attacking identities inferred from the complete team dataset. Across them synthesize every available relevant metric from shooting, passing, advanced metrics and contribution-impact. Each theme must have title, metrics and analysis. Theme metrics must contain exactly four objects with label and value, and EVERY theme metric cell must contain exactly one metric label and one numeric value—never combine multiple metrics in a cell. Theme analysis must contain exactly ONE professional bullet string of 20-30 words. Start with a direct team-specific conclusion about how the team creates, progresses or finishes; never define a metric and never write generic statements. Use the entire supplied dataset internally, but do not recite it: each analysis bullet may contain at most ONE short numerical fact and at least 80% of its wording must be football inference. Never write sequences such as '37 passes, 30 accurate passes, 81%, 2 final-third passes'. Explain what the relationships reveal about recurring attacking routes, dependencies, efficiency, risk, chance quality, conversion and threat variety. players must contain exactly two players selected strictly through attacking contribution. For every player copy playerId exactly from the supplied shortlist and return playerId, metrics and analysis. Each player must have exactly four role-specific metric cells, each containing exactly one metric label and one numeric value. Choose different cells when player roles differ. Player analysis must consider all supplied relevant metrics—including those not displayed—but contain exactly ONE bullet of 20-30 words, with at most ONE short numerical fact per bullet. Lead with what the player does in this team's attack, the decisions or spaces the role affects, and the dependency or advantage created; do not narrate a statistical line. Do not mention match count, opponents, unavailable tactics, external benchmarks, coverage counts, raw category names or recommendations. In Turkish translate Touches exactly as 'Topla Buluşma' and use 'başarı oranı', never 'doğruluk'; write advanced metrics with their full Turkish name followed by the correct abbreviation in parentheses, for example 'Akan Oyun Gol Beklentisi (xGOP)'. Preserve distinct xG, xA, xGoT, npxG, xGOP and other supplied advanced metrics. Never output markdown.", build_narratives)),
             ("human", f"Language: {language}\nTeam: {team_name}\nAggregated team attacking metrics: {json.dumps(team_evidence, ensure_ascii=False)}\nEligible attacking-player shortlist: {json.dumps(compact_players, ensure_ascii=False, default=str)}"),
         ])
         raw = re.sub(r"^```(?:json)?\s*|\s*```$", "", str(response.content or "").strip(), flags=re.I)
@@ -1936,10 +1964,10 @@ def build_team_report_attack_profile(
                 for item in items
             )
 
-        valid_themes = len(themes) == 2 and valid_single_metric_cells(themes) and inference_led(themes) and all(len(item.get("analysis") or []) >= 1 for item in themes)
-        valid_players = len(output_players) == 2 and valid_single_metric_cells(output_players) and inference_led(output_players) and all(len(item.get("analysis") or []) >= 1 for item in output_players)
+        valid_themes = len(themes) == 2 and valid_single_metric_cells(themes) and inference_led(themes) and (not build_narratives or all(len(item.get("analysis") or []) >= 1 for item in themes))
+        valid_players = len(output_players) == 2 and valid_single_metric_cells(output_players) and inference_led(output_players) and (not build_narratives or all(len(item.get("analysis") or []) >= 1 for item in output_players))
         if valid_themes and valid_players:
-            return {"themes": [{"title": str(item.get("title") or "").strip(), "metrics": [{"label": str(value.get("label") or ""), "value": str(value.get("value") or "")} for value in (item.get("metrics") or [])[:4] if isinstance(value, dict)], "analysis": [str(value) for value in (item.get("analysis") or [])[:3]]} for item in themes], "players": output_players}
+            return _profile_output({"themes": [{"title": str(item.get("title") or "").strip(), "metrics": [{"label": str(value.get("label") or ""), "value": str(value.get("value") or "")} for value in (item.get("metrics") or [])[:4] if isinstance(value, dict)], "analysis": [str(value) for value in (item.get("analysis") or [])[:3]]} for item in themes], "players": output_players}, build_narratives)
 
         # Preserve usable model-written analysis instead of discarding the whole
         # profile when one metric cell or one player identifier is malformed.
@@ -1977,10 +2005,10 @@ def build_team_report_attack_profile(
             f"themes={len(themes)} output_players={len(output_players)} "
             f"valid_themes={valid_themes} valid_players={valid_players}"
         )
-        return {"themes": repaired_themes, "players": repaired_players[:2]}
+        return _profile_output({"themes": repaired_themes, "players": repaired_players[:2]}, build_narratives)
     except Exception as exc:
         print(f"[enterprise_team_report] event=attack_profile_fallback error={exc}")
-    return fallback
+    return _profile_output(fallback, build_narratives)
 
 
 def build_team_report_defense_profile(
@@ -1988,6 +2016,7 @@ def build_team_report_defense_profile(
     team_id: int,
     team_metrics: dict[str, list[dict[str, Any]]],
     lang: str = "en",
+    build_narratives: bool = True,
 ) -> dict[str, Any]:
     """Build a selected-match defensive identity without goalkeeper-save evidence."""
     groups = ("defending", "errors_discipline")
@@ -2119,11 +2148,11 @@ def build_team_report_defense_profile(
     fallback_players = [fallback_player_for(player) for player in selected]
     fallback = {"themes": fallback_themes[:2], "players": fallback_players}
     if not team_evidence or len(selected) < 2 or not os.getenv("OPENAI_API_KEY"):
-        return fallback
+        return _profile_output(fallback, build_narratives)
     try:
         from langchain_openai import ChatOpenAI
         response = ChatOpenAI(model=os.getenv("OPENAI_MATCH_REPORT_MODEL", os.getenv("OPENAI_REPORT_MODEL", "gpt-5.6-luna")), api_key=os.environ["OPENAI_API_KEY"], temperature=.25, timeout=120, max_retries=1).invoke([
-            ("system", "You are ScoutWise Enterprise's senior defensive football analyst. Return only valid JSON with exactly themes and players. Every analysis field MUST be a JSON array of complete strings, never one string. Never select a goalkeeper and never use saves or goalkeeper save data. All volume values supplied are per 90; never write /90. Create exactly two dynamic, non-overlapping defensive dimensions. Every theme must have title, exactly FOUR single-metric cells, and an analysis array of exactly ONE professional bullet of 20-30 words. Interpret the team's defensive identity with the same depth used in a professional attacking profile: connect the complete evidence across ball winning, interventions, duels, aerial control, recoveries, blocks, clearances, errors and discipline; lead with what the team repeatedly does, then explain security, exposure, efficiency or dependency. Discuss only the supplied defensive evidence positively and directly. Never explain that an excluded, unavailable or attacking metric is not a defensive measure; omit it silently and analyse what is present. Return exactly two key defensive outfield players copied from the shortlist, including exact playerId. Every player must have exactly FOUR single-metric cells selected independently for that player's own position and distinctive evidence. Avoid filling a card with variants of one family such as aerial total, aerial won and aerial lost; cover four different defensive facets whenever data permits. The two players must not automatically receive the same four metrics. Every player analysis must be a JSON array of exactly ONE player-specific bullet of 20-30 words. Consider all supplied metrics internally, including metrics not displayed. Each bullet must lead with a football conclusion, contain at most one short numeric fact, and interpret relationships rather than define or list metrics. Do not invent pressing schemes, tactical intent, benchmarks or causation. Turkish output must use natural professional terminology and translate all metric names. No markdown."),
+            ("system", _profile_prompt("You are ScoutWise Enterprise's senior defensive football analyst. Return only valid JSON with exactly themes and players. Every analysis field MUST be a JSON array of complete strings, never one string. Never select a goalkeeper and never use saves or goalkeeper save data. All volume values supplied are per 90; never write /90. Create exactly two dynamic, non-overlapping defensive dimensions. Every theme must have title, exactly FOUR single-metric cells, and an analysis array of exactly ONE professional bullet of 20-30 words. Interpret the team's defensive identity with the same depth used in a professional attacking profile: connect the complete evidence across ball winning, interventions, duels, aerial control, recoveries, blocks, clearances, errors and discipline; lead with what the team repeatedly does, then explain security, exposure, efficiency or dependency. Discuss only the supplied defensive evidence positively and directly. Never explain that an excluded, unavailable or attacking metric is not a defensive measure; omit it silently and analyse what is present. Return exactly two key defensive outfield players copied from the shortlist, including exact playerId. Every player must have exactly FOUR single-metric cells selected independently for that player's own position and distinctive evidence. Avoid filling a card with variants of one family such as aerial total, aerial won and aerial lost; cover four different defensive facets whenever data permits. The two players must not automatically receive the same four metrics. Every player analysis must be a JSON array of exactly ONE player-specific bullet of 20-30 words. Consider all supplied metrics internally, including metrics not displayed. Each bullet must lead with a football conclusion, contain at most one short numeric fact, and interpret relationships rather than define or list metrics. Do not invent pressing schemes, tactical intent, benchmarks or causation. Turkish output must use natural professional terminology and translate all metric names. No markdown.", build_narratives)),
             ("human", f"Language: {'Turkish' if lang == 'tr' else 'English'}\nTeam: {team_name}\nTeam defensive metrics: {json.dumps(team_evidence, ensure_ascii=False)}\nDefensive player shortlist: {json.dumps(shortlist, ensure_ascii=False, default=str)}"),
         ])
         parsed = json.loads(re.sub(r"^```(?:json)?\s*|\s*```$", "", str(response.content or "").strip(), flags=re.I))
@@ -2147,10 +2176,10 @@ def build_team_report_defense_profile(
             metrics = [{"label": str(metric.get("label") or ""), "value": str(metric.get("value") or "")} for metric in (item.get("metrics") or [])[:4] if isinstance(metric, dict) and allowed(metric.get("label"))]
             output_players.append({"playerId": source["playerId"], "name": source["name"], "imageUrl": source.get("imageUrl"), "position": source.get("position"), "minutes": source["minutes"], "metrics": metrics, "analysis": analysis_list(item.get("analysis"))})
         themes = [{"title": str(item.get("title") or ""), "metrics": [{"label": str(metric.get("label") or ""), "value": str(metric.get("value") or "")} for metric in (item.get("metrics") or [])[:4] if isinstance(metric, dict) and allowed(metric.get("label"))], "analysis": analysis_list(item.get("analysis"))} for item in generated_themes[:2] if isinstance(item, dict)]
-        valid_themes = len(themes) == 2 and all(len(item["metrics"]) == 4 and len(item["analysis"]) >= 1 for item in themes)
-        valid_players = len(output_players) == 2 and all(len(item["metrics"]) == 4 and len(item["analysis"]) >= 1 for item in output_players)
+        valid_themes = len(themes) == 2 and all(len(item["metrics"]) == 4 and (not build_narratives or len(item["analysis"]) >= 1) for item in themes)
+        valid_players = len(output_players) == 2 and all(len(item["metrics"]) == 4 and (not build_narratives or len(item["analysis"]) >= 1) for item in output_players)
         if valid_themes and valid_players:
-            return {"themes": themes, "players": output_players}
+            return _profile_output({"themes": themes, "players": output_players}, build_narratives)
         repaired_themes = []
         for index, fallback_theme in enumerate(fallback_themes[:2]):
             generated = themes[index] if index < len(themes) else {}
@@ -2169,10 +2198,10 @@ def build_team_report_defense_profile(
         repaired_ids = {str(player["playerId"]) for player in repaired_players}
         repaired_players.extend(player for player in fallback_players if str(player["playerId"]) not in repaired_ids)
         print(f"[enterprise_team_report] event=defense_profile_validation_repair themes={len(themes)} players={len(output_players)} valid_themes={valid_themes} valid_players={valid_players}")
-        return {"themes": repaired_themes, "players": repaired_players[:2]}
+        return _profile_output({"themes": repaired_themes, "players": repaired_players[:2]}, build_narratives)
     except Exception as exc:
         print(f"[enterprise_team_report] event=defense_profile_fallback error={exc}")
-    return fallback
+    return _profile_output(fallback, build_narratives)
 
 
 
@@ -2312,6 +2341,7 @@ def build_team_report_strengths(
     team_id: int,
     team_metrics: dict[str, list[dict[str, Any]]],
     lang: str = "en",
+    build_narratives: bool = True,
 ) -> dict[str, Any]:
     """Identify three evidence-supported team strengths from all metric categories."""
     team_name = next((str(team.get("name") or "") for report in reports for team in report.get("teams") or [] if int(team.get("id") or 0) == int(team_id)), "Takım" if lang == "tr" else "The team")
@@ -2357,11 +2387,11 @@ def build_team_report_strengths(
         })
     fallback = {"themes": fallback_themes[:2]}
     if not flat or not os.getenv("OPENAI_API_KEY"):
-        return fallback
+        return _profile_output(fallback, build_narratives)
     try:
         from langchain_openai import ChatOpenAI
         response = ChatOpenAI(model=os.getenv("OPENAI_MATCH_REPORT_MODEL", os.getenv("OPENAI_REPORT_MODEL", "gpt-5.6-luna")), api_key=os.environ["OPENAI_API_KEY"], temperature=.25, timeout=120, max_retries=1).invoke([
-            ("system", "You are ScoutWise Enterprise's senior team-performance analyst. Return only valid JSON with exactly themes. themes must be an array of exactly TWO dynamically named, non-overlapping team strengths inferred from ALL supplied metric categories. Do not use fixed generic headings. Every theme must contain exactly title, metrics and analysis. metrics must contain exactly FOUR objects with exactly label and value; each cell contains one metric and one numeric value only. Select the four most diagnostic visible metrics for that strength, but use every related supplied metric internally when interpreting it. analysis MUST be a JSON array of exactly ONE complete professional string of 20-30 words. Lead with a direct team-specific conclusion about what the team repeatedly does well, connect volume, efficiency and outcome where supported, and explain the practical football advantage. At least 80% of each bullet must be inference; use at most one short numerical fact per bullet and never enumerate a statistical line. Strengths must be positively framed but evidence-led. Do not claim superiority to external teams or leagues because no benchmark is supplied. Never invent tactics, roles, causation, recommendations or unavailable context. All volume metrics are already normalized per 90; never write /90. Rate metrics retain percentages. In Turkish use natural professional football terminology and translate displayed metric labels. No markdown."),
+            ("system", _profile_prompt("You are ScoutWise Enterprise's senior team-performance analyst. Return only valid JSON with exactly themes. themes must be an array of exactly TWO dynamically named, non-overlapping team strengths inferred from ALL supplied metric categories. Do not use fixed generic headings. Every theme must contain exactly title, metrics and analysis. metrics must contain exactly FOUR objects with exactly label and value; each cell contains one metric and one numeric value only. Select the four most diagnostic visible metrics for that strength, but use every related supplied metric internally when interpreting it. analysis MUST be a JSON array of exactly ONE complete professional string of 20-30 words. Lead with a direct team-specific conclusion about what the team repeatedly does well, connect volume, efficiency and outcome where supported, and explain the practical football advantage. At least 80% of each bullet must be inference; use at most one short numerical fact per bullet and never enumerate a statistical line. Strengths must be positively framed but evidence-led. Do not claim superiority to external teams or leagues because no benchmark is supplied. Never invent tactics, roles, causation, recommendations or unavailable context. All volume metrics are already normalized per 90; never write /90. Rate metrics retain percentages. In Turkish use natural professional football terminology and translate displayed metric labels. No markdown.", build_narratives)),
             ("human", f"Language: {'Turkish' if lang == 'tr' else 'English'}\nTeam: {team_name}\nAll aggregated team metrics: {json.dumps(evidence, ensure_ascii=False)}"),
         ])
         parsed = json.loads(re.sub(r"^```(?:json)?\s*|\s*```$", "", str(response.content or "").strip(), flags=re.I))
@@ -2375,10 +2405,10 @@ def build_team_report_strengths(
             themes.append({"title": str(item.get("title") or fallback_theme["title"]).strip(), "metrics": metrics if len(metrics) == 4 else fallback_theme["metrics"], "analysis": analysis if len(analysis) >= 1 else fallback_theme["analysis"]})
         if len(generated) != 2:
             print(f"[enterprise_team_report] event=strengths_validation_repair themes={len(generated)}")
-        return {"themes": themes}
+        return _profile_output({"themes": themes}, build_narratives)
     except Exception as exc:
         print(f"[enterprise_team_report] event=strengths_fallback error={exc}")
-        return fallback
+        return _profile_output(fallback, build_narratives)
 
 
 def build_team_report_weaknesses(
@@ -2387,6 +2417,7 @@ def build_team_report_weaknesses(
     team_metrics: dict[str, list[dict[str, Any]]],
     strengths: dict[str, Any] | None = None,
     lang: str = "en",
+    build_narratives: bool = True,
 ) -> dict[str, Any]:
     """Identify three evidence-supported team vulnerabilities from all metric categories."""
     team_name = next((str(team.get("name") or "") for report in reports for team in report.get("teams") or [] if int(team.get("id") or 0) == int(team_id)), "Takım" if lang == "tr" else "The team")
@@ -2448,11 +2479,11 @@ def build_team_report_weaknesses(
         })
     fallback = {"themes": fallback_themes[:2]}
     if not flat or not os.getenv("OPENAI_API_KEY"):
-        return fallback
+        return _profile_output(fallback, build_narratives)
     try:
         from langchain_openai import ChatOpenAI
         response = ChatOpenAI(model=os.getenv("OPENAI_MATCH_REPORT_MODEL", os.getenv("OPENAI_REPORT_MODEL", "gpt-5.6-luna")), api_key=os.environ["OPENAI_API_KEY"], temperature=.25, timeout=120, max_retries=1).invoke([
-            ("system", "You are ScoutWise Enterprise's senior team-performance analyst. Return only valid JSON with exactly themes. themes must be an array of exactly TWO dynamically named, non-overlapping team weaknesses inferred from ALL supplied metric categories. CONFIRMED_STRENGTHS is binding editorial context: never describe a confirmed strength, its visible metrics, or the same causal relationship as a weakness. A genuine trade-off may be discussed only when distinct adverse evidence explicitly proves its separate cost. Do not use fixed generic headings. Every theme must contain exactly title, metrics and analysis. metrics must contain exactly FOUR objects with exactly label and value; copy each metric label EXACTLY from the supplied evidence and use one numeric value only. Select the four most diagnostic visible metrics for that weakness, but use every related supplied metric internally when interpreting it. evidenceDirection is binding: adverse metrics may directly support a weakness; contextual metrics require a demonstrated relationship; positive_output metrics must NEVER be treated as weak merely because their value seems low or high without an external benchmark. Expected-goal production—including set-play expected goals—is positive chance-production evidence and must not appear as weakness evidence unless a directly supplied matching outcome proves under-conversion. Do not combine low crossing accuracy with strong set-play expected-goal production and call both evidence of the same weakness. analysis MUST be a JSON array of exactly ONE complete professional string of 20-30 words. Lead with a direct team-specific conclusion about the recurring vulnerability, connect volume, efficiency, errors and outcome where supported, and explain its practical football cost. At least 80% of each bullet must be inference; use at most one short numerical fact per bullet and never enumerate a statistical line. Diagnose weaknesses directly without praise, recommendations or softening language. Do not claim inferiority to external teams or leagues because no benchmark is supplied; identify internal inefficiency, imbalance, dependency or repeated exposure from relationships within the supplied evidence. Never invent tactics, roles, causation or unavailable context. All volume metrics are already normalized per 90; never write /90. Rate metrics retain percentages. In Turkish use established professional football terminology. Never use 'teslimat' for a cross or set-piece service; use 'servis', 'orta' or 'topun doğru bölgeye gönderilmesi'. Never use 'sürtünme'; use 'verim kaybı', 'üretim kopukluğu' or 'tehdide dönüşüm sorunu'. Never explain missing or irrelevant metrics. No markdown."),
+            ("system", _profile_prompt("You are ScoutWise Enterprise's senior team-performance analyst. Return only valid JSON with exactly themes. themes must be an array of exactly TWO dynamically named, non-overlapping team weaknesses inferred from ALL supplied metric categories. CONFIRMED_STRENGTHS is binding editorial context: never describe a confirmed strength, its visible metrics, or the same causal relationship as a weakness. A genuine trade-off may be discussed only when distinct adverse evidence explicitly proves its separate cost. Do not use fixed generic headings. Every theme must contain exactly title, metrics and analysis. metrics must contain exactly FOUR objects with exactly label and value; copy each metric label EXACTLY from the supplied evidence and use one numeric value only. Select the four most diagnostic visible metrics for that weakness, but use every related supplied metric internally when interpreting it. evidenceDirection is binding: adverse metrics may directly support a weakness; contextual metrics require a demonstrated relationship; positive_output metrics must NEVER be treated as weak merely because their value seems low or high without an external benchmark. Expected-goal production—including set-play expected goals—is positive chance-production evidence and must not appear as weakness evidence unless a directly supplied matching outcome proves under-conversion. Do not combine low crossing accuracy with strong set-play expected-goal production and call both evidence of the same weakness. analysis MUST be a JSON array of exactly ONE complete professional string of 20-30 words. Lead with a direct team-specific conclusion about the recurring vulnerability, connect volume, efficiency, errors and outcome where supported, and explain its practical football cost. At least 80% of each bullet must be inference; use at most one short numerical fact per bullet and never enumerate a statistical line. Diagnose weaknesses directly without praise, recommendations or softening language. Do not claim inferiority to external teams or leagues because no benchmark is supplied; identify internal inefficiency, imbalance, dependency or repeated exposure from relationships within the supplied evidence. Never invent tactics, roles, causation or unavailable context. All volume metrics are already normalized per 90; never write /90. Rate metrics retain percentages. In Turkish use established professional football terminology. Never use 'teslimat' for a cross or set-piece service; use 'servis', 'orta' or 'topun doğru bölgeye gönderilmesi'. Never use 'sürtünme'; use 'verim kaybı', 'üretim kopukluğu' or 'tehdide dönüşüm sorunu'. Never explain missing or irrelevant metrics. No markdown.", build_narratives)),
             ("human", f"Language: {'Turkish' if lang == 'tr' else 'English'}\nTeam: {team_name}\nCONFIRMED_STRENGTHS: {json.dumps(confirmed_strengths, ensure_ascii=False)}\nAll aggregated team metrics: {json.dumps(evidence, ensure_ascii=False)}"),
         ])
         parsed = json.loads(re.sub(r"^```(?:json)?\s*|\s*```$", "", str(response.content or "").strip(), flags=re.I))
@@ -2475,10 +2506,10 @@ def build_team_report_weaknesses(
             themes.append({"title": naturalize(item.get("title") or fallback_theme["title"]), "metrics": metrics if metrics_valid else fallback_theme["metrics"], "analysis": analysis if len(analysis) >= 1 else fallback_theme["analysis"]})
         if len(generated) != 2:
             print(f"[enterprise_team_report] event=weaknesses_validation_repair themes={len(generated)}")
-        return {"themes": themes}
+        return _profile_output({"themes": themes}, build_narratives)
     except Exception as exc:
         print(f"[enterprise_team_report] event=weaknesses_fallback error={exc}")
-        return fallback
+        return _profile_output(fallback, build_narratives)
 
 
 def build_team_report_overview(
