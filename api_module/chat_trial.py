@@ -31,7 +31,7 @@ def reserve_message(db, user_id, request_id, message, session_id, strategy):
         if isinstance(response, str):
             response = json.loads(response)
         return {**response, 'freeChatMessagesRemaining': user['free_chat_messages_remaining']}
-    if user['plan'] != 'Free' or user['free_chat_messages_remaining'] <= 0:
+    if user['plan'] not in ('Free', 'No Ads Monthly') or user['free_chat_messages_remaining'] <= 0:
         db.rollback()
         raise HTTPException(403, "CHAT_TRIAL_EXHAUSTED")
     db.execute(text("""
