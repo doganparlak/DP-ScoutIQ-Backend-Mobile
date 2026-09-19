@@ -83,7 +83,11 @@ def existing_report(favorite_id: str, user_id=Depends(require_auth), db: Session
             raise HTTPException(409,"Report is unavailable for the current match status")
         if row["report_status"]!="ready" or not row["report_content"]:
             raise HTTPException(409,"No completed report is available. Report generation is not implemented yet.")
-        return {"favoriteId":favorite_id,"reportType":row["report_type"],"status":"ready","content":row["report_content"]}
+        content = row["report_content"]
+        if row["report_type"] == "pre_match":
+            from .pre_match_usage import sanitize_pre_match_standout_metrics
+            content = sanitize_pre_match_standout_metrics(content)
+        return {"favoriteId":favorite_id,"reportType":row["report_type"],"status":"ready","content":content}
     except ProgrammingError as exc:
         schema_error(db, exc)
     except (SportMonksError, requests.RequestException):
