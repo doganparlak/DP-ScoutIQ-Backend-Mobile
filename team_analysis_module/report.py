@@ -1489,9 +1489,94 @@ def build_team_report_metrics(
         return aggregate, fallback
 
 
+def _team_player_metric_reports(reports: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    """Prepare player evidence without changing raw single-match reports.
+
+    Infer omitted counts only when another participant has that metric in the
+    same fixture. Require 90 covered minutes per metric, including rate inputs.
+    """
+    from copy import deepcopy
+    from math import isfinite
+
+    reports = deepcopy(reports)
+    players = defaultdict(list)
+
+    def rate(name):
+        return "%" in name or any(word in name.casefold() for word in
+            ("rating", "percentage", "performance", "captain"))
+
+    def sources(row):
+        return {**(row.get("categories") or {}), "expected": row.get("expected_metrics") or []}
+
+    def numeric(value):
+        try:
+            result = float(value)
+            return result if isfinite(result) else None
+        except (TypeError, ValueError):
+            return None
+
+    for report in reports:
+        participants = []
+        covered = set()
+        for row in report.get("lineups") or []:
+            metrics = {(group, str(item.get("name") or "")): item
+                       for group, items in sources(row).items() for item in items}
+            minutes = next((numeric(item.get("value")) for (_, name), item in metrics.items()
+                            if name == "Minutes Played"), None)
+            if not minutes or minutes <= 0:
+                continue
+            participants.append((row, metrics, minutes))
+            covered.update(key for key, item in metrics.items()
+                           if key[1] != "Minutes Played" and not rate(key[1])
+                           and numeric(item.get("value")) is not None)
+        for row, metrics, minutes in participants:
+            for group, name in covered - metrics.keys():
+                item = {"name": name, "value": 0.0}
+                if group == "expected":
+                    row.setdefault("expected_metrics", []).append(item)
+                else:
+                    row.setdefault("categories", {}).setdefault(group, []).append(item)
+                metrics[group, name] = item
+            players[(row.get("team_id"), row.get("player_id") or row.get("player_name"))].append((row, metrics, minutes))
+
+    for samples in players.values():
+        coverage = defaultdict(float)
+        for _, metrics, minutes in samples:
+            for key, item in metrics.items():
+                if numeric(item.get("value")) is not None:
+                    coverage[key] += minutes
+        # Derive percentages from paired raw counts over identical fixtures,
+        # never from two per-90 values with different minute denominators.
+        groups = {group for _, metrics, _ in samples for group, _ in metrics}
+        for group in groups:
+            for name, (numerator, denominator) in DERIVED_PERCENTAGE_METRICS.items():
+                pairs = [(numeric(metrics.get((group, numerator), {}).get("value")),
+                          numeric(metrics.get((group, denominator), {}).get("value")), minutes)
+                         for _, metrics, minutes in samples]
+                pairs = [(a, b, minutes) for a, b, minutes in pairs if a is not None and b is not None]
+                covered_minutes = sum(minutes for _, _, minutes in pairs)
+                divisor = sum(b for _, b, _ in pairs)
+                value = sum(a for a, _, _ in pairs) / divisor * 100 if covered_minutes >= 90 and divisor > 0 else None
+                for row, metrics, _ in samples:
+                    item = metrics.get((group, name))
+                    if item is not None:
+                        item["value"] = value
+                coverage[group, name] = covered_minutes if value is not None else 0
+        for row, metrics, _ in samples:
+            for group, items in sources(row).items():
+                filtered = [item for item in items if item.get("name") == "Minutes Played"
+                            or coverage[group, str(item.get("name") or "")] >= 90]
+                if group == "expected":
+                    row["expected_metrics"] = filtered
+                else:
+                    row["categories"][group] = filtered
+    return reports
+
+
 def build_team_report_player_perspectives(
     reports: list[dict[str, Any]], team_id: int, lang: str = "en", build_narratives: bool = True
 ) -> dict[str, dict[str, str]]:
+    reports = _team_player_metric_reports(reports)
     players: dict[str, dict[str, Any]] = {}
     for report in reports:
         for row in report.get("lineups") or []:
@@ -1547,13 +1632,6 @@ def build_team_report_player_perspectives(
                     if available_minutes else 0,
                     2,
                 )
-            # Keep the player-perspective evidence consistent with the cells:
-            # derive each known percentage from its aggregated count pair.
-            for rate_name, (numerator_name, denominator_name) in DERIVED_PERCENTAGE_METRICS.items():
-                numerator = compact_metrics[group].get(numerator_name)
-                denominator = compact_metrics[group].get(denominator_name)
-                if numerator is not None and denominator is not None and denominator > 0:
-                    compact_metrics[group][rate_name] = round(numerator / denominator * 100, 2)
         player["metrics"] = compact_metrics
         eligible.append(player)
     ordered = sorted(eligible, key=lambda player: (-player["rating"], -player["minutes"], str(player["player_name"])))
@@ -1765,6 +1843,7 @@ def build_team_report_attack_profile(
         for group, rows in team_metrics.items()
         if group in attacking_groups and rows
     }
+    reports = _team_player_metric_reports(reports)
     players: dict[str, dict[str, Any]] = {}
     for report in reports:
         for row in report.get("lineups") or []:
@@ -1823,7 +1902,7 @@ def build_team_report_attack_profile(
                     sum(value * minutes for value, minutes in samples) / sum(minutes for _, minutes in samples)
                     if average else sum(value for value, _ in samples)
                 )
-                value = raw_value if average else raw_value / player["minutes"] * 90
+                value = raw_value if average else raw_value / sum(minutes for _, minutes in samples) * 90
                 compact[group][name] = {"value": round(value, 2), "basis": "rate" if average else "per90"}
                 if any(word in normalized for word in ("goal", "assist", "shot", "key pass", "chance", "expected goal", "expected assist", "xg", "xa")):
                     weight = 5 if "goal" in normalized and "expected" not in normalized else 3 if "assist" in normalized else 1
@@ -2035,6 +2114,7 @@ def build_team_report_defense_profile(
         for group, rows in team_metrics.items() if group in groups
     }
     team_evidence = {group: rows for group, rows in team_evidence.items() if rows}
+    reports = _team_player_metric_reports(reports)
     players: dict[str, dict[str, Any]] = {}
     for report in reports:
         for row in report.get("lineups") or []:
@@ -2076,7 +2156,7 @@ def build_team_report_defense_profile(
                 lower = name.casefold()
                 is_rate = "%" in name or "percentage" in lower
                 raw = sum(value * minutes for value, minutes in samples) / sum(minutes for _, minutes in samples) if is_rate else sum(value for value, _ in samples)
-                value = raw if is_rate else raw / player["minutes"] * 90
+                value = raw if is_rate else raw / sum(minutes for _, minutes in samples) * 90
                 compact[group][name] = {"value": round(value, 2), "basis": "rate" if is_rate else "per90"}
                 positive = any(word in lower for word in ("tackle", "interception", "clearance", "recovery", "duel", "aerial", "block", "header"))
                 negative = any(word in lower for word in ("lost", "error", "foul", "card"))
