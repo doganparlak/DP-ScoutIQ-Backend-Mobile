@@ -10,7 +10,7 @@ from .pre_match_card import build_pre_match_card
 from .pre_match_usage import _pre_match_player_perspectives, _pre_match_momentum_perspectives, _pre_match_team_analysis, sanitize_pre_match_standout_metrics
 from .pre_match_standings import get_league_standings
 
-VERSION = 4
+VERSION = 5
 _EXECUTOR = ThreadPoolExecutor(max_workers=3, thread_name_prefix="mobile-match-report")
 _PENDING = set()
 _LAZY_PENDING = set()

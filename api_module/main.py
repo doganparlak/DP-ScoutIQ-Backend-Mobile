@@ -1861,7 +1861,7 @@ def create_player_pool_report(
     db: Session = Depends(get_db),
 ):
     lang = normalize_lang(accept_language) or normalize_lang(get_user_language(db, user_id)) or "en"
-    version = 3
+    version = 5
     player_payload = payload.model_dump(exclude_none=True)
     player_payload.pop("tutorial_mode", None)
 
@@ -2060,7 +2060,7 @@ def create_player_pool_report_progress(
 ):
     """New-client durable flow. The legacy /player-pool/report contract stays synchronous."""
     lang = normalize_lang(accept_language) or normalize_lang(get_user_language(db, user_id)) or "en"
-    version = 4
+    version = 6
     player_payload = payload.model_dump(exclude_none=True)
     player_payload.pop("tutorial_mode", None)
     club_row = _resolve_player_pool_report_club_row(db, player_payload)
@@ -2116,7 +2116,7 @@ def create_player_pool_report_section(
     if section not in {"strengths","weaknesses","role_usage"}:
         raise HTTPException(status_code=404,detail="Unknown report section")
     lang = normalize_lang(accept_language) or normalize_lang(get_user_language(db,user_id)) or "en"
-    version = 4
+    version = 6
     player_payload = payload.model_dump(exclude_none=True);player_payload.pop("tutorial_mode",None)
     club_row = _resolve_player_pool_report_club_row(db,player_payload)
     if club_row is not None:
@@ -2147,7 +2147,7 @@ def get_or_create_report(
     db: Session = Depends(get_db),
 ):
     lang = normalize_lang(accept_language) or normalize_lang(get_user_language(db, user_id)) or "en"
-    version = 4 if lazy else 3
+    version = 6 if lazy else 5
     player_payload = payload.model_dump(exclude_none=True)
     tutorial_mode = bool(player_payload.pop("tutorial_mode", False))
 
@@ -2316,7 +2316,7 @@ def create_favorite_report_section(
     if section not in {"strengths","weaknesses","role_usage"}:
         raise HTTPException(status_code=404,detail="Unknown report section")
     lang = normalize_lang(accept_language) or normalize_lang(get_user_language(db,user_id)) or "en"
-    version = 4
+    version = 6
     owned = db.execute(text("SELECT * FROM favorite_players WHERE id=:fid AND user_id=:uid"),{"fid":favorite_id,"uid":user_id}).mappings().first()
     if not owned:
         raise HTTPException(status_code=404,detail="Favorite not found")
