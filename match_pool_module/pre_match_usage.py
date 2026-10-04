@@ -11,11 +11,14 @@ from collections import Counter, defaultdict
 from concurrent.futures import ThreadPoolExecutor
 from datetime import datetime, timedelta, timezone
 import json
+import math
 import os
 import re
 from typing import Any
 
 import requests
+
+from report_module.metric_validation import nonzero_evidence, percentage, rate_counts, valid_metric
 
 from .fixtures import SPORTMONKS_BASE_URL, SportMonksError
 from team_analysis_module.report import DERIVED_PERCENTAGE_METRICS, PLAYER_METRIC_CATEGORY, TEAM_METRIC_CATEGORY, _categorize, _derive_team_percentages, _metric, _value
@@ -195,33 +198,43 @@ _PLAYER_METRIC_MIN_RECORDED_MINUTES = 90
 
 
 def sanitize_pre_match_standout_metrics(content: Any) -> Any:
-    """Remove scoring totals from saved standout tiles without regenerating AI."""
+    """Filter saved player tiles without regenerating historical report content."""
     if isinstance(content, list):
         return [sanitize_pre_match_standout_metrics(item) for item in content]
     if not isinstance(content, dict):
         return content
     result = {key: sanitize_pre_match_standout_metrics(value) for key, value in content.items()}
-    selected = result.get("standout_metrics")
-    if isinstance(selected, list) and any(
-        str(metric.get("name", "")).strip().casefold() in _STANDOUT_OUTPUT_EXCLUDED_METRICS
-        for metric in selected
-    ):
-        kept = [metric for metric in selected if str(metric.get("name", "")).strip().casefold() not in _STANDOUT_OUTPUT_EXCLUDED_METRICS]
-        names = {metric.get("name") for metric in kept}
-        # Old snapshots retain the full per-90 sample. Use available positive
-        # alternatives to fill the removed tiles; never fabricate missing data.
-        for metric in result.get("per90_metrics") or []:
-            name = str(metric.get("name", ""))
-            if (name in names or name in _PLAYER_HIGHLIGHT_EXCLUDED_METRICS
-                    or name.strip().casefold() in _STANDOUT_OUTPUT_EXCLUDED_METRICS
-                    or any(term in name.casefold() for term in _PLAYER_NEGATIVE_METRIC_TERMS)
-                    or (PLAYER_METRIC_CATEGORY.get(name) or ("", ""))[0] == "errors_discipline"):
-                continue
-            kept.append(metric)
-            names.add(name)
-            if len(kept) >= 3:
-                break
-        result["standout_metrics"] = kept[:3]
+    def eligible(metric: dict[str, Any]) -> bool:
+        try:
+            value = float(metric.get("value"))
+        except (TypeError, ValueError):
+            return False
+        return math.isfinite(value) and value > 0 and (
+            not metric.get("is_percentage") or value <= 100
+        )
+
+    for key in ("standout_metrics", "development_metrics"):
+        selected = result.get(key)
+        if not isinstance(selected, list):
+            continue
+        kept = [metric for metric in selected if eligible(metric) and (
+            key != "standout_metrics"
+            or str(metric.get("name", "")).strip().casefold() not in _STANDOUT_OUTPUT_EXCLUDED_METRICS
+        )]
+        if key == "standout_metrics" and len(kept) < len(selected):
+            names = {metric.get("name") for metric in kept}
+            for metric in result.get("per90_metrics") or []:
+                name = str(metric.get("name", ""))
+                if (not eligible(metric) or name in names or name in _PLAYER_HIGHLIGHT_EXCLUDED_METRICS
+                        or name.strip().casefold() in _STANDOUT_OUTPUT_EXCLUDED_METRICS
+                        or any(term in name.casefold() for term in _PLAYER_NEGATIVE_METRIC_TERMS)
+                        or (PLAYER_METRIC_CATEGORY.get(name) or ("", ""))[0] == "errors_discipline"):
+                    continue
+                kept.append(metric)
+                names.add(name)
+                if len(kept) >= 3:
+                    break
+        result[key] = kept[:3]
     return result
 # A player drawing a foul is a positive attacking/ball-retention action.  It
 # must never be presented as a development risk merely because its provider
@@ -246,6 +259,11 @@ _PLAYER_METRIC_NAME_ALIASES = {
 }
 
 
+def _player_rate_counts(counts: dict[str, float], rate_name: str, numerator_name: str,
+                        denominator_name: str) -> tuple[float, float] | None:
+    return rate_counts(rate_name, counts, numerator_name, denominator_name)
+
+
 def _lineup_numeric_metrics(row: dict[str, Any]) -> dict[str, float]:
     """Return raw numeric lineup metrics; conversion to per-90 happens later."""
     values: dict[str, float] = {}
@@ -264,6 +282,7 @@ def _lineup_numeric_metrics(row: dict[str, Any]) -> dict[str, float]:
         # then normalised per 90, while percentages cannot.
         if (
             name
+            and valid_metric(name, value)
             and name in PLAYER_METRIC_CATEGORY
             and name.casefold() not in _PLAYER_INSIGHT_EXCLUDED_METRICS
             and "%" not in name
@@ -309,6 +328,7 @@ def _lineup_rate_metrics(row: dict[str, Any]) -> dict[str, float]:
             continue
         if (
             name
+            and valid_metric(name, value)
             and name in PLAYER_METRIC_CATEGORY
             and ("%" in name or any(term in name.casefold() for term in _PLAYER_RATE_METRIC_TERMS))
         ):
@@ -338,6 +358,8 @@ def _attach_player_highlight_metrics(players: list[dict[str, Any]]) -> None:
             if not values:
                 continue
             value = float(metric["value"])
+            if not math.isfinite(value) or value <= 0 or (metric.get("is_percentage") and value > 100):
+                continue
             percentile = sum(sample <= value for sample in values) / len(values)
             entry = {**metric, "relative_score": percentile}
             name = str(metric["name"]).casefold()
@@ -390,6 +412,7 @@ def _aggregate_team_comparison(
     the comparison robust when the provider omits a metric in part of a sample.
     """
     samples: dict[str, dict[str, list[float]]] = defaultdict(lambda: defaultdict(list))
+    match_values = []
     for fixture in fixtures:
         statistic_rows = [
             row for row in fixture.get("statistics") or []
@@ -407,6 +430,7 @@ def _aggregate_team_comparison(
             if _as_int(row.get("participant_id")) == team_id
             and str((row.get("type") or {}).get("name") or "") != "Expected Goals Against (xGA)"
         ]
+        fixture_values = {}
         for group, metrics in {**categories, "expected": expected}.items():
             for metric in metrics:
                 try:
@@ -414,8 +438,10 @@ def _aggregate_team_comparison(
                 except (TypeError, ValueError):
                     continue
                 name = str(metric.get("name") or "").strip()
-                if name:
+                if name and valid_metric(name, value):
                     samples[group][name].append(value)
+                    fixture_values.setdefault(group, {})[name] = value
+        match_values.append(fixture_values)
     aggregate: dict[str, list[dict[str, Any]]] = {}
     for group, metrics in samples.items():
         rows = []
@@ -424,16 +450,19 @@ def _aggregate_team_comparison(
             average = total / len(values)
             rate = "%" in name or "percentage" in name.casefold() or "performance" in name.casefold()
             numerator_denominator = DERIVED_PERCENTAGE_METRICS.get(name)
-            numerator = sum(metrics.get(numerator_denominator[0], [])) if numerator_denominator else 0.0
-            denominator = sum(metrics.get(numerator_denominator[1], [])) if numerator_denominator else 0.0
-            derived_rate = numerator / denominator * 100 if numerator_denominator and denominator > 0 else None
+            pairs = [rate_counts(name, fixture_values.get(group, {}), *numerator_denominator)
+                     for fixture_values in match_values] if numerator_denominator else []
+            pairs = [pair for pair in pairs if pair is not None]
+            derived_rate = percentage(sum(a for a, _ in pairs), sum(b for _, b in pairs)) if pairs else None
+            if numerator_denominator and derived_rate is None:
+                continue
             rows.append({
                 "name": name,
                 # Per-match is the comparison default for multi-match samples.
                 "value": round(derived_rate, 2) if derived_rate is not None else round(average, 2),
-                "total": round(total, 2),
+                "total": round(derived_rate if derived_rate is not None else average if rate else total, 2),
                 "aggregation": "derived_rate" if derived_rate is not None else "average" if rate else "per_match",
-                "matches_covered": len(values),
+                "matches_covered": len(pairs) if numerator_denominator else len(values),
             })
         if rows:
             aggregate[group] = sorted(rows, key=lambda row: row["name"])
@@ -625,10 +654,15 @@ def _team_recent_squad_usage(
                     # Include minutes for recorded values and match-covered
                     # omitted counts, but not entirely unavailable metrics.
                     player_metric_minutes[player_id][metric_name] += minutes
+                # Derive rates from recorded counts only. Coverage-based zero
+                # filling is useful for volumes, but cannot prove a ratio.
+                recorded_counts = _lineup_numeric_metrics(row)
                 for rate_name, (numerator_name, denominator_name) in _DERIVED_PLAYER_PERCENTAGES.items():
-                    if numerator_name in count_metrics and denominator_name in count_metrics:
-                        player_derived_rate_numerators[player_id][rate_name] += count_metrics[numerator_name]
-                        player_derived_rate_denominators[player_id][rate_name] += count_metrics[denominator_name]
+                    pair = _player_rate_counts(recorded_counts, rate_name, numerator_name, denominator_name)
+                    if pair is not None:
+                        numerator, denominator = pair
+                        player_derived_rate_numerators[player_id][rate_name] += numerator
+                        player_derived_rate_denominators[player_id][rate_name] += denominator
                         player_derived_rate_minutes[player_id][rate_name] += minutes
             # Percentages retain their meaning only as a minute-weighted
             # average across appearances with that metric available.
@@ -1021,7 +1055,8 @@ def _pre_match_player_perspectives(usages: list[dict[str, Any]], lang: str, stri
     compact = []
     for player, selection in selected:
         key = str(player.get("player_id") or player.get("player_name"))
-        metrics = player.get("development_metrics" if selection == "development" else "standout_metrics") or []
+        metrics = [metric for metric in player.get("development_metrics" if selection == "development" else "standout_metrics") or []
+                   if valid_metric(str(metric.get("name") or ""), metric.get("value"), nonzero=True)]
         name = str(player.get("player_name") or "Oyuncu")
         fallback[key] = {
             "text": (
@@ -1050,7 +1085,7 @@ def _pre_match_player_perspectives(usages: list[dict[str, Any]], lang: str, stri
             model=os.getenv("OPENAI_MATCH_REPORT_MODEL", os.getenv("OPENAI_REPORT_MODEL", "gpt-5.6-luna")),
             api_key=os.environ["OPENAI_API_KEY"], temperature=0.2, timeout=180, max_retries=1,
         ).invoke([
-            ("system", "You are ScoutWise's senior football analyst. Return only valid JSON keyed by player_id. Each value must be one concise 20-30 word ScoutWise perspective in the requested language. Explain why the player was selected; interpret the role and combined effect rather than reciting values. Featured players: use only positive evidence. Development players: use only the supplied weaker per-90 outputs, never praise or select a strength. Never use the Turkish word 'örneklem'. Never invent facts, tactics, benchmarks, causation, or recommendations. No markdown/headings."),
+            ("system", "You are ScoutWise's senior football analyst. Return only valid JSON keyed by player_id. Each value must be one concise 20-30 word ScoutWise perspective in the requested language. Explain why the player was selected; interpret the role and combined effect rather than reciting values. Featured players: use only positive evidence. Development players: use only the supplied weaker per-90 outputs, never praise or select a strength. Never cite zero-valued metrics. Never use the Turkish word 'örneklem'. Never invent facts, tactics, benchmarks, causation, or recommendations. No markdown/headings."),
             ("human", f"Language: {'Turkish' if lang == 'tr' else 'English'}\nPlayers: {json.dumps(compact, ensure_ascii=False, default=str)}"),
         ])
         parsed = json.loads(re.sub(r"^```(?:json)?\s*|\s*```$", "", str(response.content or "").strip(), flags=re.I))

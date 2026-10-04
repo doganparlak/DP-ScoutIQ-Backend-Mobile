@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+from report_module.metric_validation import sanitize_percentages
+
 import os
 import re
 from typing import Any, Dict, List, Optional, Tuple
@@ -541,6 +543,7 @@ def build_player_card_from_docs(metric_docs: List[Dict[str, Any]]) -> Dict[str, 
 
 
 def _build_llm_input(player_card: Dict[str, Any], metric_docs: List[Dict[str, Any]]) -> str:
+    metric_docs = sanitize_percentages(metric_docs)
     parts: List[str] = ["PLAYER_CARD_JSON:", str(player_card or {}), "\nMETRIC_DOCUMENTS (newest first):"]
     parts.insert(0, _role_constraint_block(player_card))
     parts.insert(1, _build_metric_significance_block(metric_docs))
@@ -589,7 +592,7 @@ def build_report_foundation(
         "version": version,
         "player_identity": identity,
         "player_card": player_card,
-        "metrics_docs": docs,
+        "metrics_docs": sanitize_percentages(docs),
         "report_text": "",
         "sections": {
             "data": {"status": "ready"},

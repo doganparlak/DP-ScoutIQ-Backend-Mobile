@@ -8,11 +8,13 @@ from typing import Any
 
 import requests
 
+from report_module.metric_validation import nonzero_evidence, percentage, rate_counts, valid_metric
+
 
 SPORTMONKS_BASE_URL = os.getenv(
     "SPORTMONKS_BASE_URL", "https://api.sportmonks.com/v3/football"
 ).rstrip("/")
-MATCH_REPORT_VERSION = 44
+MATCH_REPORT_VERSION = 45
 
 MATCH_REPORT_INCLUDE = ";".join(
     [
@@ -193,6 +195,8 @@ def _categorize(
         type_obj = row.get("type") or {}
         original_name = str(type_obj.get("name") or row.get("name") or row.get("type_id") or "")
         item = _metric(original_name, _value(row), row.get("type_id"))
+        if not valid_metric(original_name, item["value"]):
+            continue
         category = mapping.get(original_name)
         if category:
             group, canonical_name = category
@@ -221,10 +225,11 @@ def _upsert_percentage(
     numerator: float | None,
     denominator: float | None,
 ) -> None:
-    if numerator is None or denominator is None or denominator <= 0:
-        return
+    # Remove an old provider value even when its count inputs are invalid.
     rows[:] = [row for row in rows if row.get("name") != name]
-    rows.append(_metric(name, round(numerator / denominator * 100, 1)))
+    value = percentage(numerator, denominator)
+    if value is not None:
+        rows.append(_metric(name, round(value, 1)))
 
 
 def _derive_player_metrics(
@@ -268,12 +273,10 @@ def _derive_player_metrics(
         _numeric_metric(defending, "Tackles Won"),
         _numeric_metric(defending, "Tackles"),
     )
-    _upsert_percentage(
-        defending,
-        "Aerials Won (%)",
-        _numeric_metric(defending, "Aerials Won"),
-        _numeric_metric(defending, "Aerials"),
-    )
+    aerial_counts = {item["name"]: item.get("value")
+                     for rows in categories.values() for item in rows}
+    aerial_pair = rate_counts("Aerials Won (%)", aerial_counts, "Aerials Won", "Aerials")
+    _upsert_percentage(defending, "Aerials Won (%)", *(aerial_pair or (None, None)))
     _upsert_percentage(
         defending,
         "Duels Won (%)",
@@ -702,7 +705,7 @@ def _build_player_analysis_perspectives(
         for rows in categories.values():
             for metric in rows or []:
                 name = metric.get("name")
-                if name in low_efficiency_names and metric.get("value") is not None:
+                if name in low_efficiency_names and valid_metric(str(name), metric.get("value"), nonzero=True):
                     low_efficiency[name] = metric.get("value")
         return {
             "priority_errors_and_discipline": errors,
@@ -778,12 +781,14 @@ def _build_player_analysis_perspectives(
                 "formation_position": player.get("formation_position"),
                 "starter": player.get("starter"),
                 "metrics": {
-                    group: {metric.get("name"): metric.get("value") for metric in rows or []}
+                    group: {metric.get("name"): metric.get("value") for metric in rows or []
+                            if valid_metric(str(metric.get("name") or ""), metric.get("value"), nonzero=True)}
                     for group, rows in (player.get("categories") or {}).items() if rows
                 },
                 "expected_metrics": {
                     metric.get("name"): metric.get("value")
                     for metric in player.get("expected_metrics") or []
+                    if valid_metric(str(metric.get("name") or ""), metric.get("value"), nonzero=True)
                 },
                 "authoritative_output": {
                     "Goals": find_metric(player, "Goals") or 0,
@@ -829,7 +834,7 @@ def _build_player_analysis_perspectives(
         response = ChatOpenAI(model=model, api_key=os.environ["OPENAI_API_KEY"], temperature=0.2).invoke([
             (
                 "system",
-                "You are ScoutWise Enterprise's senior player-performance analyst. Return only valid JSON keyed by the supplied team IDs. Each value must preserve the supplied three-player order and contain exactly player_id and text. Write one focused, evidence-led interpretation of 45-65 words per player in the requested language, considering the player's position. Write every numerical value with digits, never words: use forms such as 3 fouls, 4 duels, 70 minutes, 12 of 14 passes, and 42%. In Turkish put the percent sign before the number, for example %42. The supplied metrics and authoritative_output object are the only factual source. Goals and assists must match authoritative_output exactly; never infer a personal total from a team-goal sequence, an event order, or any other field. Begin naturally with the player's name and the central meaning of the performance; never open with formulaic constructions such as 'a centre-back who played 71 minutes', 'playing 90 minutes as a midfielder', or their equivalents. Minutes and position may appear later only when analytically useful. For selection_type=featured, write an exclusively positive assessment: emphasize the player's highest and most influential metric values, scoring or creative output, efficiency, rating, position-specific strengths, and positive match impact. Do not include any negative sentence, limitation, weakness, loss, error, missed chance, low efficiency, adverse contrast, or a transition such as 'however'. For selection_type=development, write an exclusively weakness-focused diagnosis. Start with the central deficiency; prioritize supplied development_evidence.priority_errors_and_discipline, then low efficiency percentages and low position-relevant output. Discuss concrete negatives such as cards, penalties conceded, fouls, errors, possession losses, duels or aerial duels lost, missed chances, inaccurate actions, and weak conversion. Do not praise, soften, balance, or acknowledge any strength or positive evidence. Never cite a successful action or favorable ratio in a development assessment, even if it is supplied in the data; include a metric only when it directly demonstrates a weakness. Never mention leadership, captaincy, experience, security, successful passes, successful clearances, successful interceptions, successful tackles, high volume, good contribution, resilience, or use transitions such as 'however', 'although', 'despite', 'while', 'but', 'yine de', 'ancak', 'buna karşın', or 'rağmen'. Do not turn mere minutes played, captaincy, or involvement volume into a positive statement. In Turkish use natural football terminology: write 'ikili mücadele', never the untranslated word 'duel'. Select only supported weaknesses and explain why they matter for the player's position. Combine rating, minutes, role, events, volume and efficiency where they support the assigned selection type. Never invent actions, tactics, causation, or metrics. Use clear sentences with no headings, markdown, bullets, recommendations, or raw category names.",
+                "You are ScoutWise Enterprise's senior player-performance analyst. Return only valid JSON keyed by the supplied team IDs. Each value must preserve the supplied three-player order and contain exactly player_id and text. Write one focused, evidence-led interpretation of 45-65 words per player in the requested language, considering the player's position. Write every numerical value with digits, never words: use forms such as 3 fouls, 4 duels, 70 minutes, 12 of 14 passes, and 42%. In Turkish put the percent sign before the number, for example %42. The supplied metrics and authoritative_output object are the only factual source. Goals and assists must match authoritative_output exactly; never infer a personal total from a team-goal sequence, an event order, or any other field. Begin naturally with the player's name and the central meaning of the performance; never open with formulaic constructions such as 'a centre-back who played 71 minutes', 'playing 90 minutes as a midfielder', or their equivalents. Minutes and position may appear later only when analytically useful. For selection_type=featured, write an exclusively positive assessment: emphasize the player's highest and most influential metric values, scoring or creative output, efficiency, rating, position-specific strengths, and positive match impact. Do not include any negative sentence, limitation, weakness, loss, error, missed chance, low efficiency, adverse contrast, or a transition such as 'however'. For selection_type=development, write an exclusively weakness-focused diagnosis. Start with the central deficiency; prioritize supplied development_evidence.priority_errors_and_discipline, then low efficiency percentages and low position-relevant output. Discuss concrete negatives such as cards, penalties conceded, fouls, errors, possession losses, duels or aerial duels lost, missed chances, inaccurate actions, and weak conversion. Do not praise, soften, balance, or acknowledge any strength or positive evidence. Never cite a successful action or favorable ratio in a development assessment, even if it is supplied in the data; include a metric only when it directly demonstrates a weakness. Never mention leadership, captaincy, experience, security, successful passes, successful clearances, successful interceptions, successful tackles, high volume, good contribution, resilience, or use transitions such as 'however', 'although', 'despite', 'while', 'but', 'yine de', 'ancak', 'buna karşın', or 'rağmen'. Do not turn mere minutes played, captaincy, or involvement volume into a positive statement. In Turkish use natural football terminology: write 'ikili mücadele', never the untranslated word 'duel'. Select only supported weaknesses and explain why they matter for the player's position. Combine rating, minutes, role, events, volume and efficiency where they support the assigned selection type. Never cite any zero-valued metric, including goals or assists in authoritative_output. Never invent actions, tactics, causation, or metrics. Use clear sentences with no headings, markdown, bullets, recommendations, or raw category names.",
             ),
             ("human", f"Language: {language}\nSelected standout and development-area players with match data:\n{json.dumps(compact, ensure_ascii=False, default=str)}"),
         ])
@@ -1137,38 +1142,7 @@ def generate_match_report(fixture_id: int, lang: str = "en", build_narratives: b
     teams: list[dict[str, Any]] = []
     for team in participants:
         categories, extras = _categorize(statistic_rows.get(team.get("id"), []), TEAM_METRIC_CATEGORY)
-        shooting_values = {
-            str(metric.get("name")): metric.get("value")
-            for metric in categories.get("shooting", [])
-        }
-        try:
-            total_shots = float(shooting_values.get("Shots Total") or 0)
-            shots_on_target = float(shooting_values.get("Shots On Target") or 0)
-            if total_shots > 0:
-                categories["shooting"].append(
-                    _metric(
-                        "Shots On Target (%)",
-                        round(shots_on_target / total_shots * 100, 1),
-                    )
-                )
-        except (TypeError, ValueError):
-            pass
-        passing_values = {
-            str(metric.get("name")): metric.get("value")
-            for metric in categories.get("passing", [])
-        }
-        try:
-            total_crosses = float(passing_values.get("Total Crosses") or 0)
-            accurate_crosses = float(passing_values.get("Accurate Crosses") or 0)
-            if total_crosses > 0:
-                categories["passing"].append(
-                    _metric(
-                        "Accurate Crosses (%)",
-                        round(accurate_crosses / total_crosses * 100, 1),
-                    )
-                )
-        except (TypeError, ValueError):
-            pass
+        _derive_team_percentages(categories)
         expected = [
             _metric(str((row.get("type") or {}).get("name") or row.get("type_id")), _value(row), row.get("type_id"))
             for row in expected_rows.get(team.get("id"), [])
@@ -1429,10 +1403,10 @@ def build_team_report_metrics(
                 except (TypeError, ValueError):
                     continue
                 name = str(metric.get("name") or "").strip()
-                if not name:
+                if not name or not valid_metric(name, value):
                     continue
                 samples[group][name].append(value)
-                match_values.setdefault(group, {})[name] = round(value, 3)
+                match_values.setdefault(group, {})[name] = value
         match_rows.append({
             "fixture": (report.get("fixture") or {}).get("name") or (report.get("fixture") or {}).get("id"),
             "metrics": match_values,
@@ -1444,15 +1418,18 @@ def build_team_report_metrics(
             is_average = "%" in name or "percentage" in name.casefold() or "performance" in name.casefold()
             total = sum(values)
             numerator_denominator = DERIVED_PERCENTAGE_METRICS.get(name)
-            numerator = sum(metrics.get(numerator_denominator[0], [])) if numerator_denominator else 0.0
-            denominator = sum(metrics.get(numerator_denominator[1], [])) if numerator_denominator else 0.0
-            derived_rate = numerator / denominator * 100 if numerator_denominator and denominator > 0 else None
+            pairs = [rate_counts(name, row["metrics"].get(group, {}), *numerator_denominator)
+                     for row in match_rows] if numerator_denominator else []
+            pairs = [pair for pair in pairs if pair is not None]
+            derived_rate = percentage(sum(a for a, _ in pairs), sum(b for _, b in pairs)) if pairs else None
+            if numerator_denominator and derived_rate is None:
+                continue
             aggregate[group].append({
                 "name": name,
                 "value": round(derived_rate, 2) if derived_rate is not None else round(total / len(values), 2) if is_average else round(total, 2),
                 "perMatch": round(derived_rate, 2) if derived_rate is not None else round(total / len(values), 2),
                 "aggregation": "derived_rate" if derived_rate is not None else "average" if is_average else "total",
-                "matchesCovered": len(values),
+                "matchesCovered": len(pairs) if numerator_denominator else len(values),
             })
         aggregate[group].sort(key=lambda row: row["name"])
     available = list(aggregate)
@@ -1531,7 +1508,7 @@ def _team_player_metric_reports(reports: list[dict[str, Any]]) -> list[dict[str,
                            and numeric(item.get("value")) is not None)
         for row, metrics, minutes in participants:
             for group, name in covered - metrics.keys():
-                item = {"name": name, "value": 0.0}
+                item = {"name": name, "value": 0.0, "_inferred_zero": True}
                 if group == "expected":
                     row.setdefault("expected_metrics", []).append(item)
                 else:
@@ -1550,13 +1527,13 @@ def _team_player_metric_reports(reports: list[dict[str, Any]]) -> list[dict[str,
         groups = {group for _, metrics, _ in samples for group, _ in metrics}
         for group in groups:
             for name, (numerator, denominator) in DERIVED_PERCENTAGE_METRICS.items():
-                pairs = [(numeric(metrics.get((group, numerator), {}).get("value")),
-                          numeric(metrics.get((group, denominator), {}).get("value")), minutes)
+                pairs = [(rate_counts(name, {metric_name: item.get("value")
+                                              for (_, metric_name), item in metrics.items()
+                                              if not item.get("_inferred_zero")}, numerator, denominator), minutes)
                          for _, metrics, minutes in samples]
-                pairs = [(a, b, minutes) for a, b, minutes in pairs if a is not None and b is not None]
+                pairs = [(pair[0], pair[1], minutes) for pair, minutes in pairs if pair is not None]
                 covered_minutes = sum(minutes for _, _, minutes in pairs)
-                divisor = sum(b for _, b, _ in pairs)
-                value = sum(a for a, _, _ in pairs) / divisor * 100 if covered_minutes >= 90 and divisor > 0 else None
+                value = percentage(sum(a for a, _, _ in pairs), sum(b for _, b, _ in pairs)) if covered_minutes >= 90 else None
                 for row, metrics, _ in samples:
                     item = metrics.get((group, name))
                     if item is not None:
@@ -1566,6 +1543,8 @@ def _team_player_metric_reports(reports: list[dict[str, Any]]) -> list[dict[str,
             for group, items in sources(row).items():
                 filtered = [item for item in items if item.get("name") == "Minutes Played"
                             or coverage[group, str(item.get("name") or "")] >= 90]
+                for item in filtered:
+                    item.pop("_inferred_zero", None)
                 if group == "expected":
                     row["expected_metrics"] = filtered
                 else:
@@ -1663,7 +1642,7 @@ def build_team_report_player_perspectives(
         "player_id": player["player_id"], "player_name": player["player_name"],
         "selection_type": selection, "position": player["position"],
         "minutes": round(player["minutes"]), "average_rating": round(player["rating"], 2),
-        "aggregated_selected_match_metrics": player["metrics"],
+        "aggregated_selected_match_metrics": nonzero_evidence(player["metrics"]),
     } for player, selection in chosen]
     try:
         from langchain_openai import ChatOpenAI
@@ -1672,7 +1651,7 @@ def build_team_report_player_perspectives(
             model=os.getenv("OPENAI_MATCH_REPORT_MODEL", os.getenv("OPENAI_REPORT_MODEL", "gpt-5.6-luna")),
             api_key=os.environ["OPENAI_API_KEY"], temperature=0.2,
         ).invoke([
-            ("system", "You are ScoutWise Enterprise's senior player-performance analyst. Return only a valid JSON object keyed by player_id. Each value must be a 20-30 word interpretation in the requested language. Use the same methodology throughout. For featured players, write an exclusively positive, evidence-led assessment emphasizing the strongest position-relevant aggregated metrics and their football meaning; never mention a weakness. For development players, write an exclusively weakness-focused diagnosis using low efficiency, errors, discipline, lost actions, missed chances, or low position-relevant output; never praise or soften. Use only supplied evidence, lead with the conclusion, keep numerical facts brief, and prioritise interpretation over listing. Translate all metric concepts naturally; in Turkish never use English metric names and write percentages as %42. Never invent tactics, causation, benchmarks, or recommendations. No markdown or headings."),
+            ("system", "You are ScoutWise Enterprise's senior player-performance analyst. Return only a valid JSON object keyed by player_id. Each value must be a 20-30 word interpretation in the requested language. Use the same methodology throughout. For featured players, write an exclusively positive, evidence-led assessment emphasizing the strongest position-relevant aggregated metrics and their football meaning; never mention a weakness. For development players, write an exclusively weakness-focused diagnosis using low efficiency, errors, discipline, lost actions, missed chances, or low position-relevant output; never praise or soften. Never cite zero-valued metrics. Use only supplied evidence, lead with the conclusion, keep numerical facts brief, and prioritise interpretation over listing. Translate all metric concepts naturally; in Turkish never use English metric names and write percentages as %42. Never invent tactics, causation, benchmarks, or recommendations. No markdown or headings."),
             ("human", f"Language: {language}\nSelected players and aggregated selected-match data:\n{json.dumps(compact, ensure_ascii=False, default=str)}"),
         ])
         raw = re.sub(r"^```(?:json)?\s*|\s*```$", "", str(response.content or "").strip(), flags=re.I)
@@ -1903,6 +1882,8 @@ def build_team_report_attack_profile(
                     if average else sum(value for value, _ in samples)
                 )
                 value = raw_value if average else raw_value / sum(minutes for _, minutes in samples) * 90
+                if not valid_metric(name, round(value, 2), nonzero=True):
+                    continue
                 compact[group][name] = {"value": round(value, 2), "basis": "rate" if average else "per90"}
                 if any(word in normalized for word in ("goal", "assist", "shot", "key pass", "chance", "expected goal", "expected assist", "xg", "xa")):
                     weight = 5 if "goal" in normalized and "expected" not in normalized else 3 if "assist" in normalized else 1
@@ -2157,6 +2138,8 @@ def build_team_report_defense_profile(
                 is_rate = "%" in name or "percentage" in lower
                 raw = sum(value * minutes for value, minutes in samples) / sum(minutes for _, minutes in samples) if is_rate else sum(value for value, _ in samples)
                 value = raw if is_rate else raw / sum(minutes for _, minutes in samples) * 90
+                if not valid_metric(name, round(value, 2), nonzero=True):
+                    continue
                 compact[group][name] = {"value": round(value, 2), "basis": "rate" if is_rate else "per90"}
                 positive = any(word in lower for word in ("tackle", "interception", "clearance", "recovery", "duel", "aerial", "block", "header"))
                 negative = any(word in lower for word in ("lost", "error", "foul", "card"))
@@ -2426,7 +2409,7 @@ def build_team_report_strengths(
     """Identify three evidence-supported team strengths from all metric categories."""
     team_name = next((str(team.get("name") or "") for report in reports for team in report.get("teams") or [] if int(team.get("id") or 0) == int(team_id)), "Takım" if lang == "tr" else "The team")
     evidence = {
-        group: [{"name": row.get("name"), "valuePer90": row.get("perMatch"), "isRate": row.get("aggregation") == "average"} for row in rows if row.get("name") and row.get("perMatch") is not None]
+        group: [{"name": row.get("name"), "valuePer90": row.get("perMatch"), "isRate": row.get("aggregation") in {"average", "derived_rate"}} for row in rows if row.get("name") and row.get("perMatch") is not None]
         for group, rows in team_metrics.items() if rows
     }
     flat = [(group, str(row["name"]), row["valuePer90"], "rate" if row["isRate"] else "per90") for group, rows in evidence.items() for row in rows]
@@ -2502,7 +2485,7 @@ def build_team_report_weaknesses(
     """Identify three evidence-supported team vulnerabilities from all metric categories."""
     team_name = next((str(team.get("name") or "") for report in reports for team in report.get("teams") or [] if int(team.get("id") or 0) == int(team_id)), "Takım" if lang == "tr" else "The team")
     evidence = {
-        group: [{"name": row.get("name"), "valuePer90": row.get("perMatch"), "isRate": row.get("aggregation") == "average", "evidenceDirection": (
+        group: [{"name": row.get("name"), "valuePer90": row.get("perMatch"), "isRate": row.get("aggregation") in {"average", "derived_rate"}, "evidenceDirection": (
             "adverse" if any(word in str(row.get("name") or "").casefold() for word in ("missed", "lost", "error", "foul", "card", "off target", "conceded")) else
             "positive_output" if any(word in str(row.get("name") or "").casefold() for word in ("expected goal", "expected assist", "goals", "assists", "accurate", "won", "on target", "chances created")) else
             "contextual"

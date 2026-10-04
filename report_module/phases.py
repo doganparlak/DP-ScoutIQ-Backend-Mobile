@@ -4,6 +4,8 @@ Keep the taxonomy, metric ranges and scoring helpers aligned with enterprise
 report_module/report.py. Distributions are computed without model interpretation.
 """
 from __future__ import annotations
+from report_module.metric_validation import percentage, sanitize_percentages, valid_metric
+
 import math
 from typing import Any, Dict, List, Optional, Tuple
 from constants_module.constants import ROLE_LONG_TO_SHORT, ROLE_SHORT_TO_LONG
@@ -554,11 +556,11 @@ def _phase_taxonomy_roles(player_card: Dict[str, Any]) -> List[Tuple[str, float]
 
 def _metric_context_value(metric_docs: List[Dict[str, Any]], metric_name: str) -> Optional[Any]:
     selected: Optional[Any] = _derived_metric_value(metric_name, metric_docs)
-    if selected not in (None, ""):
+    if selected not in (None, "") and valid_metric(metric_name, selected):
         return selected
     for doc in metric_docs or []:
         selected = _metric_value_from_metadata(doc.get("metadata") or {}, metric_name)
-        if selected not in (None, ""):
+        if selected not in (None, "") and valid_metric(metric_name, selected):
             return selected
     return None
 
@@ -708,7 +710,10 @@ def _metric_value_from_metadata(metadata: Dict[str, Any], metric_name: str) -> O
             raw_name = stat.get("metric") or stat.get("stat") or stat.get("label") or stat.get("name")
             if _metric_key(raw_name) != target_key:
                 continue
-            return stat.get("value") or stat.get("amount") or stat.get("score")
+            for key in ("value", "amount", "score"):
+                if stat.get(key) is not None:
+                    return stat[key]
+            return None
 
     return None
 
@@ -736,27 +741,24 @@ def _derived_metric_value(metric_name: str, metric_docs: List[Dict[str, Any]]) -
         return None
 
     numerator_metric, denominator_metric = dependencies[metric_name]
-    numerator: Optional[float] = None
-    denominator: Optional[float] = None
+    # Both components must come from the same document snapshot.
     for doc in metric_docs or []:
         metadata = doc.get("metadata") or {}
-        if numerator is None:
-            numerator = _to_float(_metric_value_from_metadata(metadata, numerator_metric))
-        if denominator is None:
-            denominator = _to_float(_metric_value_from_metadata(metadata, denominator_metric))
-        if numerator is not None and denominator is not None:
-            break
-
-    if numerator is None or denominator is None or denominator <= 0:
-        return None
-    return round((numerator / denominator) * 100, 2)
+        numerator = _to_float(_metric_value_from_metadata(metadata, numerator_metric))
+        denominator = _to_float(_metric_value_from_metadata(metadata, denominator_metric))
+        value = percentage(numerator, denominator)
+        if value is not None:
+            return round(value, 2)
+    return None
 
 def with_phase_distributions(content_json):
     """Enrich new and cached reports using their original report metric snapshot."""
     if not isinstance(content_json, dict):
         return content_json
+    content_json = dict(content_json)
+    content_json["metrics_docs"] = sanitize_percentages(content_json.get("metrics_docs") or [])
     card = dict(content_json.get("player_card") or {})
-    docs = content_json.get("metrics_docs") or []
+    docs = sanitize_percentages(content_json.get("metrics_docs") or [])
     # Older mobile report cards omitted role counts; recover them from the same
     # saved metric documents enterprise uses when constructing its player card.
     for doc in docs:
