@@ -1779,6 +1779,9 @@ def _mobile_profile_analysis(value):
 
 def _profile_prompt(prompt: str, build_narratives: bool) -> str:
     """Keep AI selection for every plan; only the explanation fields are paid."""
+    prompt += (" Every theme title must be a concise football heading of 2-6 words, "
+               "never a sentence, explanation, team-specific conclusion or paragraph. "
+               "Keep all interpretation exclusively in the analysis field when requested.")
     if build_narratives:
         return prompt
     prompt = prompt.replace('title, metrics and analysis', 'title and metrics')
@@ -1795,6 +1798,14 @@ def _profile_prompt(prompt: str, build_narratives: bool) -> str:
                      'Rate metrics retain percentages. Consider all supplied relevant evidence, including metrics not displayed. '
                      'Omit every analysis field. Theme objects contain exactly title and metrics; '
                      'player objects, when requested, contain exactly playerId and metrics.')
+
+
+def _profile_title(value, fallback):
+    """Reject explanation paragraphs in the universally visible heading field."""
+    title = str(value or '').strip()
+    if not title or len(title.split()) > 8 or len(title) > 80 or any(mark in title for mark in ('.', ';', '!', '?')):
+        return fallback
+    return title
 
 
 def _profile_output(value: dict[str, Any], build_narratives: bool) -> dict[str, Any]:
@@ -2027,7 +2038,7 @@ def build_team_report_attack_profile(
         valid_themes = len(themes) == 2 and valid_single_metric_cells(themes) and inference_led(themes) and (not build_narratives or all(len(item.get("analysis") or []) >= 1 for item in themes))
         valid_players = len(output_players) == 2 and valid_single_metric_cells(output_players) and inference_led(output_players) and (not build_narratives or all(len(item.get("analysis") or []) >= 1 for item in output_players))
         if valid_themes and valid_players:
-            return _profile_output({"themes": [{"title": str(item.get("title") or "").strip(), "metrics": [{"label": str(value.get("label") or ""), "value": str(value.get("value") or "")} for value in (item.get("metrics") or [])[:4] if isinstance(value, dict)], "analysis": [str(value) for value in (item.get("analysis") or [])[:3]]} for item in themes], "players": output_players}, build_narratives)
+            return _profile_output({"themes": [{"title": _profile_title(item.get("title"), fallback_themes[index]["title"]), "metrics": [{"label": str(value.get("label") or ""), "value": str(value.get("value") or "")} for value in (item.get("metrics") or [])[:4] if isinstance(value, dict)], "analysis": [str(value) for value in (item.get("analysis") or [])[:3]]} for index, item in enumerate(themes)], "players": output_players}, build_narratives)
 
         # Preserve usable model-written analysis instead of discarding the whole
         # profile when one metric cell or one player identifier is malformed.
@@ -2040,7 +2051,7 @@ def build_team_report_attack_profile(
                 for value in (generated.get("metrics") or [])[:4] if isinstance(value, dict)
             ]
             repaired_themes.append({
-                "title": str(generated.get("title") or fallback_theme["title"]).strip(),
+                "title": _profile_title(generated.get("title"), fallback_theme["title"]),
                 "metrics": generated_metrics if valid_single_metric_cells([{"metrics": generated_metrics}]) else fallback_theme["metrics"],
                 "analysis": generated_analysis if len(generated_analysis) >= 1 and inference_led([{"analysis": generated_analysis}]) else fallback_theme["analysis"],
             })
@@ -2242,13 +2253,15 @@ def build_team_report_defense_profile(
         valid_themes = len(themes) == 2 and all(len(item["metrics"]) == 4 and (not build_narratives or len(item["analysis"]) >= 1) for item in themes)
         valid_players = len(output_players) == 2 and all(len(item["metrics"]) == 4 and (not build_narratives or len(item["analysis"]) >= 1) for item in output_players)
         if valid_themes and valid_players:
+            for index, theme in enumerate(themes):
+                theme["title"] = _profile_title(theme.get("title"), fallback_themes[index]["title"])
             return _profile_output({"themes": themes, "players": output_players}, build_narratives)
         repaired_themes = []
         for index, fallback_theme in enumerate(fallback_themes[:2]):
             generated = themes[index] if index < len(themes) else {}
             metrics = generated.get("metrics") or []
             analysis = analysis_list(generated.get("analysis"))
-            repaired_themes.append({"title": str(generated.get("title") or fallback_theme["title"]), "metrics": metrics if len(metrics) == 4 else fallback_theme["metrics"], "analysis": analysis if len(analysis) >= 1 else fallback_theme["analysis"]})
+            repaired_themes.append({"title": _profile_title(generated.get("title"), fallback_theme["title"]), "metrics": metrics if len(metrics) == 4 else fallback_theme["metrics"], "analysis": analysis if len(analysis) >= 1 else fallback_theme["analysis"]})
         repaired_players = []
         for generated in output_players:
             source = by_id.get(str(generated["playerId"]))
@@ -2465,7 +2478,7 @@ def build_team_report_strengths(
             metrics = [{"label": str(row.get("label") or ""), "value": str(row.get("value") or "")} for row in (item.get("metrics") or [])[:4] if isinstance(row, dict)]
             analysis_value = item.get("analysis")
             analysis = _mobile_profile_analysis(analysis_value)
-            themes.append({"title": str(item.get("title") or fallback_theme["title"]).strip(), "metrics": metrics if len(metrics) == 4 else fallback_theme["metrics"], "analysis": analysis if len(analysis) >= 1 else fallback_theme["analysis"]})
+            themes.append({"title": _profile_title(item.get("title"), fallback_theme["title"]), "metrics": metrics if len(metrics) == 4 else fallback_theme["metrics"], "analysis": analysis if len(analysis) >= 1 else fallback_theme["analysis"]})
         if len(generated) != 2:
             print(f"[enterprise_team_report] event=strengths_validation_repair themes={len(generated)}")
         return _profile_output({"themes": themes}, build_narratives)
@@ -2566,7 +2579,7 @@ def build_team_report_weaknesses(
             analysis_value = item.get("analysis")
             analysis = [naturalize(text) for text in analysis_value[:3] if isinstance(text, str) and text.strip()] if isinstance(analysis_value, list) else []
             metrics_valid = len(metrics) == 4 and all(metric["label"] in valid_metric_names for metric in metrics)
-            themes.append({"title": naturalize(item.get("title") or fallback_theme["title"]), "metrics": metrics if metrics_valid else fallback_theme["metrics"], "analysis": analysis if len(analysis) >= 1 else fallback_theme["analysis"]})
+            themes.append({"title": _profile_title(naturalize(item.get("title")), fallback_theme["title"]), "metrics": metrics if metrics_valid else fallback_theme["metrics"], "analysis": analysis if len(analysis) >= 1 else fallback_theme["analysis"]})
         if len(generated) != 2:
             print(f"[enterprise_team_report] event=weaknesses_validation_repair themes={len(generated)}")
         return _profile_output({"themes": themes}, build_narratives)

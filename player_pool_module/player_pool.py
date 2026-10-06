@@ -42,6 +42,9 @@ def search_players(db: Session, filters: Dict[str, Any]) -> List[Dict[str, Any]]
     contract_end_date = None if world_cup_mode else clean_str(filters.get("contractEndDate"))
     nationality = None if world_cup_mode else clean_str(filters.get("nationality"))
     league = None if world_cup_mode else clean_str(filters.get("league"))
+    league_country = None
+    if league and " | " in league:
+        league, league_country = league.rsplit(" | ", 1)
     team = clean_str(filters.get("team"))
     position = clean_str(filters.get("position"))
     position_short = position.upper() if position and position.upper() in ROLE_SHORT_TO_LONG else None
@@ -73,8 +76,28 @@ def search_players(db: Session, filters: Dict[str, Any]) -> List[Dict[str, Any]]
           AND (
                 :league IS NULL
                 OR LOWER(COALESCE(metadata->>'league_name', '')) = LOWER(:league)
-                OR LOWER(COALESCE(metadata->>'league_name_norm', '')) ILIKE :league_norm_q
-                OR {folded_text_sql("league_name")} LIKE :league_folded_q
+                OR (
+                    :league_country IS NULL
+                    AND (
+                        LOWER(COALESCE(metadata->>'league_name_norm', '')) ILIKE :league_norm_q
+                        OR {folded_text_sql("league_name")} LIKE :league_folded_q
+                    )
+                )
+              )
+          AND (
+                :league_country IS NULL
+                OR EXISTS (
+                    SELECT 1
+                    FROM player_comp_data league_context
+                    WHERE league_context.player_id = CASE
+                        WHEN COALESCE(metadata->>'player_id', '') ~ '^-?[0-9]+$'
+                        THEN (metadata->>'player_id')::bigint ELSE NULL END
+                      AND league_context.player_id::text = COALESCE(metadata->>'player_id', '')
+                      AND LOWER(COALESCE(league_context.league_name, '')) = LOWER(:league)
+                      AND LOWER(COALESCE(league_context.league_country_name, '')) = LOWER(:league_country)
+                    -- Preserve an indexed per-player lookup, as for multi-league discovery.
+                    OFFSET 0
+                )
               )
           AND (
                 :team IS NULL
@@ -189,6 +212,7 @@ def search_players(db: Session, filters: Dict[str, Any]) -> List[Dict[str, Any]]
             "nationality": nationality,
             "nationality_folded_q": f"%{nationality_norm}%" if nationality_norm else None,
             "league": league,
+            "league_country": league_country,
             "league_norm_q": f"%{league_norm}%" if league_norm else None,
             "league_folded_q": f"%{league_norm}%" if league_norm else None,
             "team": team,
@@ -272,9 +296,29 @@ def get_player_pool_filter_options(db: Session, world_cup_mode: bool = False) ->
         ORDER BY value
     """)).scalars().all()
 
+    league_options = distinct_metadata_values("league_name")
+    if not world_cup_mode:
+        league_rows = db.execute(text("""
+            SELECT DISTINCT league_name, league_country_name
+            FROM player_comp_data
+            WHERE COALESCE(league_name, '') <> ''
+              AND COALESCE(league_country_name, '') <> ''
+            ORDER BY league_name, league_country_name
+        """)).mappings().all()
+        countries_by_league: Dict[str, List[str]] = {}
+        for row in league_rows:
+            countries_by_league.setdefault(row["league_name"], []).append(row["league_country_name"])
+        league_options = [
+            f"{league_name} | {country}"
+            for league_name in league_options
+            for country in countries_by_league.get(league_name, [])
+        ] + [
+            league_name for league_name in league_options if league_name not in countries_by_league
+        ]
+
     return {
         "teams": distinct_metadata_values("team_name"),
-        "leagues": distinct_metadata_values("league_name"),
+        "leagues": league_options,
         "nationalities": distinct_metadata_values("nationality_name"),
         "positions": [value for value in position_rows if value],
     }

@@ -87,12 +87,18 @@ app = FastAPI()
 
 from league_pool_module.router import router as league_pool_router
 app.include_router(league_pool_router)
+from standings_module.router import router as league_performance_router
+app.include_router(league_performance_router)
 from player_comp_season_module.router import router as season_data_router
 app.include_router(season_data_router)
 from team_pool_module.router import router as team_pool_router
 app.include_router(team_pool_router)
 from match_pool_module.router import router as match_pool_router
 app.include_router(match_pool_router)
+from similar_players_module.router import router as similar_players_router
+app.include_router(similar_players_router)
+from team_portfolio_module.portfolio import router as team_portfolio_router
+app.include_router(team_portfolio_router)
 from team_analysis_module.router import router as team_analysis_router
 app.include_router(team_analysis_router)
 from api_module.profile_summary import router as profile_summary_router

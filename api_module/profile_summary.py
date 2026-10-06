@@ -22,4 +22,15 @@ def dashboard_summary(user_id: int = Depends(require_auth), db: Session = Depend
              AND report_type = 'pre_match'
              AND report_status = 'ready' AND report_content IS NOT NULL) AS "readyPreMatchReports"
     """), {"uid": user_id}).mappings().one()
-    return {key: int(value) for key, value in row.items()}
+    result = {key: int(value) for key, value in row.items()}
+    # Existing dashboard stays usable until the user applies the new migration.
+    available = db.execute(text("SELECT to_regclass('public.favorite_teams') IS NOT NULL AND to_regclass('public.team_reports') IS NOT NULL")).scalar()
+    if available:
+        counts = db.execute(text("""SELECT
+            (SELECT count(*) FROM favorite_teams WHERE user_id=:uid) AS "portfolioTeams",
+            (SELECT count(*) FROM team_reports WHERE user_id=:uid AND report_status='ready' AND report_content IS NOT NULL) AS "readyTeamReports"
+        """), {'uid': user_id}).mappings().one()
+        result.update({key: int(value) for key, value in counts.items()})
+    else:
+        result.update(portfolioTeams=0, readyTeamReports=0)
+    return result
