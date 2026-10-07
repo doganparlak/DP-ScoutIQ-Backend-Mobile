@@ -17,6 +17,7 @@ from sqlalchemy.orm import Session
 from sqlalchemy import text
 
 from chatbot_module.chatbot_agentic import answer_question
+from mobile_pro_module.router import router as mobile_pro_router
 from chatbot_module.tools_agentic import ensure_player_position_label_cache
 from report_module.report import build_report_foundation, complete_report_foundation, complete_report_section, generate_report_content, normalize_mobile_report_format
 # import our refactored pieces
@@ -84,6 +85,7 @@ ANDROID_NO_ADS_MONTHLY_PRODUCT_ID = os.getenv("ANDROID_NO_ADS_MONTHLY_PRODUCT_ID
 
 
 app = FastAPI()
+app.include_router(mobile_pro_router)
 
 from league_pool_module.router import router as league_pool_router
 app.include_router(league_pool_router)
