@@ -15,6 +15,7 @@ from sqlalchemy import text
 from sqlalchemy.orm import Session
 
 from chatbot_module.metrics import ALLOWED_METRICS, POSITIVE_METRICS
+from api_module.community import community_available, save_community_nickname
 from daily_quiz_module.prompts import DAILY_SCOUT_FALLBACK_STRATEGIES, DAILY_SCOUT_QUIZ_PROMPT, DAILY_SCOUT_THEMES
 
 
@@ -418,12 +419,14 @@ def ensure_daily_challenge(db: Session) -> Dict[str, Any]:
 
 def get_daily_status(db: Session, user_id: int) -> Dict[str, Any]:
     challenge = ensure_daily_challenge(db)
+    permanent = community_available(db)
+    join = "LEFT JOIN public.users n ON n.id=a.user_id" if permanent else "LEFT JOIN daily_scout_weekly_nicknames n ON n.user_id=a.user_id AND n.week_start=DATE_TRUNC('week', NOW())::date"
+    nickname_column = 'n.community_nickname' if permanent else 'n.nickname'
     attempt = db.execute(
-        text("""
-        SELECT a.*, n.nickname IS NULL AS needs_nickname
+        text(f"""
+        SELECT a.*, {nickname_column} IS NULL AS needs_nickname
         FROM daily_scout_attempts a
-        LEFT JOIN daily_scout_weekly_nicknames n
-          ON n.user_id = a.user_id AND n.week_start = DATE_TRUNC('week', NOW())::date
+        {join}
         WHERE a.user_id = :uid AND a.challenge_id = :cid
         LIMIT 1
         """),
@@ -489,6 +492,9 @@ def submit_daily_answer(db: Session, user_id: int, challenge_id: str, chosen_pla
 
 
 def set_weekly_nickname(db: Session, user_id: int, nickname: str) -> Dict[str, Any]:
+    # Keep the public endpoint and old client response unchanged.
+    if community_available(db):
+        return save_community_nickname(db, user_id, nickname)
     nick = " ".join((nickname or "").strip().split())[:24]
     if len(nick) < 2:
         raise ValueError("Nickname must be at least 2 characters")
@@ -521,19 +527,22 @@ def set_weekly_nickname(db: Session, user_id: int, nickname: str) -> Dict[str, A
 
 def get_weekly_leaderboard(db: Session, limit: int = 20) -> Dict[str, Any]:
     week = _week_start()
+    permanent = community_available(db)
+    name = 'n.community_nickname' if permanent else 'n.nickname'
+    join = "JOIN public.users n ON n.id=a.user_id AND n.community_nickname IS NOT NULL" if permanent else "JOIN daily_scout_weekly_nicknames n ON n.user_id=a.user_id AND n.week_start=DATE_TRUNC('week', a.challenge_date)::date"
+    identity = 'n.id' if permanent else 'n.user_id'
     rows = db.execute(
-        text("""
-        SELECT n.nickname,
+        text(f"""
+        SELECT {name} AS nickname,
                SUM(a.score)::int AS score,
                COUNT(*) FILTER (WHERE a.completed_at IS NOT NULL)::int AS played,
                COUNT(*) FILTER (WHERE a.is_correct IS TRUE)::int AS correct
         FROM daily_scout_attempts a
-        JOIN daily_scout_weekly_nicknames n
-          ON n.user_id = a.user_id AND n.week_start = DATE_TRUNC('week', a.challenge_date)::date
+        {join}
         WHERE a.challenge_date >= :week
           AND a.completed_at IS NOT NULL
-        GROUP BY n.user_id, n.nickname
-        ORDER BY score DESC, correct DESC, played DESC, n.nickname ASC
+        GROUP BY {identity}, {name}
+        ORDER BY score DESC, correct DESC, played DESC, {name} ASC
         LIMIT :limit
         """),
         {"week": week, "limit": int(limit or 20)},

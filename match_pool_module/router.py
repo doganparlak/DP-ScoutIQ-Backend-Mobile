@@ -100,7 +100,7 @@ def save(payload: SaveMatchIn, user_id=Depends(require_auth), db: Session=Depend
         if not fixture:
             raise HTTPException(404, "Fixture not found")
         report_type = "pre_match" if _is_not_started_enterprise_fixture(fixture) else "post_match"
-        return _save_match(EnterpriseFavoriteMatchIn(fixture=fixture, reportType=report_type), user_id, db)
+        return _save_match(EnterpriseFavoriteMatchIn(fixture=fixture, reportType=report_type), user_id, db, allow_pending=True)
     except (SportMonksError, requests.RequestException):
         raise HTTPException(502, "Fixture data service is temporarily unavailable") from None
     except ProgrammingError as exc:
@@ -155,6 +155,8 @@ def _save_match(
     payload: EnterpriseFavoriteMatchIn,
     user_id: str = Depends(require_auth),
     db: Session = Depends(get_db),
+    *,
+    allow_pending: bool = False,
 ):
     fixture = payload.fixture
     email = get_user_email_by_id(db, user_id)
@@ -165,7 +167,7 @@ def _save_match(
             status_code=409,
             detail="A pre-match report can only be saved before the match starts",
         )
-    if payload.reportType == "post_match" and not _is_completed_enterprise_fixture(fixture):
+    if payload.reportType == "post_match" and not allow_pending and not _is_completed_enterprise_fixture(fixture):
         raise HTTPException(
             status_code=409,
             detail="A post-match report can only be saved after the match is completed",
