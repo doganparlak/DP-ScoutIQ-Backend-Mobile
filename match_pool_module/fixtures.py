@@ -531,7 +531,7 @@ def search_fixtures(filters: dict[str, Any]) -> dict[str, Any]:
     start_value = _clean(filters.get("startDate"))
     end_value = _clean(filters.get("endDate"))
     if not start_value and not end_value:
-        end = date.today()
+        end = date.today() + timedelta(days=14)
         start = end - timedelta(days=MAX_DATE_RANGE_DAYS)
     elif start_value and not end_value:
         start = date.fromisoformat(start_value)
