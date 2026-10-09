@@ -200,7 +200,9 @@ def get_weekly_popular_players(db: Session, limit: int = DEFAULT_LIMIT, world_cu
         JOIN LATERAL (
             SELECT pd.id, pd.metadata
             FROM {table_name} pd
-            WHERE NULLIF(pd.metadata->>'player_id', '')::bigint = pws.player_id
+            WHERE (CASE WHEN (pd.metadata->>'player_id') ~ '^[0-9]+([.]0+)?$'
+                        THEN trunc((pd.metadata->>'player_id')::numeric)::text
+                        ELSE NULL END) = pws.player_id::text
             ORDER BY pd.id DESC
             LIMIT 1
         ) current_pd ON TRUE

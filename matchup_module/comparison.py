@@ -9,51 +9,71 @@ from sqlalchemy.orm import Session
 from player_pool_module.utilities import player_pool_table
 
 
-def _enrich_visual_identity(db: Session, content: Dict[str, Any]) -> Dict[str, Any]:
-    """Attach the current competition identity used by comparison slot logos."""
-    result = dict(content or {})
-    try:
-        sportmonks_id = int(float(result.get("player_id")))
-    except (TypeError, ValueError):
-        return result
+def _enrich_visual_identities(db: Session, contents: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
+    """Resolve missing competition identities together, reusing duplicate lookups."""
+    results = [dict(content or {}) for content in contents]
+    requests: Dict[tuple, int] = {}
+    destinations: Dict[int, List[Dict[str, Any]]] = {}
+    lookups = []
+    for result in results:
+        if result.get("league_id") is not None and result.get("league_image_path"):
+            continue
+        try:
+            sportmonks_id = int(float(result.get("player_id")))
+        except (TypeError, ValueError, OverflowError):
+            continue
+        league_name = str(result.get("league_name") or result.get("league") or "").strip()
+        try:
+            team_id = int(float(result.get("team_id")))
+        except (TypeError, ValueError, OverflowError):
+            team_id = None
+        key = (sportmonks_id, league_name, team_id)
+        if key not in requests:
+            requests[key] = len(lookups)
+            lookups.append({"lookup_key": requests[key], "player_id": sportmonks_id,
+                            "league_name": league_name, "team_id": team_id})
+        destinations.setdefault(requests[key], []).append(result)
+    if not lookups:
+        return results
 
-    league_name = str(result.get("league_name") or result.get("league") or "").strip()
-    try:
-        team_id = int(float(result.get("team_id")))
-    except (TypeError, ValueError):
-        team_id = None
-
-    row = db.execute(
+    rows = db.execute(
         text(
             """
-            SELECT pc.league_id, eli.image_url AS league_image_path
-            FROM player_comp_data pc
-            LEFT JOIN enterprise_league_images eli
-              ON eli.league_id = pc.league_id
-             AND eli.image_status = 'available'
-            WHERE pc.player_id = :player_id
-            ORDER BY
-              CASE WHEN :league_name <> '' AND LOWER(BTRIM(pc.league_name)) = LOWER(BTRIM(:league_name)) THEN 0 ELSE 1 END,
-              CASE WHEN :team_id IS NOT NULL AND pc.team_id = :team_id THEN 0 ELSE 1 END,
-              pc.match_count DESC NULLS LAST
-            LIMIT 1
+            SELECT requested.lookup_key, chosen.league_id, chosen.league_image_path
+            FROM jsonb_to_recordset(CAST(:lookups AS jsonb)) AS requested(
+                lookup_key integer, player_id bigint, league_name text, team_id bigint
+            )
+            LEFT JOIN LATERAL (
+                SELECT pc.league_id, eli.image_url AS league_image_path
+                FROM player_comp_data pc
+                LEFT JOIN enterprise_league_images eli
+                  ON eli.league_id = pc.league_id
+                 AND eli.image_status = 'available'
+                WHERE pc.player_id = requested.player_id
+                ORDER BY
+                  CASE WHEN requested.league_name <> '' AND LOWER(BTRIM(pc.league_name)) = LOWER(BTRIM(requested.league_name)) THEN 0 ELSE 1 END,
+                  CASE WHEN requested.team_id IS NOT NULL AND pc.team_id = requested.team_id THEN 0 ELSE 1 END,
+                  pc.match_count DESC NULLS LAST
+                LIMIT 1
+            ) chosen ON TRUE
             """
         ),
-        {
-            "player_id": sportmonks_id,
-            "league_name": league_name,
-            "team_id": team_id,
-        },
-    ).mappings().first()
-    if row:
-        if result.get("league_id") is None and row.get("league_id") is not None:
-            result["league_id"] = row["league_id"]
-        if not result.get("league_image_path") and row.get("league_image_path"):
-            result["league_image_path"] = row["league_image_path"]
-    return result
+        {"lookups": json.dumps(lookups)},
+    ).mappings().all()
+    for row in rows:
+        for result in destinations[row["lookup_key"]]:
+            if result.get("league_id") is None and row.get("league_id") is not None:
+                result["league_id"] = row["league_id"]
+            if not result.get("league_image_path") and row.get("league_image_path"):
+                result["league_image_path"] = row["league_image_path"]
+    return results
 
 
-def _fetch_player_metadata(db: Session, player_id: str, world_cup_mode: bool = False) -> Dict[str, Any]:
+def _enrich_visual_identity(db: Session, content: Dict[str, Any]) -> Dict[str, Any]:
+    return _enrich_visual_identities(db, [content])[0]
+
+
+def _fetch_player_metadata(db: Session, player_id: str, world_cup_mode: bool = False, *, enrich_visuals: bool = True) -> Dict[str, Any]:
     try:
         player_id_int = int(player_id)
     except (TypeError, ValueError) as exc:
@@ -75,11 +95,11 @@ def _fetch_player_metadata(db: Session, player_id: str, world_cup_mode: bool = F
 
     return {
         "id": row["id"],
-        "content": _enrich_visual_identity(db, row["content"] or {}),
+        "content": _enrich_visual_identity(db, row["content"] or {}) if enrich_visuals else dict(row["content"] or {}),
     }
 
 
-def _fetch_player_by_sportmonks_id(db: Session, sportmonks_id: int, world_cup_mode: bool = False) -> Dict[str, Any]:
+def _fetch_player_by_sportmonks_id(db: Session, sportmonks_id: int, world_cup_mode: bool = False, *, enrich_visuals: bool = True) -> Dict[str, Any]:
     table_name = player_pool_table(world_cup_mode)
     rows = db.execute(text(f"""
         SELECT id, metadata AS content FROM {table_name}
@@ -91,15 +111,19 @@ def _fetch_player_by_sportmonks_id(db: Session, sportmonks_id: int, world_cup_mo
         raise ValueError(f"Expected one current player for SportMonks ID {sportmonks_id}; found {len(rows)}")
     return {
         "id": rows[0]["id"],
-        "content": _enrich_visual_identity(db, rows[0]["content"] or {}),
+        "content": _enrich_visual_identity(db, rows[0]["content"] or {}) if enrich_visuals else dict(rows[0]["content"] or {}),
     }
 
 
 def get_matchup_comparison(db: Session, player1_id: str, player2_id: str, world_cup_mode: bool = False, player1_sportmonks_id: int | None = None, player2_sportmonks_id: int | None = None) -> Dict[str, Any]:
-    return {
-        "player1": _fetch_player_by_sportmonks_id(db, player1_sportmonks_id, world_cup_mode) if player1_sportmonks_id is not None else _fetch_player_metadata(db, player1_id, world_cup_mode),
-        "player2": _fetch_player_by_sportmonks_id(db, player2_sportmonks_id, world_cup_mode) if player2_sportmonks_id is not None else _fetch_player_metadata(db, player2_id, world_cup_mode),
-    }
+    players = [
+        _fetch_player_by_sportmonks_id(db, provider_id, world_cup_mode, enrich_visuals=False)
+        if provider_id is not None else _fetch_player_metadata(db, player_id, world_cup_mode, enrich_visuals=False)
+        for player_id, provider_id in ((player1_id, player1_sportmonks_id), (player2_id, player2_sportmonks_id))
+    ]
+    for player, content in zip(players, _enrich_visual_identities(db, [p["content"] for p in players])):
+        player["content"] = content
+    return {"player1": players[0], "player2": players[1]}
 
 
 def _source_key(team_id: Any, competition_id: Any) -> str:
@@ -107,7 +131,7 @@ def _source_key(team_id: Any, competition_id: Any) -> str:
 
 
 def _fetch_comp_rows(db: Session, player_id: str, sportmonks_id: int | None = None) -> List[Dict[str, Any]]:
-    player = _fetch_player_metadata(db, player_id, False)
+    player = _fetch_player_metadata(db, player_id, False, enrich_visuals=False)
     metadata = player["content"] or {}
     player_name = str(metadata.get("player_name") or metadata.get("name") or "").strip()
     nationality = str(
@@ -146,7 +170,7 @@ def _fetch_comp_rows(db: Session, player_id: str, sportmonks_id: int | None = No
 
 def get_player_comparison_sources(db: Session, player_id: str, sportmonks_id: int | None = None) -> List[Dict[str, Any]]:
     if sportmonks_id is not None:
-        player_id = str(_fetch_player_by_sportmonks_id(db, sportmonks_id)["id"])
+        player_id = str(_fetch_player_by_sportmonks_id(db, sportmonks_id, enrich_visuals=False)["id"])
     rows = _fetch_comp_rows(db, player_id, sportmonks_id)
     grouped: Dict[str, Dict[str, Any]] = {}
     for row in rows:

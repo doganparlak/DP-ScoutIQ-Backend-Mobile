@@ -1012,32 +1012,34 @@ def daily_scout_challenge_leaderboard(
 # --- favorite players ---
 @app.get("/me/favorites", response_model=List[FavoritePlayerOut])
 def list_favorites(user_id: int = Depends(require_auth), db: Session = Depends(get_db)):
+    # Resolve each saved identity with its index. Two candidates are enough to
+    # detect ambiguity; never attach a current profile unless exactly one matches.
     rows = db.execute(
         text("""
         WITH saved AS (
             SELECT * FROM favorite_players WHERE user_id = :uid
-        ), matched_rows AS (
-            SELECT f.id AS favorite_id, p.id, p.metadata
-            FROM saved f
-            JOIN player_data p
-              ON CASE WHEN p.metadata->>'player_id' ~ '^[0-9]+([.]0+)?$'
-                      THEN trunc((p.metadata->>'player_id')::numeric)::text END = f.player_id
-            WHERE f.player_id IS NOT NULL
-            UNION ALL
-            SELECT f.id AS favorite_id, p.id, p.metadata
-            FROM saved f
-            JOIN player_data p
-              ON lower(trim(COALESCE(p.metadata->>'player_name', p.metadata->>'name', ''))) = lower(trim(f.name))
-             AND (NULLIF(trim(f.nationality), '') IS NULL OR lower(trim(COALESCE(p.metadata->>'nationality_name', p.metadata->>'nationality', ''))) = lower(trim(f.nationality)))
-             AND (NULLIF(trim(f.gender), '') IS NULL OR lower(trim(COALESCE(p.metadata->>'gender', ''))) = lower(trim(f.gender)))
-            WHERE f.player_id IS NULL
-        ), matches AS (
-            SELECT *, count(*) OVER (PARTITION BY favorite_id) AS match_count
-            FROM matched_rows
         )
         SELECT f.*, p.id::text AS source_player_id, p.metadata AS player_metadata, epi.image_url
         FROM saved f
-        LEFT JOIN matches p ON p.favorite_id = f.id AND p.match_count = 1
+        LEFT JOIN LATERAL (
+            SELECT candidates.*, count(*) OVER () AS match_count
+            FROM (
+                (SELECT pd.id, pd.metadata
+                 FROM player_data pd
+                 WHERE f.player_id IS NOT NULL
+                   AND CASE WHEN pd.metadata->>'player_id' ~ '^[0-9]+([.]0+)?$'
+                            THEN trunc((pd.metadata->>'player_id')::numeric)::text END = f.player_id
+                 LIMIT 2)
+                UNION ALL
+                (SELECT pd.id, pd.metadata
+                 FROM player_data pd
+                 WHERE f.player_id IS NULL
+                   AND lower(trim(COALESCE(pd.metadata->>'player_name', pd.metadata->>'name', ''))) = lower(trim(f.name))
+                   AND (NULLIF(trim(f.nationality), '') IS NULL OR lower(trim(COALESCE(pd.metadata->>'nationality_name', pd.metadata->>'nationality', ''))) = lower(trim(f.nationality)))
+                   AND (NULLIF(trim(f.gender), '') IS NULL OR lower(trim(COALESCE(pd.metadata->>'gender', ''))) = lower(trim(f.gender)))
+                 LIMIT 2)
+            ) candidates
+        ) p ON p.match_count = 1
         LEFT JOIN enterprise_player_images epi
           ON epi.player_id = CASE
               WHEN COALESCE(f.player_id, p.metadata->>'player_id', '') ~ '^[0-9]+([.]0+)?$'

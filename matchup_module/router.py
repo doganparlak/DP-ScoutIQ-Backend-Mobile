@@ -22,7 +22,8 @@ def sources(player_id: str, sportmonksId: int | None = Query(default=None, gt=0)
 @router.post("/{player_id}/data")
 def data(player_id: str, payload: SourceSelection, user_id: int = Depends(require_auth), db: Session = Depends(get_db)):
     try:
-        player = _fetch_player_by_sportmonks_id(db, payload.sportmonksId) if payload.sportmonksId is not None else _fetch_player_metadata(db, player_id)
+        # Selected competitions provide their own league badge below.
+        player = _fetch_player_by_sportmonks_id(db, payload.sportmonksId, enrich_visuals=not payload.sources) if payload.sportmonksId is not None else _fetch_player_metadata(db, player_id, enrich_visuals=not payload.sources)
         if payload.sources:
             player["content"] = _selected_comp_metadata(db, str(player["id"]), payload.sources, player["content"], payload.sportmonksId)
         return player
