@@ -190,6 +190,13 @@ def delete_user_everywhere(db: Session, user_id: int) -> None:
     if not email:
         return
 
+    # Revoke Apple authorization before deleting its local identity record.
+    if db.execute(text("SELECT to_regclass('public.user_identities') IS NOT NULL")).scalar():
+        from api_module.social_tokens import revoke_apple_identity
+        identities = db.execute(text("SELECT * FROM user_identities WHERE user_id=:uid AND provider='apple'"), {"uid": user_id}).mappings().all()
+        for identity in identities:
+            revoke_apple_identity(identity)
+
     # Gather tokens (defensive)
     tokens = [r["token"] for r in db.execute(
         text("SELECT token FROM sessions WHERE user_id = :uid"), {"uid": user_id}

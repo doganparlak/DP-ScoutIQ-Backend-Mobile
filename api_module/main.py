@@ -5,7 +5,7 @@ from typing import Optional, Dict, Any, List
 import time
 from uuid import uuid4
 from api_module.chat_trial import reserve_message, finish_message, refund_message
-from fastapi import FastAPI, HTTPException, Depends, Header, status, Response, Body, BackgroundTasks, Query as FastAPIQuery
+from fastapi import FastAPI, HTTPException, Depends, Header, status, Response, Request, Body, BackgroundTasks, Query as FastAPIQuery
 from fastapi.middleware.cors import CORSMiddleware
 from dotenv import load_dotenv
 
@@ -105,6 +105,11 @@ from team_portfolio_module.portfolio import router as team_portfolio_router
 app.include_router(team_portfolio_router)
 from team_analysis_module.router import router as team_analysis_router
 app.include_router(team_analysis_router)
+from api_module.social_auth import router as social_auth_router
+app.include_router(social_auth_router)
+from api_module.auth_session import authenticated_session
+from api_module.password_reset import COOKIE_NAME, COOKIE_PATH, verify_code as verify_password_reset_code, require_proof as require_password_reset_proof
+
 from api_module.profile_summary import router as profile_summary_router
 app.include_router(profile_summary_router)
 from matchup_module.router import router as matchup_sources_router
@@ -190,68 +195,14 @@ def signup(payload: SignUpIn, db: Session = Depends(get_db)):
 
 @app.post("/auth/login", response_model=LoginOut)
 def login(payload: LoginIn, accept_language: str | None = Header(default=None), db: Session = Depends(get_db)):
-    row = db.execute(text("SELECT * FROM users WHERE email = :e"), {"e": payload.email}).mappings().first()
-    if not row:
+    row = db.execute(text("SELECT * FROM users WHERE lower(email) = lower(:e)"), {"e": payload.email.strip()}).mappings().first()
+    if not row or not row["salt"] or not row["password_hash"]:
         raise HTTPException(status_code=400, detail="Invalid credentials")
-
-    salt = row["salt"]
-    if not hmac.compare_digest(hash_pw(payload.password, salt), row["password_hash"]):
+    if not hmac.compare_digest(hash_pw(payload.password, row["salt"]), row["password_hash"]):
         raise HTTPException(status_code=400, detail="Invalid credentials")
-
-    # Determine preferred language
-    preferred = normalize_lang(payload.uiLanguage) or normalize_lang(accept_language)
-    if preferred:
-        db.execute(text("UPDATE users SET language = :l WHERE id = :id"), {"l": preferred, "id": row["id"]})
-        db.commit()
-
-    # ---- restore entitlement (Option A) ----
-    row_ent = db.execute(text("""
-        SELECT platform, external_id, product_id, expires_at, auto_renew
-        FROM subscription_entitlements
-        WHERE lower(last_seen_email) = lower(:email)
-          AND expires_at IS NOT NULL
-        ORDER BY expires_at DESC
-        LIMIT 1
-    """), {"email": payload.email}).mappings().first()
-
-    # IMPORTANT: use SELECT NOW() if you want DB time
-    now_db = dt.datetime.now(dt.timezone.utc)
-
-    if row_ent and row_ent["expires_at"] and row_ent["expires_at"] > now_db:
-        plan = plan_from_product_id(row_ent.get("product_id"))
-        db.execute(text("""
-            UPDATE users
-            SET plan = :plan,
-                subscription_end_at = :end_at,
-                subscription_auto_renew = :auto_renew,
-                subscription_platform = :platform,
-                subscription_external_id = :ext_id
-            WHERE id = :id
-        """), {
-            "plan": plan,
-            "end_at": row_ent["expires_at"],
-            "auto_renew": row_ent["auto_renew"],
-            "platform": row_ent["platform"],
-            "ext_id": row_ent["external_id"],
-            "id": row["id"],
-        })
-        db.commit()
-
-    # re-fetch user row AFTER possible updates
-    row = db.execute(text("SELECT * FROM users WHERE id = :id"), {"id": row["id"]}).mappings().first()
-
-    token = uuid.uuid4().hex
-    lang_for_session = normalize_lang(row.get("language")) or "en"
-    db.execute(
-        text("""
-        INSERT INTO sessions (token, user_id, language, created_at, ended_at)
-        VALUES (:t, :uid, :l, :ts, NULL)
-        """),
-        {"t": token, "uid": row["id"], "l": lang_for_session, "ts": now_iso()}
-    )
+    result = authenticated_session(db, row["id"], normalize_lang(payload.uiLanguage) or normalize_lang(accept_language), allow_email_restore=True)
     db.commit()
-
-    return {"token": token, "user": user_row_to_dict(row)}
+    return result
 
 
 @app.post("/logout", status_code=status.HTTP_204_NO_CONTENT)
@@ -267,6 +218,8 @@ def logout(authorization: str | None = Header(None), db: Session = Depends(get_d
 @app.post("/auth/set_new_password")
 def set_new_password(
     body: SetNewPasswordIn,
+    request: Request,
+    response: Response,
     accept_language: str | None = Header(default=None),
     db: Session = Depends(get_db),
 ):
@@ -285,6 +238,8 @@ def set_new_password(
             headers={"Content-Language": preferred_lang},
         )
 
+    reset_id = require_password_reset_proof(db, body.email, body.resetToken or request.cookies.get(COOKIE_NAME))
+
     # 2) Fetch user creds
     row = db.execute(
         text("SELECT id, password_hash, salt FROM users WHERE lower(email) = lower(:e)"),
@@ -298,6 +253,8 @@ def set_new_password(
     user_id = int(row["id"])
     old_hash = row["password_hash"]
     old_salt = row["salt"]
+    if not old_hash or not old_salt:
+        raise HTTPException(status_code=400, detail="Please use Apple or Google to sign into this account.")
 
     # 3) Prevent reusing the same password
     new_with_old_salt = hash_pw(body.new_password, old_salt)
@@ -317,8 +274,9 @@ def set_new_password(
         {"ph": fresh_hash, "s": fresh_salt, "id": user_id}
     )
     db.execute(text("DELETE FROM sessions WHERE user_id = :id"), {"id": user_id})
+    db.execute(text("DELETE FROM email_codes WHERE id=:id"), {"id": reset_id})
     db.commit()
-
+    response.delete_cookie(COOKIE_NAME, path=COOKIE_PATH)
     return {"ok": True}
 
 @app.get("/me", response_model=ProfileOut)
@@ -459,11 +417,12 @@ def reach_out(
     return {"ok": True}
 
 @app.post("/auth/verify_reset")
-def verify_reset(body: VerifyResetIn):
-    ok = verify_email_code(body.email, body.code, purpose="reset")
-    if not ok:
-        raise HTTPException(status_code=400, detail="Invalid or expired code")
-    return {"ok": True}
+def verify_reset(body: VerifyResetIn, request: Request, response: Response, db: Session = Depends(get_db)):
+    proof = verify_password_reset_code(db, body.email, body.code)
+    # Legacy native clients ignore JSON additions but retain server cookies.
+    response.set_cookie(COOKIE_NAME, proof, max_age=600, path=COOKIE_PATH,
+                        secure=request.url.scheme == 'https' or os.getenv('RENDER') == 'true', httponly=True, samesite='strict')
+    return {"ok": True, "resetToken": proof}
 
 # --- email codes: signup ---
 @app.post("/auth/request_signup_code")
@@ -529,6 +488,8 @@ def verify_signup_code(body: VerifySignupIn, db: Session = Depends(get_db)):
         SELECT platform, external_id, product_id, expires_at, auto_renew
         FROM subscription_entitlements
         WHERE lower(last_seen_email) = lower(:email)
+          AND (last_seen_user_id IS NULL OR last_seen_user_id =
+               (SELECT id FROM users WHERE lower(email)=lower(:email) LIMIT 1))
           AND expires_at IS NOT NULL
         ORDER BY expires_at DESC
         LIMIT 1

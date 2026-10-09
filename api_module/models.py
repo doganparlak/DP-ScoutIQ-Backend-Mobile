@@ -151,6 +151,7 @@ class VerifySignupIn(BaseModel):
 class SetNewPasswordIn(BaseModel):
     email: EmailStr
     new_password: str
+    resetToken: Optional[str] = Field(default=None, max_length=128)
 class IAPActivateIn(BaseModel):
     platform: Literal["ios", "android"]
     product_id: str
