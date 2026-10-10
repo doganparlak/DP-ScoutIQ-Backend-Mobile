@@ -1,3 +1,8 @@
+
+import logging
+
+logger = logging.getLogger(__name__)
+
 import json
 import os
 import random
@@ -54,7 +59,7 @@ SQL_FOLD_FROM = "ÁÀÂÃÄÅĀĂĄáàâãäåāăąÉÈÊËĒĖĘĚéèêëē�
 SQL_FOLD_TO = "AAAAAAAAAaaaaaaaaaEEEEEEEEeeeeeeeeIIIIIIiiiiiiOOOOOOOoooooooUUUUUuuuuuCCCcccNnGgSSssYYyyZZZzzzDd"
 
 
-AGENTIC_LOOKUP_DEBUG = os.getenv("AGENTIC_LOOKUP_DEBUG", "1").lower() not in {"0", "false", "no", "off"}
+AGENTIC_LOOKUP_DEBUG = os.getenv("AGENTIC_LOOKUP_DEBUG", "0").lower() not in {"0", "false", "no", "off"}
 AGENTIC_LOOKUP_VERBOSE = os.getenv("AGENTIC_LOOKUP_VERBOSE", "0").lower() in {"1", "true", "yes", "on"}
 AGENTIC_QUALITY_DEBUG = os.getenv("AGENTIC_QUALITY_DEBUG", "0").lower() not in {"0", "false", "no", "off"}
 SELECTOR_CANDIDATE_LIMIT = 10
@@ -180,7 +185,7 @@ def ensure_player_position_label_cache(db: Session) -> None:
 
 
 def _lookup_debug(event: str, payload: Dict[str, Any]) -> None:
-    if not AGENTIC_LOOKUP_DEBUG:
+    if not AGENTIC_LOOKUP_DEBUG or not logger.isEnabledFor(logging.DEBUG):
         return
     concise_events = {
         "direct_lookup_start",
@@ -225,17 +230,17 @@ def _lookup_debug(event: str, payload: Dict[str, Any]) -> None:
         body = json.dumps(payload, ensure_ascii=False, default=str)
     except Exception:
         body = str(payload)
-    print(f"[chatbot_db_search] event={event} {body}", flush=True)
+    logger.debug("%s", f"[chatbot_db_search] event={event} {body}")
 
 
 def _quality_debug(event: str, payload: Dict[str, Any]) -> None:
-    if not AGENTIC_QUALITY_DEBUG:
+    if not AGENTIC_QUALITY_DEBUG or not logger.isEnabledFor(logging.DEBUG):
         return
     try:
         body = json.dumps(payload, ensure_ascii=False, default=str)
     except Exception:
         body = str(payload)
-    print(f"[chatbot_quality] event={event} {body}", flush=True)
+    logger.debug("%s", f"[chatbot_quality] event={event} {body}")
 
 
 NEGATIVE_METRICS = {

@@ -1,5 +1,10 @@
 from __future__ import annotations
 
+import logging
+
+logger = logging.getLogger(__name__)
+
+
 from typing import Any, Dict, List
 import datetime as dt
 import json
@@ -203,7 +208,7 @@ def _extract_json_object(raw: str) -> Dict[str, Any] | None:
 
 def _quiz_llm_decision(summaries: List[Dict[str, Any]], theme: Dict[str, Any]) -> Dict[str, Any] | None:
     if not OPENAI_API_KEY:
-        print("[daily_scout_quiz] missing OPENAI_API_KEY; using fallback", flush=True)
+        logger.warning("%s", "[daily_scout_quiz] missing OPENAI_API_KEY; using fallback")
         return None
 
     body = {
@@ -237,18 +242,18 @@ def _quiz_llm_decision(summaries: List[Dict[str, Any]], theme: Dict[str, Any]) -
         with urllib.request.urlopen(req, timeout=QUIZ_LLM_TIMEOUT_SECONDS, context=ssl_context) as resp:
             payload = json.loads(resp.read().decode("utf-8"))
     except (urllib.error.URLError, TimeoutError, json.JSONDecodeError) as exc:
-        print(f"[daily_scout_quiz] OpenAI request failed; using fallback: {exc}", flush=True)
+        logger.warning("%s", f"[daily_scout_quiz] OpenAI request failed; using fallback: {exc}")
         return None
 
     try:
         raw = payload["choices"][0]["message"]["content"]
     except (KeyError, IndexError, TypeError) as exc:
-        print(f"[daily_scout_quiz] OpenAI response missing content; using fallback: {exc}", flush=True)
+        logger.warning("%s", f"[daily_scout_quiz] OpenAI response missing content; using fallback: {exc}")
         return None
 
     parsed = _extract_json_object(raw)
     if not parsed:
-        print("[daily_scout_quiz] OpenAI response was not valid JSON; using fallback", flush=True)
+        logger.warning("%s", "[daily_scout_quiz] OpenAI response was not valid JSON; using fallback")
     return parsed
 
 
@@ -278,7 +283,7 @@ def _ai_decision(choices: List[Dict[str, Any]], theme: Dict[str, Any]) -> Dict[s
     valid_ids = {choice["id"] for choice in choices}
     if not parsed or str(parsed.get("winner_player_id")) not in valid_ids:
         if parsed:
-            print("[daily_scout_quiz] invalid winner_player_id from OpenAI; using fallback", flush=True)
+            logger.warning("%s", "[daily_scout_quiz] invalid winner_player_id from OpenAI; using fallback")
         return _fallback_decision(choices, theme)
 
     strategy = parsed.get("strategy") if isinstance(parsed.get("strategy"), dict) else {}

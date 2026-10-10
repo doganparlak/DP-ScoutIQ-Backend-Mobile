@@ -1,4 +1,9 @@
 """Enterprise player selection with concise mobile explanations."""
+
+import logging
+
+logger = logging.getLogger(__name__)
+
 import os, re, json
 from typing import Any
 from report_module.metric_validation import nonzero_evidence, percentage, rate_counts, valid_metric
@@ -235,5 +240,5 @@ def build_player_perspectives(
     except Exception as exc:
         if strict:
             raise ValueError("Player analysis could not be generated") from None
-        print(f"[enterprise_match_report] event=player_perspective_fallback error={exc}")
+        logger.warning("%s", f"[enterprise_match_report] event=player_perspective_fallback error={exc}")
         return selected

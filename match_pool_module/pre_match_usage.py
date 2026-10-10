@@ -7,6 +7,11 @@ Maç Önü Analizi as the report sections are introduced.
 
 from __future__ import annotations
 
+import logging
+
+logger = logging.getLogger(__name__)
+
+
 from collections import Counter, defaultdict
 from concurrent.futures import ThreadPoolExecutor
 from datetime import datetime, timedelta, timezone
@@ -152,7 +157,7 @@ def _current_team_player_ids(team_id: int) -> set[int]:
             timeout=35,
         )
         if response.status_code != 200:
-            print(f"[pre_match_report] event=current_squad_unavailable team_id={team_id} http={response.status_code}")
+            logger.warning("%s", f"[pre_match_report] event=current_squad_unavailable team_id={team_id} http={response.status_code}")
             return set()
         return {
             _as_int(row.get("id"))
@@ -160,7 +165,7 @@ def _current_team_player_ids(team_id: int) -> set[int]:
             if row.get("in_squad") is True and _as_int(row.get("id"))
         }
     except requests.RequestException as exc:
-        print(f"[pre_match_report] event=current_squad_unavailable team_id={team_id} error={exc}")
+        logger.warning("%s", f"[pre_match_report] event=current_squad_unavailable team_id={team_id} error={exc}")
         return set()
 
 
@@ -1099,7 +1104,7 @@ def _pre_match_player_perspectives(usages: list[dict[str, Any]], lang: str, stri
     except Exception as exc:
         if strict:
             raise ValueError("Analysis generation failed") from None
-        print(f"[pre_match_report] event=player_perspective_fallback error={exc}")
+        logger.warning("%s", f"[pre_match_report] event=player_perspective_fallback error={exc}")
     return fallback
 
 def _pre_match_momentum_perspectives(
@@ -1155,7 +1160,7 @@ def _pre_match_momentum_perspectives(
     except Exception as exc:
         if strict:
             raise ValueError("Analysis generation failed") from None
-        print(f"[pre_match_report] event=momentum_perspective_fallback error={exc}")
+        logger.warning("%s", f"[pre_match_report] event=momentum_perspective_fallback error={exc}")
     return fallback
 
 def _pre_team_prompt(prompt: str, include_locked: bool) -> str:
@@ -1206,5 +1211,5 @@ def _pre_match_team_analysis(usages: list[dict[str, Any]], teams: list[dict[str,
     except Exception as exc:
         if strict:
             raise ValueError("Analysis generation failed") from None
-        print(f"[pre_match_report] event=team_analysis_fallback error={exc}")
+        logger.warning("%s", f"[pre_match_report] event=team_analysis_fallback error={exc}")
     return fallback

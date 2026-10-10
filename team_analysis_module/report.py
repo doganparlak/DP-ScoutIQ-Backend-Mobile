@@ -1,4 +1,9 @@
 from __future__ import annotations
+
+import logging
+
+logger = logging.getLogger(__name__)
+
 from report_module.narrative_numbers import format_narrative_fields
 
 import os
@@ -441,7 +446,7 @@ def _build_scoutwise_perspective(report: dict[str, Any], lang: str) -> list[str]
             lines = [part.strip() for part in re.split(r"(?<=[.!?])\s+", raw) if part.strip()]
         return lines[:2] or fallback[:2]
     except Exception as exc:
-        print(f"[enterprise_match_report] event=perspective_fallback error={exc}")
+        logger.warning("%s", f"[enterprise_match_report] event=perspective_fallback error={exc}")
         return fallback
 
 
@@ -526,7 +531,7 @@ def _build_regional_play_perspective(report: dict[str, Any], lang: str) -> str:
         value = re.sub(r"\s+", " ", str(response.content or "")).strip()
         return value or fallback
     except Exception as exc:
-        print(f"[enterprise_match_report] event=regional_perspective_fallback error={exc}")
+        logger.warning("%s", f"[enterprise_match_report] event=regional_perspective_fallback error={exc}")
         return fallback
 
 
@@ -602,7 +607,7 @@ def _build_team_analysis_perspectives(
             result[group] = value or fallback[group]
         return result
     except Exception as exc:
-        print(f"[enterprise_match_report] event=team_perspective_fallback error={exc}")
+        logger.warning("%s", f"[enterprise_match_report] event=team_perspective_fallback error={exc}")
         return fallback
     try:
         from langchain_openai import ChatOpenAI
@@ -631,7 +636,7 @@ def _build_team_analysis_perspectives(
         value = re.sub(r"\s+", " ", str(response.content or "")).strip()
         return value or fallback
     except Exception as exc:
-        print(f"[enterprise_match_report] event=regional_perspective_fallback error={exc}")
+        logger.warning("%s", f"[enterprise_match_report] event=regional_perspective_fallback error={exc}")
         return fallback
 
 
@@ -856,7 +861,7 @@ def _build_player_analysis_perspectives(
                     row["text"] = normalize_goal_or_assist_claims(generated_text, player_data)
         return selected
     except Exception as exc:
-        print(f"[enterprise_match_report] event=player_perspective_fallback error={exc}")
+        logger.warning("%s", f"[enterprise_match_report] event=player_perspective_fallback error={exc}")
         return selected
 
 
@@ -982,7 +987,7 @@ def _build_team_deep_analyses(report: dict[str, Any], lang: str) -> dict[str, li
                 result[team_key] = fallback[team_key]
         return result
     except Exception as exc:
-        print(f"[enterprise_match_report] event=team_deep_analysis_fallback error={exc}")
+        logger.warning("%s", f"[enterprise_match_report] event=team_deep_analysis_fallback error={exc}")
         return fallback
 
 
@@ -1108,7 +1113,7 @@ def _build_report_overview_summary(report: dict[str, Any], lang: str) -> list[di
             })
         return cleaned
     except Exception as exc:
-        print(f"[enterprise_match_report] event=overview_summary_fallback error={exc}")
+        logger.warning("%s", f"[enterprise_match_report] event=overview_summary_fallback error={exc}")
         return fallback
 
 
@@ -1460,10 +1465,10 @@ def build_team_report_metrics(
             raise ValueError("team perspective response root was not a JSON object")
         missing = [group for group in available if not str(parsed.get(group) or "").strip()]
         if missing:
-            print(f"[enterprise_team_report] event=perspective_partial_fallback missing_keys={missing}")
+            logger.warning("%s", f"[enterprise_team_report] event=perspective_partial_fallback missing_keys={missing}")
         return aggregate, {group: str(parsed.get(group) or fallback[group]).strip() for group in available}
     except Exception as exc:
-        print(f"[enterprise_team_report] event=perspective_fallback error={exc}")
+        logger.warning("%s", f"[enterprise_team_report] event=perspective_fallback error={exc}")
         return aggregate, fallback
 
 
@@ -1665,7 +1670,7 @@ def build_team_report_player_perspectives(
             if str(value or "").strip():
                 result[key] = {"selectionType": selection, "rating": player["rating"], "text": str(value).strip()}
     except Exception as exc:
-        print(f"[enterprise_team_report] event=player_perspective_fallback error={exc}")
+        logger.warning("%s", f"[enterprise_team_report] event=player_perspective_fallback error={exc}")
     return result
 
 
@@ -1722,7 +1727,7 @@ def build_team_report_momentum_perspectives(
         parsed = json.loads(raw)
         return {key: str(parsed.get(key) or fallback[key]).strip() for key in fallback}
     except Exception as exc:
-        print(f"[enterprise_team_report] event=momentum_perspective_fallback error={exc}")
+        logger.warning("%s", f"[enterprise_team_report] event=momentum_perspective_fallback error={exc}")
         return fallback
 
 
@@ -2072,14 +2077,12 @@ def build_team_report_attack_profile(
             })
         repaired_ids = {str(player["playerId"]) for player in repaired_players}
         repaired_players.extend(player for player in fallback_players if str(player["playerId"]) not in repaired_ids)
-        print(
-            "[enterprise_team_report] event=attack_profile_validation_fallback "
+        logger.warning("%s", "[enterprise_team_report] event=attack_profile_validation_fallback "
             f"themes={len(themes)} output_players={len(output_players)} "
-            f"valid_themes={valid_themes} valid_players={valid_players}"
-        )
+            f"valid_themes={valid_themes} valid_players={valid_players}")
         return _profile_output({"themes": repaired_themes, "players": repaired_players[:2]}, build_narratives, lang)
     except Exception as exc:
-        print(f"[enterprise_team_report] event=attack_profile_fallback error={exc}")
+        logger.warning("%s", f"[enterprise_team_report] event=attack_profile_fallback error={exc}")
     return _profile_output(fallback, build_narratives, lang)
 
 
@@ -2274,10 +2277,10 @@ def build_team_report_defense_profile(
             repaired_players.append({**fallback_player, "metrics": metrics if len(metrics) == 4 else fallback_player["metrics"], "analysis": analysis if len(analysis) >= 1 else fallback_player["analysis"]})
         repaired_ids = {str(player["playerId"]) for player in repaired_players}
         repaired_players.extend(player for player in fallback_players if str(player["playerId"]) not in repaired_ids)
-        print(f"[enterprise_team_report] event=defense_profile_validation_repair themes={len(themes)} players={len(output_players)} valid_themes={valid_themes} valid_players={valid_players}")
+        logger.warning("%s", f"[enterprise_team_report] event=defense_profile_validation_repair themes={len(themes)} players={len(output_players)} valid_themes={valid_themes} valid_players={valid_players}")
         return _profile_output({"themes": repaired_themes, "players": repaired_players[:2]}, build_narratives, lang)
     except Exception as exc:
-        print(f"[enterprise_team_report] event=defense_profile_fallback error={exc}")
+        logger.warning("%s", f"[enterprise_team_report] event=defense_profile_fallback error={exc}")
     return _profile_output(fallback, build_narratives, lang)
 
 
@@ -2409,7 +2412,7 @@ def build_team_report_score_flow_profile(
             perspectives[key] = value if value and len(numeric_facts) <= 2 and not forbidden_absence.search(value) else fallback[key]
         return {"states": states, "perspectives": perspectives}
     except Exception as exc:
-        print(f"[enterprise_team_report] event=score_flow_profile_fallback error={exc}")
+        logger.warning("%s", f"[enterprise_team_report] event=score_flow_profile_fallback error={exc}")
         return {"states": states, "perspectives": fallback}
 
 
@@ -2481,10 +2484,10 @@ def build_team_report_strengths(
             analysis = _mobile_profile_analysis(analysis_value)
             themes.append({"title": _profile_title(item.get("title"), fallback_theme["title"]), "metrics": metrics if len(metrics) == 4 else fallback_theme["metrics"], "analysis": analysis if len(analysis) >= 1 else fallback_theme["analysis"]})
         if len(generated) != 2:
-            print(f"[enterprise_team_report] event=strengths_validation_repair themes={len(generated)}")
+            logger.warning("%s", f"[enterprise_team_report] event=strengths_validation_repair themes={len(generated)}")
         return _profile_output({"themes": themes}, build_narratives, lang)
     except Exception as exc:
-        print(f"[enterprise_team_report] event=strengths_fallback error={exc}")
+        logger.warning("%s", f"[enterprise_team_report] event=strengths_fallback error={exc}")
         return _profile_output(fallback, build_narratives, lang)
 
 
@@ -2582,10 +2585,10 @@ def build_team_report_weaknesses(
             metrics_valid = len(metrics) == 4 and all(metric["label"] in valid_metric_names for metric in metrics)
             themes.append({"title": _profile_title(naturalize(item.get("title")), fallback_theme["title"]), "metrics": metrics if metrics_valid else fallback_theme["metrics"], "analysis": analysis if len(analysis) >= 1 else fallback_theme["analysis"]})
         if len(generated) != 2:
-            print(f"[enterprise_team_report] event=weaknesses_validation_repair themes={len(generated)}")
+            logger.warning("%s", f"[enterprise_team_report] event=weaknesses_validation_repair themes={len(generated)}")
         return _profile_output({"themes": themes}, build_narratives, lang)
     except Exception as exc:
-        print(f"[enterprise_team_report] event=weaknesses_fallback error={exc}")
+        logger.warning("%s", f"[enterprise_team_report] event=weaknesses_fallback error={exc}")
         return _profile_output(fallback, build_narratives, lang)
 
 
@@ -2676,8 +2679,8 @@ def build_team_report_overview(
             rows.append({"key": key, "category": title, "summary": summary or fallback[index]["summary"], "subBullets": bullets})
         missing = [row["key"] for row in rows if row["summary"] == fallback[keys.index(row["key"])]["summary"]]
         if missing:
-            print(f"[enterprise_team_report] event=overview_partial_fallback missing_keys={missing}")
+            logger.warning("%s", f"[enterprise_team_report] event=overview_partial_fallback missing_keys={missing}")
         return rows
     except Exception as exc:
-        print(f"[enterprise_team_report] event=overview_fallback error={exc}")
+        logger.warning("%s", f"[enterprise_team_report] event=overview_fallback error={exc}")
         return fallback

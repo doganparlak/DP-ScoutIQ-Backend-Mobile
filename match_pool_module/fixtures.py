@@ -573,14 +573,6 @@ def search_fixtures(filters: dict[str, Any]) -> dict[str, Any]:
     if upstream_filters:
         params["filters"] = ";".join(upstream_filters)
 
-    print(
-        "[match_analysis_search] "
-        f"event=request start={start} end={end} country={_clean(filters.get('country'))!r} "
-        f"league={_clean(filters.get('league'))!r} league_id={league_id!r} "
-        f"home={_clean(filters.get('homeTeam'))!r} away={_clean(filters.get('awayTeam'))!r} "
-        f"upstream_filters={params.get('filters', '')!r}",
-        flush=True,
-    )
 
     collected: list[dict[str, Any]] = []
     has_more = False
@@ -629,10 +621,4 @@ def search_fixtures(filters: dict[str, Any]) -> dict[str, Any]:
             break
         params["page"] = int(params["page"]) + 1
 
-    print(
-        "[match_analysis_search] "
-        f"event=complete upstream_rows={len(upstream_rows)} matched_rows={len(collected)} "
-        f"pages_read={pages_read} has_more={has_more}",
-        flush=True,
-    )
     return {"fixtures": collected, "pagination": {"page": page, "hasMore": has_more, "pagesRead": pages_read}}

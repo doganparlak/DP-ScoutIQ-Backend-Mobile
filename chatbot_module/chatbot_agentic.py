@@ -1,3 +1,8 @@
+
+import logging
+
+logger = logging.getLogger(__name__)
+
 from typing import Any, Dict, List, Optional
 import json
 import os
@@ -178,8 +183,8 @@ followup_chain = followup_prompt | CHAT_LLM | StrOutputParser()
 
 DEEPSEEK_INPUT_PRICE_PER_M = float(os.getenv("DEEPSEEK_INPUT_PRICE_PER_M", "0.14"))
 DEEPSEEK_OUTPUT_PRICE_PER_M = float(os.getenv("DEEPSEEK_OUTPUT_PRICE_PER_M", "0.28"))
-AGENTIC_FLOW_LOG = os.getenv("AGENTIC_FLOW_LOG", "1").lower() in {"1", "true", "yes", "on"}
-PRO_LOOKUP_FLOW_LOG = os.getenv("PRO_LOOKUP_FLOW_LOG", "1").lower() in {"1", "true", "yes", "on"}
+AGENTIC_FLOW_LOG = os.getenv("AGENTIC_FLOW_LOG", "0").lower() in {"1", "true", "yes", "on"}
+PRO_LOOKUP_FLOW_LOG = os.getenv("PRO_LOOKUP_FLOW_LOG", "0").lower() in {"1", "true", "yes", "on"}
 
 NARRATIVE_CATEGORY_METRICS = {
     "goalkeeping": [
@@ -275,13 +280,13 @@ def _trace_step(trace: Dict[str, Any], kind: str, name: str) -> None:
 
 
 def _pro_lookup_log(event: str, payload: Dict[str, Any]) -> None:
-    if not PRO_LOOKUP_FLOW_LOG:
+    if not PRO_LOOKUP_FLOW_LOG or not logger.isEnabledFor(logging.DEBUG):
         return
     try:
         body = json.dumps(payload, ensure_ascii=False, default=str)
     except Exception:
         body = str(payload)
-    print(f"[pro_lookup_flow] event={event} {body}", flush=True)
+    logger.debug("%s", f"[pro_lookup_flow] event={event} {body}")
 
 
 def _compact_lookup_candidates(candidates: List[Dict[str, Any]], limit: int = 6) -> List[Dict[str, Any]]:
@@ -337,7 +342,7 @@ def _candidate_option_log(candidates: List[Dict[str, Any]], limit: int = 8) -> L
 
 
 def _log_trace(trace: Dict[str, Any], *, session_id: str, outcome: str) -> None:
-    if not AGENTIC_FLOW_LOG:
+    if not AGENTIC_FLOW_LOG or not logger.isEnabledFor(logging.DEBUG):
         return
     flow_parts: List[str] = []
     for step in trace["flow"]:
@@ -365,8 +370,7 @@ def _log_trace(trace: Dict[str, Any], *, session_id: str, outcome: str) -> None:
             f"returned={item.get('returned_count')} rejects={top_rejections or 'none'}"
         )
     reject_text = " | ".join(reject_parts) if reject_parts else "none"
-    print(
-        "[agentic_flow] "
+    logger.debug("%s", "[agentic_flow] "
         f"session={session_id} outcome={outcome} "
         f"intent={context.get('intent', 'unknown')} "
         f"quality={context.get('quality_discovery_mode', False)} "
@@ -386,23 +390,21 @@ def _log_trace(trace: Dict[str, Any], *, session_id: str, outcome: str) -> None:
         f"form={selected.get('form', 'n/a')} "
         f"retrieval_debug=[{reject_text}] "
         f"flow={' -> '.join(flow_parts) or 'none'} "
-        f"total_search_cost_usd={_trace_cost_usd(trace):.6f} ",
-        flush=True,
-    )
+        f"total_search_cost_usd={_trace_cost_usd(trace):.6f} ")
     if constraints:
-        print("[agentic_flow:constraints]", flush=True)
+        logger.debug("%s", "[agentic_flow:constraints]")
         for key in sorted(constraints):
-            print(f"  {key}: {json.dumps(constraints.get(key), ensure_ascii=False, default=str)}", flush=True)
+            logger.debug("%s", f"  {key}: {json.dumps(constraints.get(key), ensure_ascii=False, default=str)}")
     if fetched_options:
-        print("[agentic_flow:fetched_players]", flush=True)
+        logger.debug("%s", "[agentic_flow:fetched_players]")
         for option in fetched_options:
-            print(f"  {option}", flush=True)
+            logger.debug("%s", f"  {option}")
     if selector_options:
-        print("[agentic_flow:selector_players]", flush=True)
+        logger.debug("%s", "[agentic_flow:selector_players]")
         selected_prefix = f"{selector.get('selected_index')}:"
         for option in selector_options:
             marker = " <- selected" if selected_prefix != "None:" and option.startswith(selected_prefix) else ""
-            print(f"  {option}{marker}", flush=True)
+            logger.debug("%s", f"  {option}{marker}")
 
 def _recent_memory_text(history_rows: list, limit: int = 8) -> str:
     rows = history_rows[-limit:] if history_rows else []

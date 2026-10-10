@@ -1,3 +1,8 @@
+
+import logging
+
+logger = logging.getLogger(__name__)
+
 from api_module.report_access import report_tier, player_section_ready
 from report_module.phases import with_phase_distributions
 # api_module/main.py
@@ -606,25 +611,10 @@ async def _chat_response(body: ChatIn, user_id: int, accept_language, db: Sessio
     started_at = time.perf_counter()
     session_id = body.session_id or "default"
     session_label = _chat_session_label(session_id)
-    message_chars = len(body.message or "")
-    strategy_chars = len(body.strategy or "")
-    print(
-        "[mobile_chat] event=request_start "
-        f"user_id={user_id} session={session_label} tutorial={body.tutorial_mode} "
-        f"accept_language={accept_language or 'none'} message_chars={message_chars} "
-        f"strategy_chars={strategy_chars}",
-        flush=True,
-    )
 
     header_lang = normalize_lang(accept_language)
     user_lang = normalize_lang(get_user_language(db, user_id))
     lang = header_lang or user_lang or "en"
-    print(
-        "[mobile_chat] event=session_prepare_start "
-        f"session={session_label} lang={lang} header_lang={header_lang or 'none'} "
-        f"user_lang={user_lang or 'none'}",
-        flush=True,
-    )
     try:
         if not session_exists_and_active(db, session_id):
             db.execute(
@@ -639,33 +629,19 @@ async def _chat_response(body: ChatIn, user_id: int, accept_language, db: Sessio
                 {"t": session_id, "uid": user_id, "l": lang, "ts": now_iso()}
             )
             db.commit()
-            print(
-                "[mobile_chat] event=session_prepare_done "
-                f"session={session_label} action=upsert",
-                flush=True,
-            )
         else:
             db.execute(
                 text("UPDATE sessions SET language = :l WHERE token = :t AND ended_at IS NULL"),
                 {"l": lang, "t": session_id}
             )
             db.commit()
-            print(
-                "[mobile_chat] event=session_prepare_done "
-                f"session={session_label} action=update_language",
-                flush=True,
-            )
     except Exception as exc:
         elapsed_ms = int((time.perf_counter() - started_at) * 1000)
-        print(
-            "[mobile_chat] event=session_prepare_error "
+        logger.warning("%s", "[mobile_chat] event=session_prepare_error "
             f"session={session_label} elapsed_ms={elapsed_ms} "
-            f"error_type={type(exc).__name__} error={str(exc)[:180]}",
-            flush=True,
-        )
+            f"error_type={type(exc).__name__} error={str(exc)[:180]}")
         raise
 
-    print(f"[mobile_chat] event=answer_question_start session={session_label}", flush=True)
     try:
         result = answer_question(
             body.message,
@@ -674,36 +650,17 @@ async def _chat_response(body: ChatIn, user_id: int, accept_language, db: Sessio
         )
     except Exception as exc:
         elapsed_ms = int((time.perf_counter() - started_at) * 1000)
-        print(
-            "[mobile_chat] event=answer_question_error "
+        logger.warning("%s", "[mobile_chat] event=answer_question_error "
             f"session={session_label} elapsed_ms={elapsed_ms} "
-            f"error_type={type(exc).__name__} error={str(exc)[:180]}",
-            flush=True,
-        )
+            f"error_type={type(exc).__name__} error={str(exc)[:180]}")
         raise
 
-    elapsed_answer_ms = int((time.perf_counter() - started_at) * 1000)
     answer_text = (result.get("answer") or "").strip()
     payload = result.get("data") or {"players": []}
     if isinstance(payload, dict):
         payload = _attach_chat_player_images(db, payload)
-    players = payload.get("players") if isinstance(payload, dict) else []
-    player_count = len(players) if isinstance(players, list) else 0
-    print(
-        "[mobile_chat] event=answer_question_done "
-        f"session={session_label} elapsed_ms={elapsed_answer_ms} "
-        f"answer_chars={len(answer_text)} players={player_count} "
-        f"result_keys={','.join(sorted(result.keys())) if isinstance(result, dict) else 'n/a'}",
-        flush=True,
-    )
 
     response_parts = split_response_parts(answer_text)
-    elapsed_ms = int((time.perf_counter() - started_at) * 1000)
-    print(
-        "[mobile_chat] event=response_ready "
-        f"session={session_label} elapsed_ms={elapsed_ms} response_parts={len(response_parts)}",
-        flush=True,
-    )
     return {
         "response": answer_text,
         "data": payload,
@@ -1537,7 +1494,7 @@ def _run_report_background(table_name: str, report_id: str, identity_key: str, u
             record_analytics_event(user_id=user_id,event_type="scouting_report_ready",section="reports",source="scouting_report_generation",report_id=report_id,metadata={"language":lang,"version":version},**favorite_snapshot)
     except Exception as exc:
         db.rollback()
-        print(f"[report_generation_failed] report_id={report_id} identity={identity_key} error={exc}", flush=True)
+        logger.warning("%s", f"[report_generation_failed] report_id={report_id} identity={identity_key} error={exc}")
         try:
             row = db.execute(text(f"SELECT content_json FROM {table_name} WHERE id=:id AND user_id=:uid"), {"id":report_id,"uid":user_id}).mappings().first()
             partial = dict(row.get("content_json") or {}) if row else {}
@@ -1587,7 +1544,7 @@ def _run_report_section_background(table_name: str, report_id: str, identity_key
             db.commit()
     except Exception as exc:
         db.rollback()
-        print(f"[report_section_failed] report_id={report_id} section={section} error={exc}",flush=True)
+        logger.warning("%s", f"[report_section_failed] report_id={report_id} section={section} error={exc}")
         try:
             row = db.execute(text(f"SELECT content_json FROM {table_name} WHERE id=:id AND user_id=:uid"),{"id":report_id,"uid":user_id}).mappings().first()
             partial = dict(row.get("content_json") or {}) if row else {}
@@ -1756,7 +1713,7 @@ def _apply_club_row_to_report_payload(
             next_payload["potential"] = reveal_player_potential(db, club_row["id"], False).get("potential")
             next_payload["form"] = reveal_player_form(db, club_row["id"], False).get("form")
         except Exception as exc:
-            print(f"[player_pool_report] club_score_resolve_failed club_player_id={club_row['id']} error={exc}", flush=True)
+            logger.warning("%s", f"[player_pool_report] club_score_resolve_failed club_player_id={club_row['id']} error={exc}")
 
     return next_payload
 
@@ -1934,7 +1891,7 @@ def create_player_pool_report(
         }
     except Exception as exc:
         db.rollback()
-        print(f"[player_pool_report_failed] user_id={user_id} player={name} error={exc}")
+        logger.warning("%s", f"[player_pool_report_failed] user_id={user_id} player={name} error={exc}")
         try:
             db.execute(text("""
                 INSERT INTO player_pool_scouting_reports (
