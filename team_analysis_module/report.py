@@ -1,4 +1,5 @@
 from __future__ import annotations
+from report_module.narrative_numbers import format_narrative_fields
 
 import os
 import json
@@ -1808,9 +1809,9 @@ def _profile_title(value, fallback):
     return title
 
 
-def _profile_output(value: dict[str, Any], build_narratives: bool) -> dict[str, Any]:
+def _profile_output(value: dict[str, Any], build_narratives: bool, lang: str) -> dict[str, Any]:
     if build_narratives:
-        return value
+        return format_narrative_fields(value, lang)
     from api_module.report_access import without_analysis
     return without_analysis(value)
 
@@ -1984,7 +1985,7 @@ def build_team_report_attack_profile(
         })
     fallback = {"themes": fallback_themes[:2], "players": fallback_players}
     if not team_evidence or not selected or not os.getenv("OPENAI_API_KEY"):
-        return _profile_output(fallback, build_narratives)
+        return _profile_output(fallback, build_narratives, lang)
     try:
         from langchain_openai import ChatOpenAI
         language = "Turkish" if lang == "tr" else "English"
@@ -2038,7 +2039,7 @@ def build_team_report_attack_profile(
         valid_themes = len(themes) == 2 and valid_single_metric_cells(themes) and inference_led(themes) and (not build_narratives or all(len(item.get("analysis") or []) >= 1 for item in themes))
         valid_players = len(output_players) == 2 and valid_single_metric_cells(output_players) and inference_led(output_players) and (not build_narratives or all(len(item.get("analysis") or []) >= 1 for item in output_players))
         if valid_themes and valid_players:
-            return _profile_output({"themes": [{"title": _profile_title(item.get("title"), fallback_themes[index]["title"]), "metrics": [{"label": str(value.get("label") or ""), "value": str(value.get("value") or "")} for value in (item.get("metrics") or [])[:4] if isinstance(value, dict)], "analysis": [str(value) for value in (item.get("analysis") or [])[:3]]} for index, item in enumerate(themes)], "players": output_players}, build_narratives)
+            return _profile_output({"themes": [{"title": _profile_title(item.get("title"), fallback_themes[index]["title"]), "metrics": [{"label": str(value.get("label") or ""), "value": str(value.get("value") or "")} for value in (item.get("metrics") or [])[:4] if isinstance(value, dict)], "analysis": [str(value) for value in (item.get("analysis") or [])[:3]]} for index, item in enumerate(themes)], "players": output_players}, build_narratives, lang)
 
         # Preserve usable model-written analysis instead of discarding the whole
         # profile when one metric cell or one player identifier is malformed.
@@ -2076,10 +2077,10 @@ def build_team_report_attack_profile(
             f"themes={len(themes)} output_players={len(output_players)} "
             f"valid_themes={valid_themes} valid_players={valid_players}"
         )
-        return _profile_output({"themes": repaired_themes, "players": repaired_players[:2]}, build_narratives)
+        return _profile_output({"themes": repaired_themes, "players": repaired_players[:2]}, build_narratives, lang)
     except Exception as exc:
         print(f"[enterprise_team_report] event=attack_profile_fallback error={exc}")
-    return _profile_output(fallback, build_narratives)
+    return _profile_output(fallback, build_narratives, lang)
 
 
 def build_team_report_defense_profile(
@@ -2222,7 +2223,7 @@ def build_team_report_defense_profile(
     fallback_players = [fallback_player_for(player) for player in selected]
     fallback = {"themes": fallback_themes[:2], "players": fallback_players}
     if not team_evidence or len(selected) < 2 or not os.getenv("OPENAI_API_KEY"):
-        return _profile_output(fallback, build_narratives)
+        return _profile_output(fallback, build_narratives, lang)
     try:
         from langchain_openai import ChatOpenAI
         response = ChatOpenAI(model=os.getenv("OPENAI_MATCH_REPORT_MODEL", os.getenv("OPENAI_REPORT_MODEL", "gpt-5.6-luna")), api_key=os.environ["OPENAI_API_KEY"], temperature=.25, timeout=120, max_retries=1).invoke([
@@ -2255,7 +2256,7 @@ def build_team_report_defense_profile(
         if valid_themes and valid_players:
             for index, theme in enumerate(themes):
                 theme["title"] = _profile_title(theme.get("title"), fallback_themes[index]["title"])
-            return _profile_output({"themes": themes, "players": output_players}, build_narratives)
+            return _profile_output({"themes": themes, "players": output_players}, build_narratives, lang)
         repaired_themes = []
         for index, fallback_theme in enumerate(fallback_themes[:2]):
             generated = themes[index] if index < len(themes) else {}
@@ -2274,10 +2275,10 @@ def build_team_report_defense_profile(
         repaired_ids = {str(player["playerId"]) for player in repaired_players}
         repaired_players.extend(player for player in fallback_players if str(player["playerId"]) not in repaired_ids)
         print(f"[enterprise_team_report] event=defense_profile_validation_repair themes={len(themes)} players={len(output_players)} valid_themes={valid_themes} valid_players={valid_players}")
-        return _profile_output({"themes": repaired_themes, "players": repaired_players[:2]}, build_narratives)
+        return _profile_output({"themes": repaired_themes, "players": repaired_players[:2]}, build_narratives, lang)
     except Exception as exc:
         print(f"[enterprise_team_report] event=defense_profile_fallback error={exc}")
-    return _profile_output(fallback, build_narratives)
+    return _profile_output(fallback, build_narratives, lang)
 
 
 
@@ -2463,7 +2464,7 @@ def build_team_report_strengths(
         })
     fallback = {"themes": fallback_themes[:2]}
     if not flat or not os.getenv("OPENAI_API_KEY"):
-        return _profile_output(fallback, build_narratives)
+        return _profile_output(fallback, build_narratives, lang)
     try:
         from langchain_openai import ChatOpenAI
         response = ChatOpenAI(model=os.getenv("OPENAI_MATCH_REPORT_MODEL", os.getenv("OPENAI_REPORT_MODEL", "gpt-5.6-luna")), api_key=os.environ["OPENAI_API_KEY"], temperature=.25, timeout=120, max_retries=1).invoke([
@@ -2481,10 +2482,10 @@ def build_team_report_strengths(
             themes.append({"title": _profile_title(item.get("title"), fallback_theme["title"]), "metrics": metrics if len(metrics) == 4 else fallback_theme["metrics"], "analysis": analysis if len(analysis) >= 1 else fallback_theme["analysis"]})
         if len(generated) != 2:
             print(f"[enterprise_team_report] event=strengths_validation_repair themes={len(generated)}")
-        return _profile_output({"themes": themes}, build_narratives)
+        return _profile_output({"themes": themes}, build_narratives, lang)
     except Exception as exc:
         print(f"[enterprise_team_report] event=strengths_fallback error={exc}")
-        return _profile_output(fallback, build_narratives)
+        return _profile_output(fallback, build_narratives, lang)
 
 
 def build_team_report_weaknesses(
@@ -2555,7 +2556,7 @@ def build_team_report_weaknesses(
         })
     fallback = {"themes": fallback_themes[:2]}
     if not flat or not os.getenv("OPENAI_API_KEY"):
-        return _profile_output(fallback, build_narratives)
+        return _profile_output(fallback, build_narratives, lang)
     try:
         from langchain_openai import ChatOpenAI
         response = ChatOpenAI(model=os.getenv("OPENAI_MATCH_REPORT_MODEL", os.getenv("OPENAI_REPORT_MODEL", "gpt-5.6-luna")), api_key=os.environ["OPENAI_API_KEY"], temperature=.25, timeout=120, max_retries=1).invoke([
@@ -2582,10 +2583,10 @@ def build_team_report_weaknesses(
             themes.append({"title": _profile_title(naturalize(item.get("title")), fallback_theme["title"]), "metrics": metrics if metrics_valid else fallback_theme["metrics"], "analysis": analysis if len(analysis) >= 1 else fallback_theme["analysis"]})
         if len(generated) != 2:
             print(f"[enterprise_team_report] event=weaknesses_validation_repair themes={len(generated)}")
-        return _profile_output({"themes": themes}, build_narratives)
+        return _profile_output({"themes": themes}, build_narratives, lang)
     except Exception as exc:
         print(f"[enterprise_team_report] event=weaknesses_fallback error={exc}")
-        return _profile_output(fallback, build_narratives)
+        return _profile_output(fallback, build_narratives, lang)
 
 
 def build_team_report_overview(

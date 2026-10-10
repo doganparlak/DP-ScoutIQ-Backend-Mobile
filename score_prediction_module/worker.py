@@ -1,5 +1,5 @@
 """Restartable in-process worker. SQL locks coordinate multiple API instances."""
-from datetime import timedelta
+from datetime import datetime, timedelta
 import json
 import logging
 import os
@@ -10,7 +10,6 @@ from sqlalchemy import text
 from api_module.database import SessionLocal, engine
 from match_pool_module.fixtures import get_fixture
 from .core import draw_window, fetch_week_fixtures, kickoff, phase, score_entry, select_fixtures, utcnow, week_start
-from .prizes import get_week_prizes
 
 log = logging.getLogger(__name__)
 _stop = threading.Event()
@@ -27,6 +26,21 @@ def unresolved(fixture):
     stage, home, away = scoring_state(fixture)
     return stage == 'pending' or (stage == 'finished' and
         (not isinstance(home, int) or not isinstance(away, int)))
+
+
+def fixture_next_check(fixture, now):
+    if not unresolved(fixture):
+        return None
+    start = kickoff(fixture)
+    checked = fixture.get('checkedAt')
+    if not checked:
+        return now
+    checked_at = datetime.fromisoformat(checked)
+    if now < start:
+        return min(checked_at + timedelta(hours=6), start)
+    if checked_at < start:
+        return start
+    return checked_at + timedelta(minutes=15)
 
 
 def rescore(db, round_id, fixtures):
@@ -64,7 +78,7 @@ def process_round(row):
                 deadline=:deadline,status='open',updated_at=NOW(),next_check_at=:next
                 WHERE id=:id AND status='waiting' '''),
                 {'id': row['id'], 'fixtures': json.dumps(fixtures), 'deadline': deadline,
-                 'next': min(now + timedelta(hours=6), deadline + timedelta(hours=2))})
+                 'next': min(now + timedelta(hours=6), deadline)})
         return
 
     verify = row['status'] == 'finalizing'
@@ -74,16 +88,7 @@ def process_round(row):
             return
         item = dict(original)
         stage = phase(item)
-        start = kickoff(item)
-        checked = item.get('checkedAt')
-        from datetime import datetime
-        checked_at = datetime.fromisoformat(checked) if checked else None
-        if unresolved(item):
-            due = now if checked_at is None else checked_at + timedelta(hours=6)
-            if now >= start:
-                due = max(start + timedelta(hours=2), (checked_at + timedelta(minutes=30)) if checked_at else start)
-        else:
-            due = None
+        due = fixture_next_check(item, now)
         if verify or (due is not None and now >= due):
             fresh = get_fixture(int(item['fixtureId']))
             if not fresh or fresh.get('fixtureId') != item['fixtureId']:
@@ -92,25 +97,13 @@ def process_round(row):
             # Once removed from the week's competition, never reintroduce it.
             if stage == 'excluded' or phase(item) == 'excluded':
                 item['excluded'] = True
-            stage, start = phase(item), kickoff(item)
-        if unresolved(item):
-            if start > now:
-                next_times.append(min(now + timedelta(hours=6), start + timedelta(hours=2)))
-            elif now < start + timedelta(hours=2):
-                next_times.append(start + timedelta(hours=2))
-            else:
-                next_times.append(now + timedelta(minutes=30))
+        next_due = fixture_next_check(item, now)
+        if next_due is not None:
+            next_times.append(next_due)
         updated.append(item)
     all_done = all(not unresolved(item) for item in updated)
     status = 'settled' if all_done and verify else 'finalizing' if all_done else 'open'
-    prize_snapshot = None
-    if status == 'settled' and not row.get('prize_snapshot'):
-        try:
-            prize_snapshot = get_week_prizes(row['week_start'])
-        except Exception as exc:
-            # Prize configuration must never prevent match scoring/finalization.
-            log.warning('Prize snapshot unavailable for round=%s (%s)', row['id'], type(exc).__name__)
-    next_check = min(next_times) if next_times else now + timedelta(minutes=30)
+    next_check = min(next_times) if next_times else now + timedelta(minutes=15)
     # Never extend a published deadline, including when a kickoff is postponed.
     deadline = min([row['deadline'], *[kickoff(f) for f in updated if phase(f) != 'excluded']])
     with SessionLocal.begin() as db:
@@ -119,10 +112,7 @@ def process_round(row):
             {'id': row['id'], 'fixtures': json.dumps(updated), 'deadline': deadline, 'status': status, 'next': next_check})
         if [scoring_state(f) for f in updated] != [scoring_state(f) for f in fixtures]:
             rescore(db, row['id'], updated)
-        if prize_snapshot:
-            db.execute(text('''UPDATE public.prediction_rounds
-                SET prize_snapshot=COALESCE(prize_snapshot,CAST(:prizes AS jsonb)) WHERE id=:id'''),
-                {'id': row['id'], 'prizes': json.dumps(prize_snapshot)})
+
 
 
 def tick():
@@ -150,7 +140,7 @@ def tick():
                 except Exception as exc:
                     log.warning('Prediction refresh failed for round=%s (%s)', row['id'], type(exc).__name__)
                     with SessionLocal.begin() as db:
-                        db.execute(text("UPDATE public.prediction_rounds SET next_check_at=NOW()+INTERVAL '30 minutes' WHERE id=:id"), {'id': row['id']})
+                        db.execute(text("UPDATE public.prediction_rounds SET next_check_at=NOW()+INTERVAL '15 minutes' WHERE id=:id"), {'id': row['id']})
         finally:
             lock.execute(text('SELECT pg_advisory_unlock(:key)'), {'key': LOCK_ID})
             lock.commit()
@@ -162,7 +152,7 @@ def _run():
             tick()
         except Exception as exc:
             log.warning('Prediction worker unavailable (%s)', type(exc).__name__)
-        # Database scheduling check only. Provider calls follow 6h / +2h / 30m rules.
+        # Database check only. Provider calls follow 6h / kickoff / 15m rules.
         _wake.wait(60)
         _wake.clear()
 

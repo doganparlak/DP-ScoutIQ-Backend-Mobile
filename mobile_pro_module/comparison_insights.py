@@ -1,4 +1,5 @@
 from __future__ import annotations
+from report_module.narrative_numbers import format_narrative_numbers
 
 import json
 import re
@@ -160,4 +161,4 @@ def get_comparison_insights(db: Session, payload: ProComparisonInsightsIn, accep
             raise ValueError('Incomplete insights')
     except Exception as exc:
         raise HTTPException(status_code=502, detail='Comparison insights could not be generated. Please retry.') from exc
-    return {'insights': insights}
+    return {'insights': {key: format_narrative_numbers(value, lang) for key, value in insights.items()}}

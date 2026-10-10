@@ -1,4 +1,5 @@
 """Enforce the mobile fit-perspective word limit without cutting sentences."""
+from report_module.narrative_numbers import format_narrative_numbers
 import json
 import re
 from typing import Annotated
@@ -42,7 +43,7 @@ def enforce_fit_word_limit(llm, narratives: dict[str, str], language: str) -> di
     than displayed or cut mid-sentence. Existing route handling refunds failed
     trial assessments.
     """
-    result = {key: _localized(text, language) for key, text in narratives.items()}
+    result = {key: format_narrative_numbers(_localized(text, language), language) for key, text in narratives.items()}
     overlong = {key: text for key, text in result.items()
                 if word_count(text) > FIT_PERSPECTIVE_WORD_LIMIT}
     if not overlong:
@@ -66,5 +67,5 @@ def enforce_fit_word_limit(llm, narratives: dict[str, str], language: str) -> di
     repair = repair if isinstance(repair, model) else model.model_validate(repair)
     for slot, key in slots.items():
         # Validate even when a provider returns a constructed model instance.
-        result[key] = _validate_short_narrative(_localized(getattr(repair, slot), language))
+        result[key] = _validate_short_narrative(format_narrative_numbers(_localized(getattr(repair, slot), language), language))
     return result

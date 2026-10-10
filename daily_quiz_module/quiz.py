@@ -16,6 +16,7 @@ from sqlalchemy.orm import Session
 
 from chatbot_module.metrics import ALLOWED_METRICS, POSITIVE_METRICS
 from api_module.community import community_available, save_community_nickname
+from daily_quiz_module.league import calendar, membership, weekly_ranking
 from daily_quiz_module.prompts import DAILY_SCOUT_FALLBACK_STRATEGIES, DAILY_SCOUT_QUIZ_PROMPT, DAILY_SCOUT_THEMES
 
 
@@ -338,7 +339,7 @@ def _challenge_payload(db: Session, row: Dict[str, Any], attempt: Dict[str, Any]
             "status": "completed" if completed else "skipped" if skipped else "available",
             "chosenPlayerId": chosen_id,
             "isCorrect": bool(attempt["is_correct"]) if attempt and attempt.get("is_correct") is not None else None,
-            "score": int(attempt["score"]) if attempt and attempt.get("score") is not None else None,
+            "score": (3 if attempt["is_correct"] else 0) if completed else None,
             "needsNickname": bool(attempt.get("needs_nickname")) if attempt else False,
         },
     }
@@ -455,6 +456,18 @@ def submit_daily_answer(db: Session, user_id: int, challenge_id: str, chosen_pla
     challenge = db.execute(text("SELECT * FROM daily_scout_challenges WHERE id = :id"), {"id": challenge_id}).mappings().first()
     if not challenge:
         raise ValueError("Challenge not found")
+    if challenge['challenge_date'] != _today():
+        raise ValueError('DAILY_CHALLENGE_EXPIRED')
+    # Lock this account so concurrent answers cannot change the first selection
+    # or capture different membership bonuses within the same week.
+    user = db.execute(text('SELECT plan,subscription_end_at FROM public.users WHERE id=:uid FOR UPDATE'), {'uid': user_id}).mappings().one()
+    now, current_day, week, _ = calendar()
+    if challenge['challenge_date'] != current_day:
+        raise ValueError('DAILY_CHALLENGE_EXPIRED')
+    tier = db.execute(text("""SELECT plan_tier FROM public.daily_scout_attempts
+        WHERE user_id=:uid AND challenge_date>=:week AND challenge_date<:end AND completed_at IS NOT NULL
+        ORDER BY completed_at,id LIMIT 1"""), {'uid': user_id, 'week': week, 'end': week+dt.timedelta(days=7)}).scalar()
+    tier = tier or membership(user, now)
     existing = db.execute(
         text("""
         SELECT completed_at
@@ -465,6 +478,7 @@ def submit_daily_answer(db: Session, user_id: int, challenge_id: str, chosen_pla
         {"uid": user_id, "d": challenge["challenge_date"]},
     ).mappings().first()
     if existing and existing.get("completed_at"):
+        db.commit()
         return get_daily_status(db, user_id)
 
     choices = challenge["choices_json"] if isinstance(challenge["choices_json"], list) else json.loads(challenge["choices_json"] or "[]")
@@ -472,20 +486,22 @@ def submit_daily_answer(db: Session, user_id: int, challenge_id: str, chosen_pla
     if str(chosen_player_id) not in valid_ids:
         raise ValueError("Invalid choice")
     correct = str(chosen_player_id) == str(challenge["winner_player_id"])
-    score = 100 if correct else 20
+    score = 3 if correct else 0
     db.execute(
         text("""
         INSERT INTO daily_scout_attempts (
-            user_id, challenge_id, challenge_date, chosen_player_id, is_correct, score, skipped_at, completed_at, created_at
-        ) VALUES (:uid, :cid, :d, :chosen, :correct, :score, NULL, NOW(), NOW())
+            user_id, challenge_id, challenge_date, chosen_player_id, is_correct, score, skipped_at, completed_at, created_at, plan_tier
+        ) VALUES (:uid, :cid, :d, :chosen, :correct, :score, NULL, NOW(), NOW(), :tier)
         ON CONFLICT (user_id, challenge_date) DO UPDATE
-        SET chosen_player_id = COALESCE(daily_scout_attempts.chosen_player_id, EXCLUDED.chosen_player_id),
-            is_correct = COALESCE(daily_scout_attempts.is_correct, EXCLUDED.is_correct),
-            score = COALESCE(daily_scout_attempts.score, EXCLUDED.score),
+        SET chosen_player_id = EXCLUDED.chosen_player_id,
+            is_correct = EXCLUDED.is_correct,
+            score = EXCLUDED.score,
             skipped_at = NULL,
-            completed_at = COALESCE(daily_scout_attempts.completed_at, NOW())
+            plan_tier = CASE WHEN daily_scout_attempts.completed_at IS NULL THEN EXCLUDED.plan_tier ELSE daily_scout_attempts.plan_tier END,
+            completed_at = NOW()
+        WHERE daily_scout_attempts.completed_at IS NULL
         """),
-        {"uid": user_id, "cid": challenge_id, "d": challenge["challenge_date"], "chosen": str(chosen_player_id), "correct": correct, "score": score},
+        {"uid": user_id, "cid": challenge_id, "d": challenge["challenge_date"], "chosen": str(chosen_player_id), "correct": correct, "score": score, "tier": tier},
     )
     db.commit()
     return get_daily_status(db, user_id)
@@ -525,26 +541,5 @@ def set_weekly_nickname(db: Session, user_id: int, nickname: str) -> Dict[str, A
     return {"nickname": db.execute(text("SELECT nickname FROM daily_scout_weekly_nicknames WHERE user_id=:uid AND week_start=:week"), {"uid": user_id, "week": week}).scalar_one()}
 
 
-def get_weekly_leaderboard(db: Session, limit: int = 20) -> Dict[str, Any]:
-    week = _week_start()
-    permanent = community_available(db)
-    name = 'n.community_nickname' if permanent else 'n.nickname'
-    join = "JOIN public.users n ON n.id=a.user_id AND n.community_nickname IS NOT NULL" if permanent else "JOIN daily_scout_weekly_nicknames n ON n.user_id=a.user_id AND n.week_start=DATE_TRUNC('week', a.challenge_date)::date"
-    identity = 'n.id' if permanent else 'n.user_id'
-    rows = db.execute(
-        text(f"""
-        SELECT {name} AS nickname,
-               SUM(a.score)::int AS score,
-               COUNT(*) FILTER (WHERE a.completed_at IS NOT NULL)::int AS played,
-               COUNT(*) FILTER (WHERE a.is_correct IS TRUE)::int AS correct
-        FROM daily_scout_attempts a
-        {join}
-        WHERE a.challenge_date >= :week
-          AND a.completed_at IS NOT NULL
-        GROUP BY {identity}, {name}
-        ORDER BY score DESC, correct DESC, played DESC, {name} ASC
-        LIMIT :limit
-        """),
-        {"week": week, "limit": int(limit or 20)},
-    ).mappings().all()
-    return {"weekStart": week.isoformat(), "rows": [dict(r) for r in rows]}
+def get_weekly_leaderboard(db: Session, limit: int = 20, user_id: int = 0) -> Dict[str, Any]:
+    return weekly_ranking(db, user_id, int(limit or 20))

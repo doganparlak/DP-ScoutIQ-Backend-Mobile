@@ -1,4 +1,5 @@
 """Durable mobile pre-match reports; each completed section is checkpointed."""
+from report_module.narrative_numbers import format_narrative_fields
 from api_module.report_access import user_report_tier, scope_satisfies
 import json
 import threading
@@ -48,6 +49,7 @@ def public_report(row, language):
     return {'favoriteId':str(row['id']), 'status':status, 'content':sanitize_pre_match_standout_metrics(content)}
 
 def save(favorite_id, user_id, content, status):
+    content = format_narrative_fields(content, content.get("language", "en"))
     with engine.begin() as db:
         result = db.execute(text("""UPDATE favorite_matches SET report_content=CAST(:content AS jsonb), report_status=:status,
             report_error=:error, report_ready_at=CASE WHEN :status='ready' THEN NOW() ELSE NULL END, updated_at=NOW()

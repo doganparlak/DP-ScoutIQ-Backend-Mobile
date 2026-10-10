@@ -1,4 +1,5 @@
 from __future__ import annotations
+from report_module.narrative_numbers import format_narrative_numbers
 
 from report_module.metric_validation import sanitize_percentages
 
@@ -160,7 +161,7 @@ def normalize_mobile_report_format(report_text: str, lang: str) -> str:
                 output.append(f"- {title}: {match.group(2).strip()}")
                 continue
         output.append(line)
-    return "\n".join(output)
+    return format_narrative_numbers("\n".join(output), lang)
 
 ROLE_USAGE_CONSTRAINTS: Dict[str, Dict[str, Any]] = {
     "GK": {

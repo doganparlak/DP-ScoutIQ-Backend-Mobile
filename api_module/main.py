@@ -19,6 +19,7 @@ from sqlalchemy import text
 from chatbot_module.chatbot_agentic import answer_question
 from mobile_pro_module.router import router as mobile_pro_router
 from score_prediction_module.router import router as score_prediction_router
+from daily_quiz_module.league import router as discovery_league_router
 from chatbot_module.tools_agentic import ensure_player_position_label_cache
 from report_module.report import build_report_foundation, complete_report_foundation, complete_report_section, generate_report_content, normalize_mobile_report_format
 # import our refactored pieces
@@ -88,6 +89,7 @@ ANDROID_NO_ADS_MONTHLY_PRODUCT_ID = os.getenv("ANDROID_NO_ADS_MONTHLY_PRODUCT_ID
 app = FastAPI()
 app.include_router(mobile_pro_router)
 app.include_router(score_prediction_router)
+app.include_router(discovery_league_router)
 
 from league_pool_module.router import router as league_pool_router
 app.include_router(league_pool_router)
@@ -939,8 +941,7 @@ def daily_scout_challenge_leaderboard(
     user_id: int = Depends(require_auth),
     db: Session = Depends(get_db),
 ):
-    _ = user_id
-    return get_weekly_leaderboard(db, limit)
+    return get_weekly_leaderboard(db, limit, user_id)
 
 
 # --- favorite players ---

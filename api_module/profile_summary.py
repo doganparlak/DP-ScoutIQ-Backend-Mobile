@@ -4,6 +4,7 @@ from sqlalchemy.orm import Session
 from api_module.database import get_db
 from api_module.utilities import require_auth
 from score_prediction_module.core import week_start
+from daily_quiz_module.league import calendar
 
 router = APIRouter(tags=["profile"])
 
@@ -43,4 +44,9 @@ def dashboard_summary(user_id: int = Depends(require_auth), db: Session = Depend
             CROSS JOIN LATERAL jsonb_object_keys(e.picks) AS pick
             WHERE e.user_id=:uid AND e.submitted_at IS NOT NULL AND r.week_start=:week
         """), {'uid': user_id, 'week': week_start()}).scalar() or 0)
+    _, today, quiz_week, _ = calendar()
+    result['weeklyPlayerQuestionsAvailable'] = today.weekday()+1
+    result['weeklyPlayerPredictions'] = int(db.execute(text("""SELECT COUNT(*) FROM public.daily_scout_attempts
+        WHERE user_id=:uid AND completed_at IS NOT NULL AND challenge_date>=:week AND challenge_date<=:today"""),
+        {'uid': user_id, 'week': quiz_week, 'today': today}).scalar() or 0)
     return result

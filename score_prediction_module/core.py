@@ -48,8 +48,8 @@ def draw_window(start, now=None):
 
 
 def head_start(tier):
-    # Kept for compatibility: subscriptions never award competition points.
-    return 0
+    # Fixed weekly starting points, never a percentage of match points.
+    return {'plus': 2, 'pro': 4}.get(tier, 0)
 
 
 def phase(fixture):
@@ -157,7 +157,8 @@ def score_entry(picks, fixtures, tier):
         details[key] = points(pick, home, away)
         exact += int((pick['home'], pick['away']) == (home, away))
     base = sum(details.values())
-    return {'base': base, 'bonus': Decimal(0), 'total': Decimal(base), 'exact': exact, 'details': details}
+    bonus = head_start(tier)
+    return {'base': base, 'bonus': Decimal(bonus), 'total': Decimal(base + bonus), 'exact': exact, 'details': details}
 
 
 def plan_bonus(user, now=None):

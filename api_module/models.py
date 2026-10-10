@@ -287,7 +287,12 @@ class DailyScoutNicknameOut(BaseModel):
 
 
 class DailyScoutLeaderboardRow(BaseModel):
-    nickname: str
+    nickname: str | None
+    rank: int = 0
+    tier: str = "free"
+    basePoints: int = 0
+    bonusPoints: int = 0
+    isYou: bool = False
     score: int
     played: int
     correct: int

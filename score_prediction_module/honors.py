@@ -1,8 +1,9 @@
 """Competition honors derived from settled rounds; no extra tables or counters."""
 from sqlalchemy import text
 
-SCORE_SQL = "e.base_points"
-ORDER_SQL = f"{SCORE_SQL} DESC, e.submitted_at, e.user_id"
+BONUS_SQL = "CASE e.plan_tier WHEN 'pro' THEN 4 WHEN 'plus' THEN 2 ELSE 0 END"
+SCORE_SQL = f"(e.base_points + {BONUS_SQL})"
+ORDER_SQL = f"{SCORE_SQL} DESC, CASE e.plan_tier WHEN 'pro' THEN 2 WHEN 'plus' THEN 1 ELSE 0 END DESC, e.submitted_at, e.user_id"
 
 
 def podium_finishes(db, user_id):
