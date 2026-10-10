@@ -108,6 +108,7 @@ app.include_router(team_analysis_router)
 from api_module.social_auth import router as social_auth_router
 app.include_router(social_auth_router)
 from api_module.auth_session import authenticated_session
+from api_module.subscription_access import reconcile_subscription
 from api_module.password_reset import COOKIE_NAME, COOKIE_PATH, verify_code as verify_password_reset_code, require_proof as require_password_reset_proof
 
 from api_module.profile_summary import router as profile_summary_router
@@ -281,7 +282,8 @@ def set_new_password(
 
 @app.get("/me", response_model=ProfileOut)
 def me(user_id: int = Depends(require_auth), db: Session = Depends(get_db)):
-    row = db.execute(text("SELECT * FROM users WHERE id = :id"), {"id": user_id}).mappings().first()
+    row = reconcile_subscription(db, user_id)
+    db.commit()
     if not row:
         raise HTTPException(status_code=404, detail="User not found")
     return user_row_to_dict(row)
@@ -484,37 +486,8 @@ def verify_signup_code(body: VerifySignupIn, db: Session = Depends(get_db)):
             "newsletter": bool(ps["newsletter"]),
         })
 
-    row_ent = db.execute(text("""
-        SELECT platform, external_id, product_id, expires_at, auto_renew
-        FROM subscription_entitlements
-        WHERE lower(last_seen_email) = lower(:email)
-          AND (last_seen_user_id IS NULL OR last_seen_user_id =
-               (SELECT id FROM users WHERE lower(email)=lower(:email) LIMIT 1))
-          AND expires_at IS NOT NULL
-        ORDER BY expires_at DESC
-        LIMIT 1
-    """), {"email": email}).mappings().first()
-
-    now_utc = dt.datetime.now(dt.timezone.utc)
-
-    if row_ent and row_ent["expires_at"] > now_utc:
-        plan = plan_from_product_id(row_ent.get("product_id"))
-        db.execute(text("""
-            UPDATE users
-            SET plan = :plan,
-                subscription_platform = :platform,
-                subscription_external_id = :ext_id,
-                subscription_end_at = :end_at,
-                subscription_auto_renew = :auto_renew
-            WHERE lower(email) = lower(:email)
-        """), {
-            "plan": plan,
-            "platform": row_ent["platform"],
-            "ext_id": row_ent["external_id"],
-            "end_at": row_ent["expires_at"],
-            "auto_renew": row_ent["auto_renew"],
-            "email": email,
-        })
+    signup_user_id = db.execute(text('SELECT id FROM users WHERE lower(email)=lower(:email)'), {'email': email}).scalar_one()
+    reconcile_subscription(db, signup_user_id, allow_email_restore=True)
 
     # Cleanup staged signup
     db.execute(
@@ -1467,34 +1440,9 @@ def activate_subscription(
             }
 
 
-    plan = plan_from_product_id(body.product_id)
-    # Get user email for entitlement linking (best effort)
+    # Lock the account before changing its ledger; lower plans must not overwrite Pro.
+    db.execute(text('SELECT id FROM users WHERE id=:uid FOR UPDATE'), {'uid': user_id})
     email = get_user_email_by_id(db, user_id)
-    #print("ACTIVATING SUBSCRIPTION")
-    # Single transaction: update users + upsert entitlement
-    db.execute(
-        text("""
-            UPDATE users
-            SET plan = :plan,
-                subscription_platform = :platform,
-                subscription_external_id = :ext_id,
-                subscription_end_at = :end_at,
-                subscription_auto_renew = :auto_renew,
-                subscription_last_checked_at = :checked_at,
-                subscription_receipt = :receipt
-            WHERE id = :id
-        """),
-        {   
-            "plan": plan,
-            "platform": body.platform,
-            "ext_id": body.external_id,
-            "end_at": expires_at.isoformat(),
-            "auto_renew": bool(auto_renew),
-            "checked_at": now_iso(),
-            "receipt": body.receipt,
-            "id": user_id,
-        },
-    )
     db.execute(
         text("""
             INSERT INTO subscription_entitlements (
@@ -1527,12 +1475,16 @@ def activate_subscription(
             "email": email,  # can be None; ok
         },
     )
+    effective = reconcile_subscription(db, user_id)
+    # Receipt belongs to the selected purchase, never to another store's winner.
+    if effective['subscription_platform'] == body.platform and effective['subscription_external_id'] == body.external_id:
+        db.execute(text('UPDATE users SET subscription_receipt=:receipt,subscription_last_checked_at=NOW() WHERE id=:uid'),
+                   {'receipt': body.receipt, 'uid': user_id})
     db.commit()
-    #print("SUBSCRIPTION ACTIVATED")
     return {
         "ok": True,
-        "plan": plan,
-        "subscriptionEndAt": expires_at.isoformat(),
+        "plan": effective['plan'],
+        "subscriptionEndAt": effective['subscription_end_at'].isoformat() if effective['subscription_end_at'] else None,
     }
 
 def _generate_report_background(

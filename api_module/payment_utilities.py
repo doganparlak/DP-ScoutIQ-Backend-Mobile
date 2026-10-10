@@ -6,6 +6,7 @@ import datetime as dt
 import json
 import jwt
 from api_module.utilities import now_iso
+from api_module.subscription_access import reconcile_subscription
 from sqlalchemy.orm import Session
 from sqlalchemy import text
 from appstoreserverlibrary.api_client import AppStoreServerAPIClient, APIException
@@ -238,6 +239,7 @@ def run_subscription_sync(db: Session):
                 subscription_receipt
             FROM users
             WHERE subscription_external_id IS NOT NULL
+              AND NOT EXISTS (SELECT 1 FROM subscription_entitlements e WHERE e.last_seen_user_id=users.id)
         """)
     ).mappings().all()
 
@@ -341,6 +343,11 @@ def run_subscription_sync(db: Session):
             },
         )
 
+    # Ledger-backed users use all their purchases rather than re-verifying only the displayed one.
+    linked_users = db.execute(text('SELECT DISTINCT last_seen_user_id FROM subscription_entitlements WHERE last_seen_user_id IS NOT NULL ORDER BY last_seen_user_id')).scalars().all()
+    for uid in linked_users:
+        reconcile_subscription(db, uid)
+
     db.commit()
 
 def run_entitlements_sync(db: Session, limit: int = 2000):
@@ -362,6 +369,9 @@ def run_entitlements_sync(db: Session, limit: int = 2000):
     ).mappings().all()
 
     for e in ents:
+        uid = e.get("last_seen_user_id")
+        if uid:
+            db.execute(text('SELECT id FROM users WHERE id=:uid FOR UPDATE'), {'uid': uid})
         platform = e["platform"]
         ext_id = e["external_id"]
 
@@ -406,54 +416,8 @@ def run_entitlements_sync(db: Session, limit: int = 2000):
             },
         )
 
-        # 2) Optional: update linked user if they still exist
-        uid = e.get("last_seen_user_id")
+        # Recompute across both stores; one expired/lower purchase cannot override another.
         if uid:
-            user_exists = db.execute(
-                text("SELECT 1 FROM users WHERE id = :id"),
-                {"id": uid},
-            ).first()
-
-            if user_exists:
-                if not active:
-                    db.execute(
-                        text("""
-                            UPDATE users
-                            SET plan = 'Free',
-                                subscription_end_at = NULL,
-                                subscription_auto_renew = FALSE,
-                                subscription_platform = NULL,
-                                subscription_external_id = NULL,
-                                subscription_receipt = NULL
-                            WHERE id = :id
-                        """),
-                        {"id": uid},
-                    )
-                else:
-                    pid = (product_id or "").lower()
-                    plan = (
-                        "No Ads Monthly"
-                        if "no_ads" in pid or "noads" in pid
-                        else "Pro Yearly" if "yearly" in pid else "Pro Monthly"
-                    )
-                    db.execute(
-                        text("""
-                            UPDATE users
-                            SET plan = :plan,
-                                subscription_end_at = :end_at,
-                                subscription_auto_renew = :auto_renew,
-                                subscription_platform = :platform,
-                                subscription_external_id = :ext_id
-                            WHERE id = :id
-                        """),
-                        {
-                            "id": uid,
-                            "plan": plan,
-                            "end_at": expires_at.isoformat(),
-                            "auto_renew": bool(auto_renew),
-                            "platform": platform,
-                            "ext_id": ext_id,
-                        },
-                    )
+            reconcile_subscription(db, uid)
 
     db.commit()

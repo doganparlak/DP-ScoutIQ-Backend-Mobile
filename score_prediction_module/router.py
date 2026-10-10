@@ -3,7 +3,7 @@ import json
 from typing import Annotated, Literal
 
 from fastapi import APIRouter, Depends, HTTPException
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, EmailStr, field_validator, model_validator
 from sqlalchemy import text
 from sqlalchemy.exc import ProgrammingError
 from sqlalchemy.orm import Session
@@ -11,6 +11,7 @@ from sqlalchemy.orm import Session
 from api_module.community import save_community_nickname
 from api_module.database import get_db
 from api_module.utilities import require_auth
+from .prizes import get_week_prizes, send_prize_claim_email
 from .core import draw_window, kickoff, phase, plan_bonus, score_entry, utcnow, week_start
 from .worker import start_worker, stop_worker, wake_worker
 from .honors import ORDER_SQL, all_time_ranking, podium_finishes
@@ -98,12 +99,122 @@ def current(weekStart: date | None = None, user_id: int = Depends(require_auth),
         return {'viewerId': str(user_id), 'serverNow': now, 'nickname': user['community_nickname'], 'tier': tier,
                 'headStartPoints': 0, 'bonusRate': 0,
                 'weeks': weeks, 'entry': public_entry(entry, row['fixtures'] if row else None), 'favorites': favorites,
+                'prizeClaimSubmitted': bool(entry and entry.get('prize_claim')),
                 'round': None if not row else {'id': row['id'], 'weekStart': row['week_start'], 'deadline': row['deadline'],
                     'status': 'unavailable' if row['status'] == 'waiting' and not draw_window(row['week_start'], now) else
                               'closed' if row['status'] == 'open' and now >= row['deadline'] else row['status'],
                     'fixtures': [{**f, 'predictionStatus': phase(f)} for f in row['fixtures']], 'updatedAt': row['updated_at']},
                 'leaderboard': ranking(db, row['id'], user_id) if row else [],
                 **podium_finishes(db, user_id)}
+    except ProgrammingError as exc:
+        schema_error(db, exc)
+
+
+@router.get('/prize-claims/pending')
+def pending_prize_claims(user_id: int = Depends(require_auth), db: Session = Depends(get_db)):
+    try:
+        # Only rank finalized competitions this user entered and has not claimed.
+        # to_jsonb keeps this read compatible before the nullable column is added.
+        rows = db.execute(text(f'''WITH eligible AS (
+            SELECT r.id, r.week_start FROM public.prediction_rounds r
+            JOIN public.prediction_entries mine ON mine.round_id=r.id
+            WHERE r.status='settled' AND mine.user_id=:uid
+              AND mine.submitted_at IS NOT NULL
+              AND COALESCE(to_jsonb(mine)->'prize_claim', 'null'::jsonb)='null'::jsonb
+        ), ranked AS (
+            SELECT e.user_id, r.id AS "roundId", r.week_start AS "weekStart",
+                   ROW_NUMBER() OVER (PARTITION BY r.id ORDER BY {ORDER_SQL}) AS rank
+            FROM public.prediction_entries e JOIN eligible r ON r.id=e.round_id
+            WHERE e.submitted_at IS NOT NULL
+        ) SELECT "roundId", "weekStart", rank FROM ranked
+          WHERE user_id=:uid AND rank<=3 ORDER BY "weekStart" DESC'''), {'uid': user_id}).mappings().all()
+        return [dict(row) for row in rows]
+    except ProgrammingError as exc:
+        schema_error(db, exc)
+
+
+@router.get('/prizes/mine')
+def my_prizes(user_id: int = Depends(require_auth), db: Session = Depends(get_db)):
+    try:
+        rows = db.execute(text(f'''WITH eligible AS (
+            SELECT r.id, r.week_start, r.prize_snapshot FROM public.prediction_rounds r
+            JOIN public.prediction_entries mine ON mine.round_id=r.id
+            WHERE r.status='settled' AND mine.user_id=:uid AND mine.submitted_at IS NOT NULL
+        ), ranked AS (
+            SELECT e.user_id, r.id AS "roundId", r.week_start AS "weekStart", r.prize_snapshot AS prizes,
+                   COALESCE(to_jsonb(e)->'prize_claim' <> 'null'::jsonb, false) AS claimed,
+                   ROW_NUMBER() OVER (PARTITION BY r.id ORDER BY {ORDER_SQL}) AS rank
+            FROM public.prediction_entries e JOIN eligible r ON r.id=e.round_id
+            WHERE e.submitted_at IS NOT NULL
+        ) SELECT "roundId", "weekStart", rank, claimed, prizes,
+                 "weekStart"=(SELECT MAX(week_start) FROM public.prediction_rounds WHERE status='settled') AS "isLatest"
+          FROM ranked WHERE user_id=:uid AND rank<=3 ORDER BY "weekStart" DESC'''), {'uid': user_id}).mappings().all()
+        return [dict(row) for row in rows]
+    except ProgrammingError as exc:
+        schema_error(db, exc)
+
+
+class PrizeClaimIn(BaseModel):
+    roundId: int = Field(gt=0)
+    contactEmail: EmailStr | None = Field(default=None, max_length=254)
+    phone: str | None = Field(default=None, min_length=7, max_length=30, pattern=r'^\+?[0-9 ()\-]+$')
+
+    @field_validator('contactEmail', 'phone', mode='before')
+    @classmethod
+    def normalize_contact(cls, value):
+        return value.strip() or None if isinstance(value, str) else value
+
+    @field_validator('phone')
+    @classmethod
+    def valid_phone(cls, value):
+        if value is None:
+            return None
+        digits = ''.join(c for c in value if c.isdigit())
+        if not 7 <= len(digits) <= 15:
+            raise ValueError('Phone must contain 7 to 15 digits')
+        return value.strip()
+
+    @model_validator(mode='after')
+    def require_contact(self):
+        if not self.contactEmail and not self.phone:
+            raise ValueError('Provide a contact email or phone number')
+        return self
+
+
+@router.post('/prize-claim')
+def claim_prize(payload: PrizeClaimIn, user_id: int = Depends(require_auth), db: Session = Depends(get_db)):
+    try:
+        competition = db.execute(text('SELECT * FROM public.prediction_rounds WHERE id=:rid FOR SHARE'), {'rid': payload.roundId}).mappings().first()
+        if not competition or competition['status'] != 'settled':
+            raise HTTPException(409, 'PRIZE_RESULTS_NOT_FINAL')
+        # The authenticated user and server ranking determine eligibility, never client input.
+        own = next((r for r in ranking(db, competition['id'], user_id) if r['isYou']), None)
+        if not own or own['rank'] > 3:
+            raise HTTPException(403, 'PRIZE_WINNERS_ONLY')
+        saved = db.execute(text('SELECT prize_claim FROM public.prediction_entries WHERE round_id=:rid AND user_id=:uid FOR UPDATE'),
+                           {'rid': competition['id'], 'uid': user_id}).mappings().one()
+        if saved['prize_claim']:
+            db.rollback()
+            return {'submitted': True}
+        try:
+            prize_list = competition.get('prize_snapshot') or get_week_prizes(competition['week_start'])
+        except Exception:
+            db.rollback()
+            raise HTTPException(503, 'PRIZE_CONFIGURATION_UNAVAILABLE') from None
+        claim = {'contactEmail': str(payload.contactEmail) if payload.contactEmail else None, 'phone': payload.phone,
+                 'rank': int(own['rank']), 'submittedAt': utcnow().isoformat(), 'prizes': prize_list}
+        # Keep this user's row locked until SMTP accepts the message. Failure rolls back
+        # so a genuine retry remains possible; concurrent double taps send only once.
+        try:
+            send_prize_claim_email(user_id=user_id, nickname=own['nickname'], week=competition['week_start'],
+                                   rank=own['rank'], contact_email=claim['contactEmail'], phone=claim['phone'], prizes=prize_list)
+        except Exception:
+            db.rollback()
+            raise HTTPException(503, 'PRIZE_CLAIM_EMAIL_FAILED') from None
+        db.execute(text('UPDATE public.prediction_entries SET prize_claim=CAST(:claim AS jsonb) WHERE round_id=:rid AND user_id=:uid'),
+                   {'claim': json.dumps(claim), 'rid': competition['id'], 'uid': user_id})
+        db.commit()
+        return {'submitted': True}
     except ProgrammingError as exc:
         schema_error(db, exc)
 

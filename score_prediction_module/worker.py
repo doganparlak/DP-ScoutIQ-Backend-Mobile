@@ -10,6 +10,7 @@ from sqlalchemy import text
 from api_module.database import SessionLocal, engine
 from match_pool_module.fixtures import get_fixture
 from .core import draw_window, fetch_week_fixtures, kickoff, phase, score_entry, select_fixtures, utcnow, week_start
+from .prizes import get_week_prizes
 
 log = logging.getLogger(__name__)
 _stop = threading.Event()
@@ -102,6 +103,13 @@ def process_round(row):
         updated.append(item)
     all_done = all(not unresolved(item) for item in updated)
     status = 'settled' if all_done and verify else 'finalizing' if all_done else 'open'
+    prize_snapshot = None
+    if status == 'settled' and not row.get('prize_snapshot'):
+        try:
+            prize_snapshot = get_week_prizes(row['week_start'])
+        except Exception as exc:
+            # Prize configuration must never prevent match scoring/finalization.
+            log.warning('Prize snapshot unavailable for round=%s (%s)', row['id'], type(exc).__name__)
     next_check = min(next_times) if next_times else now + timedelta(minutes=30)
     # Never extend a published deadline, including when a kickoff is postponed.
     deadline = min([row['deadline'], *[kickoff(f) for f in updated if phase(f) != 'excluded']])
@@ -111,6 +119,10 @@ def process_round(row):
             {'id': row['id'], 'fixtures': json.dumps(updated), 'deadline': deadline, 'status': status, 'next': next_check})
         if [scoring_state(f) for f in updated] != [scoring_state(f) for f in fixtures]:
             rescore(db, row['id'], updated)
+        if prize_snapshot:
+            db.execute(text('''UPDATE public.prediction_rounds
+                SET prize_snapshot=COALESCE(prize_snapshot,CAST(:prizes AS jsonb)) WHERE id=:id'''),
+                {'id': row['id'], 'prizes': json.dumps(prize_snapshot)})
 
 
 def tick():
