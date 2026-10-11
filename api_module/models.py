@@ -80,6 +80,7 @@ class FavoritePlayerOut(BaseModel):
 
 # ---- Auth & Profile models ----
 class SignUpIn(BaseModel):
+    referralCode: Optional[str] = Field(default=None, max_length=64)
     email: EmailStr
     password: str = Field(min_length=8)
     dob: str                    # YYYY-MM-DD
@@ -147,6 +148,7 @@ class SignupCodeRequestIn(BaseModel):
 class VerifySignupIn(BaseModel):
   email: EmailStr
   code: str
+  referralCode: Optional[str] = Field(default=None, max_length=64)
 
 class SetNewPasswordIn(BaseModel):
     email: EmailStr

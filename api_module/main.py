@@ -44,6 +44,7 @@ from api_module.analytics import (
     record_analytics_event,
 )
 from api_module.database import get_db, SessionLocal, engine
+from api_module.referrals import router as referrals_router, active_code, attach_referral
 from api_module.models import (
     SignUpIn, LoginIn, LoginOut, ProfileOut, ProfilePatch, SetNewPasswordIn,
     PasswordResetRequestIn, VerifyResetIn, VerifySignupIn, SignupCodeRequestIn, ChatIn,
@@ -114,6 +115,7 @@ from team_analysis_module.router import router as team_analysis_router
 app.include_router(team_analysis_router)
 from api_module.social_auth import router as social_auth_router
 app.include_router(social_auth_router)
+app.include_router(referrals_router)
 from api_module.auth_session import authenticated_session
 from api_module.subscription_access import reconcile_subscription
 from api_module.password_reset import COOKIE_NAME, COOKIE_PATH, verify_code as verify_password_reset_code, require_proof as require_password_reset_proof
@@ -155,6 +157,8 @@ async def health() -> Dict[str, Any]:
 
 @app.post("/auth/signup")
 def signup(payload: SignUpIn, db: Session = Depends(get_db)):
+    if payload.referralCode and payload.referralCode.strip():
+        active_code(db, payload.referralCode)
     if not PASSWORD_RE.match(payload.password):
         raise HTTPException(
             status_code=status.HTTP_400_BAD_REQUEST,
@@ -457,6 +461,8 @@ def request_signup_code(body: SignupCodeRequestIn, accept_language: str | None =
 @app.post("/auth/verify_signup_code")
 def verify_signup_code(body: VerifySignupIn, db: Session = Depends(get_db)):
     email = body.email.strip()
+    if body.referralCode and body.referralCode.strip():
+        active_code(db, body.referralCode)
 
     if not verify_email_code(email, body.code, purpose="signup"):
         raise HTTPException(status_code=400, detail="Invalid or expired code")
@@ -494,6 +500,8 @@ def verify_signup_code(body: VerifySignupIn, db: Session = Depends(get_db)):
         })
 
     signup_user_id = db.execute(text('SELECT id FROM users WHERE lower(email)=lower(:email)'), {'email': email}).scalar_one()
+    if not already:
+        attach_referral(db, signup_user_id, body.referralCode)
     reconcile_subscription(db, signup_user_id, allow_email_restore=True)
 
     # Cleanup staged signup

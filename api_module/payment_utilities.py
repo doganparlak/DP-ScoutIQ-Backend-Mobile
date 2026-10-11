@@ -9,7 +9,7 @@ from api_module.utilities import now_iso
 from api_module.subscription_access import reconcile_subscription
 from sqlalchemy.orm import Session
 from sqlalchemy import text
-from appstoreserverlibrary.api_client import AppStoreServerAPIClient, APIException
+from appstoreserverlibrary.api_client import AppStoreServerAPIClient, APIException, APIError
 from appstoreserverlibrary.models.Environment import Environment
 from google.oauth2 import service_account
 from googleapiclient.discovery import build
@@ -60,6 +60,30 @@ app_store_client = AppStoreServerAPIClient(
     APPLE_BUNDLE_ID,
     environment,
 )
+fallback_app_store_client = AppStoreServerAPIClient(
+    signing_key_bytes,
+    APPLE_IAP_KEY_ID,
+    APPLE_IAP_ISSUER_ID,
+    APPLE_BUNDLE_ID,
+    Environment.PRODUCTION if APPLE_USE_SANDBOX else Environment.SANDBOX,
+)
+
+
+def _apple_subscription_status(original_transaction_id: str):
+    """Support App Store and TestFlight transactions without changing server flags.
+
+    Retry the other environment only when Apple says the transaction is absent.
+    Authentication, throttling and server errors must not trigger a fallback.
+    """
+    try:
+        return app_store_client.get_all_subscription_statuses(original_transaction_id)
+    except APIException as exc:
+        if exc.http_status_code != 404 or exc.api_error not in (
+            APIError.ORIGINAL_TRANSACTION_ID_NOT_FOUND,
+            APIError.TRANSACTION_ID_NOT_FOUND,
+        ):
+            raise
+        return fallback_app_store_client.get_all_subscription_statuses(original_transaction_id)
 
 
 GOOGLE_PLAY_SERVICE_ACCOUNT_JSON = os.environ.get(
@@ -95,7 +119,7 @@ def verify_ios_subscription(
     original_transaction_id: Optional[str],
 ) -> tuple[bool, dt.datetime, bool]:
     """
-    Validate an iOS subscription using Apple's /verifyReceipt endpoint.
+    Validate an iOS subscription using Apple's App Store Server API.
 
     Returns: (is_active, expires_at, auto_renew)
     """
@@ -107,9 +131,7 @@ def verify_ios_subscription(
     try:
         #print("[IOS VERIFY] Fetching subscription status from Apple for transaction:", original_transaction_id)
         # Ask Apple for all subscription statuses for this original transaction
-        status_response = app_store_client.get_all_subscription_statuses(
-            original_transaction_id
-        )
+        status_response = _apple_subscription_status(original_transaction_id)
         #print("[IOS VERIFY] Received subscription status from Apple:", status_response)
     except APIException as e:
         #print("[IOS VERIFY] Apple API error:", e)

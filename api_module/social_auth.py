@@ -18,6 +18,7 @@ from api_module.auth_session import authenticated_session
 from api_module.database import get_db
 from api_module.social_tokens import apple_exchange, setting, verify_identity
 from api_module.utilities import hash_pw, require_auth
+from api_module.referrals import attach_referral
 
 router = APIRouter(tags=['social-auth'])
 RETURN_URL = 'dpscoutiq://auth/apple'
@@ -64,6 +65,7 @@ class ExchangeIn(ChallengeIn):
 
 
 class RegisterIn(ChallengeIn):
+    referralCode: str | None = Field(default=None, max_length=64)
     dob: dt.date | None = None
     country: str = Field(min_length=1, max_length=100)
     privacyAccepted: bool
@@ -283,6 +285,7 @@ def register(body: RegisterIn, db: Session = Depends(get_db)):
             VALUES(:email,NULL,NULL,:dob,:country,'Free','[]'::jsonb,NOW(),:lang,:newsletter,TRUE) RETURNING id'''), {
             'email': email, 'dob': body.dob, 'country': body.country.strip() or 'Unknown', 'lang': body.uiLanguage, 'newsletter': body.newsletter,
         }).scalar_one()
+        attach_referral(db, user_id, body.referralCode)
         attach(db, user_id, flow['provider'], identity)
         result = authenticated_session(db, user_id, body.uiLanguage)
         consume(db, body.challenge)
