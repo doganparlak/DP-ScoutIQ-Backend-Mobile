@@ -95,5 +95,5 @@ def get_league_standings(league_id: int) -> dict[str, Any]:
     extra = {}
     if league_id in EUROPEAN_LEAGUES:
         stages = provider_get(f'schedules/seasons/{season_id}', api_token=token).get('data') or []
-        extra = {"stageScoped": True, "knockoutRounds": knockout_rounds(stages)}
+        extra = {"stageScoped": True, "qualifyingRounds": knockout_rounds(stages, 'qualifying'), "knockoutRounds": knockout_rounds(stages)}
     return {**extra, "leagueId": int(league_id), "seasonId": season_id, "seasonName": season.get("name"), "tables": result_tables}

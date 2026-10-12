@@ -21,7 +21,7 @@ _stop = threading.Event()
 _wake = threading.Event()
 _thread = None
 CLAIM_LOCK = 716394820
-SCOPED_VERSION = 2
+SCOPED_VERSION = 4
 
 
 def provider(session, path, **params):
@@ -168,7 +168,12 @@ def refresh(job):
             # Recent corrections: 21 days. Reconcile older stats after 28 days.
             # Interrupted initial backfills reuse already fetched contributions.
             recent_due = played >= now - timedelta(days=21) and (not old or old['fetched_at'] < now - timedelta(days=1))
-            if old and old['included_in_aggregation'] and old['kickoff_at'] == played and old['calculation_version'] == VERSION and not recent_due and old['fetched_at'] >= now - timedelta(days=28):
+            if old and old['kickoff_at'] == played and old['calculation_version'] == VERSION and not recent_due and old['fetched_at'] >= now - timedelta(days=28):
+                if not old['included_in_aggregation']:
+                    # Restore a recently fetched qualifier excluded by the previous scope rules.
+                    with SessionLocal.begin() as db:
+                        renew(db, job)
+                        db.execute(text('UPDATE league_match_contributions SET included_in_aggregation=TRUE,updated_at=NOW() WHERE fixture_id=:id'), {'id': fid})
                 continue
             detail = provider(session, f'fixtures/{fid}', include='participants;state;statistics.type;lineups.player;lineups.details.type;xGFixture.type')
             contribution = normalize_fixture(detail)
@@ -228,13 +233,17 @@ def publish(job, season):
             AND included_in_aggregation=TRUE ORDER BY kickoff_at,fixture_id''').execution_options(stream_results=True, yield_per=20), job).mappings()
         for row in rows:
             row_scope = (row['coverage'] or {}).get('scope')
-            if scoped and row_scope not in {'league', 'knockout'}:
+            if scoped and row_scope not in {'qualifying', 'league', 'knockout'}:
                 continue
             key = period_for(row['kickoff_at'].astimezone(PERIOD_ZONE).date())[0]
             if scoped:
-                for scope_key in (row_scope, 'overall'):
+                # Qualifiers have their own view; Overall starts at the league phase.
+                scope_keys = (row_scope,) if row_scope == 'qualifying' else (row_scope, 'overall')
+                for scope_key in scope_keys:
                     scope_totals[scope_key].add(row)
                     scope_periods[scope_key].setdefault(key, Aggregate(include_team_metrics=False)).add(row)
+                if row_scope == 'qualifying':
+                    continue
             if period is not None and key != period:
                 save_period(db, job, period, fortnight.finish())
                 periods_written.add(period)

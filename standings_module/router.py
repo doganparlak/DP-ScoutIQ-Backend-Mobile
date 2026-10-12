@@ -28,7 +28,7 @@ class StandingsIn(BaseModel):
 class InsightsIn(StandingsIn):
     seasonId: int = Field(gt=0)
     periodStart: date | None = None
-    scope: Literal['league', 'knockout', 'overall'] | None = None
+    scope: Literal['qualifying', 'league', 'knockout', 'overall'] | None = None
 
 
 @router.on_event('startup')

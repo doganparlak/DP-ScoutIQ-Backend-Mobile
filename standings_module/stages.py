@@ -1,6 +1,6 @@
 """Competition scope shared by official tables and statistical summaries."""
 EUROPEAN_LEAGUES = frozenset({2, 5, 2286})
-SCOPES = ('league', 'knockout', 'overall')
+SCOPES = ('qualifying', 'league', 'knockout', 'overall')
 
 
 def stage_scope(stage):
@@ -21,10 +21,10 @@ def scoped_schedule(stages, league_id):
     return fixtures
 
 
-def knockout_rounds(stages):
+def knockout_rounds(stages, scope='knockout'):
     result = []
     for stage in sorted(stages, key=lambda s: (s.get('sort_order') or 0, s['id'])):
-        if stage_scope(stage) != 'knockout':
+        if stage_scope(stage) != scope:
             continue
         fixtures = scoped_schedule([stage], 2)
         matches = []
