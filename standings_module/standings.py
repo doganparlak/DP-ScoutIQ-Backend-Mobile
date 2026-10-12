@@ -5,6 +5,8 @@ from typing import Any
 
 import requests
 
+from .stages import EUROPEAN_LEAGUES, knockout_rounds, stage_scope
+
 
 SPORTMONKS_BASE_URL = os.getenv(
     "SPORTMONKS_BASE_URL", "https://api.sportmonks.com/v3/football"
@@ -56,6 +58,8 @@ def get_league_standings(league_id: int) -> dict[str, Any]:
     }
     tables: dict[tuple[int | None, int | None], dict[str, Any]] = {}
     for standing in response.get("data") or []:
+        if league_id in EUROPEAN_LEAGUES and stage_scope(standing.get("stage") or {}) != "league":
+            continue
         participant = standing.get("participant") or {}
         values: dict[str, Any] = {}
         for detail in standing.get("details") or []:
@@ -88,4 +92,8 @@ def get_league_standings(league_id: int) -> dict[str, Any]:
     for table in result_tables:
         table["rows"].sort(key=lambda row: (row["position"] is None, row["position"] or 9999))
     result_tables.sort(key=lambda table: (table["label"].casefold(), table["stageId"] or 0, table["groupId"] or 0))
-    return {"leagueId": int(league_id), "seasonId": season_id, "seasonName": season.get("name"), "tables": result_tables}
+    extra = {}
+    if league_id in EUROPEAN_LEAGUES:
+        stages = provider_get(f'schedules/seasons/{season_id}', api_token=token).get('data') or []
+        extra = {"stageScoped": True, "knockoutRounds": knockout_rounds(stages)}
+    return {**extra, "leagueId": int(league_id), "seasonId": season_id, "seasonName": season.get("name"), "tables": result_tables}

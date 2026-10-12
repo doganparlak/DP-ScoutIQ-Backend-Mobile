@@ -38,7 +38,11 @@ def search_league_performance(db, leagues=None, countries=None, limit=100):
             LIMIT :limit
         )
         SELECT l.league_id, l.league_name, l.country_name,
-            COALESCE(MAX(eli.image_url), l.image_url) AS image_url, l.team_count
+            COALESCE(MAX(eli.image_url), l.image_url) AS image_url,
+            CASE WHEN l.league_id IN (2,5,2286) THEN (
+                SELECT NULLIF(s.coverage->>'mainTeamCount','')::int FROM league_season_summaries s
+                WHERE s.league_id=l.league_id ORDER BY s.created_at DESC LIMIT 1
+            ) ELSE l.team_count END AS team_count
         FROM leagues l
         LEFT JOIN enterprise_league_images eli
           ON eli.league_id = l.league_id AND eli.image_status = 'available'

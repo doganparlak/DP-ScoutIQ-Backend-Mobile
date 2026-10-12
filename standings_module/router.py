@@ -1,4 +1,5 @@
 from datetime import date
+from typing import Literal
 
 from fastapi import APIRouter, Depends, HTTPException
 from pydantic import BaseModel, Field
@@ -27,6 +28,7 @@ class StandingsIn(BaseModel):
 class InsightsIn(StandingsIn):
     seasonId: int = Field(gt=0)
     periodStart: date | None = None
+    scope: Literal['league', 'knockout', 'overall'] | None = None
 
 
 @router.on_event('startup')
@@ -73,7 +75,7 @@ def insights(payload: InsightsIn, db: Session = Depends(get_db), user_id: int = 
         plan = db.execute(text('SELECT plan FROM users WHERE id=:uid'), {'uid': user_id}).scalar()
         if payload.periodStart and plan not in {'No Ads Monthly', 'Pro Monthly', 'Pro Yearly'}:
             raise HTTPException(status_code=403, detail='Plus or Pro is required for two-week performance')
-        return restrict_insights(request_summary(db, payload.leagueId, payload.seasonId, payload.periodStart), plan)
+        return restrict_insights(request_summary(db, payload.leagueId, payload.seasonId, payload.periodStart, payload.scope), plan)
     except ValueError as exc:
         raise HTTPException(status_code=400, detail=str(exc)) from exc
 
