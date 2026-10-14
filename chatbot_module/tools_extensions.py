@@ -356,7 +356,7 @@ def fetch_player_nonzero_stats(
         "id": doc.get("id"),
     }
     # Carry database contract details through to the shared mobile player card.
-    for key in ("is_on_loan", "contract_team_id", "contract_team_name", "loan_end_date", "contract_end_date"):
+    for key in ("is_on_loan", "contract_team_id", "contract_team_name", "loan_end_date", "contract_end_date", "end_date"):
         if key in doc_meta:
             resolved_raw[key] = doc_meta[key]
     # Remove None (and empty-string) fields so caller never overwrites with blanks
@@ -428,7 +428,7 @@ def build_player_payload_new(meta: Dict[str, Any]) -> Dict[str, Any]:
                 **({"id": str(resolved["id"])} if resolved.get("id") is not None else {}),
                 "name": name,
                 "meta": {
-                    **{key: resolved[key] for key in ("is_on_loan", "contract_team_id", "contract_team_name", "loan_end_date", "contract_end_date") if key in resolved},
+                    **{key: resolved[key] for key in ("is_on_loan", "contract_team_id", "contract_team_name", "loan_end_date", "contract_end_date", "end_date") if key in resolved},
                     "gender": gender_final,
                     "height": height_final,
                     "weight": weight_final,

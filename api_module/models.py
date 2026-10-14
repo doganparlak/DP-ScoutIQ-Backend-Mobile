@@ -65,6 +65,7 @@ class FavoritePlayerOut(BaseModel):
     contractTeamName: Optional[str] = None
     loanEndDate: Optional[str] = None
     contractEndDate: Optional[str] = None
+    endDate: Optional[str] = None
     name: str
     nationality: Optional[str] = None
     age: Optional[int] = None
