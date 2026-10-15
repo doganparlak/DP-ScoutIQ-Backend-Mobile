@@ -83,7 +83,7 @@ def request_summary(db, league_id, season_id, period_start=None, scope=None):
         season_result.pop('player_rating_totals', None)
     if biweekly_result:
         biweekly_result['coverage'] = {k: v for k, v in (biweekly_result.get('coverage') or {}).items() if k != 'stageSummaries'}
-    # Images can be refreshed independently of the weekly statistics cache.
+    # Images can be refreshed independently of the statistics cache.
     hydrate_winner_images(db, season_result)
     if biweekly_result:
         hydrate_winner_images(db, biweekly_result)
@@ -288,7 +288,7 @@ def publish(job, season):
             team_best_players=CAST(:team_best_players AS jsonb),league_best_player=NULLIF(CAST(:league_best_player AS jsonb),'null'::jsonb),
             coverage=CAST(:coverage AS jsonb),fixture_count=:fixture_count,latest_included_kickoff_at=:latest_included_kickoff_at,
             league_name=:league_name,season_name=:season_name,calculation_version=:version,status='ready',
-            computed_at=NOW(),updated_at=NOW(),next_refresh_at=NOW()+CASE WHEN :finished THEN INTERVAL '28 days' ELSE INTERVAL '7 days' END,
+            computed_at=NOW(),updated_at=NOW(),next_refresh_at=NOW()+CASE WHEN :finished THEN INTERVAL '28 days' ELSE INTERVAL '2 days' END,
             lease_token=NULL,lease_expires_at=NULL,last_error=NULL
             WHERE league_id=:league AND season_id=:season AND lease_token=CAST(:token AS uuid)'''), params)
 
@@ -343,7 +343,7 @@ def _run():
         except Exception as exc:
             log.warning('League summary worker unavailable (%s)', type(exc).__name__)
         # Retry queued work promptly after another worker's lease expires.
-        # Otherwise weekly refreshes only need twice-daily scheduling checks.
+        # Otherwise scheduled refreshes only need twice-daily scheduling checks.
         delay = 12 * 60 * 60
         try:
             with SessionLocal() as db:

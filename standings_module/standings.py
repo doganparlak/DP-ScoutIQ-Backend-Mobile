@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import os
+from datetime import date, datetime, timezone
 from typing import Any
 
 import requests
@@ -27,19 +28,32 @@ def provider_get(path: str, **params):
         raise StandingsError('ScoutWise standings service is temporarily unavailable') from None
 
 
+def _select_current_season(league: dict[str, Any], today: date | None = None) -> dict[str, Any]:
+    """Resolve conflicting current flags without selecting a future season."""
+    current = (league.get("currentSeason") or league.get("currentseason")
+               or league.get("current_season") or {})
+    today = today or datetime.now(timezone.utc).date()
+    active = []
+    for season in [current, *(league.get("seasons") or [])]:
+        if not season.get("id") or not season.get("is_current") or season.get("finished") or season.get("pending"):
+            continue
+        try:
+            start = date.fromisoformat(str(season.get("starting_at") or "")[:10])
+        except ValueError:
+            continue
+        if start <= today:
+            active.append((start, season))
+    return max(active, key=lambda item: item[0])[1] if active else current
+
+
 def get_league_standings(league_id: int) -> dict[str, Any]:
     """Return grouped current-season standings and official position rules."""
     token = os.getenv("SPORTMONKS_API_KEY")
     if not token:
         raise StandingsError("ScoutWise data service is not configured")
 
-    league = provider_get(f'leagues/{int(league_id)}', api_token=token, include='currentSeason').get('data') or {}
-    season = (
-        league.get("currentSeason")
-        or league.get("currentseason")
-        or league.get("current_season")
-        or {}
-    )
+    league = provider_get(f'leagues/{int(league_id)}', api_token=token, include='currentSeason;seasons').get('data') or {}
+    season = _select_current_season(league)
     season_id = int(season.get("id") or 0)
     if not season_id:
         raise StandingsError("ScoutWise current season data is unavailable for this league")
