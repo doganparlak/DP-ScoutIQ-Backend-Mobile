@@ -117,6 +117,8 @@ def report_profile(kind: str, payload: TeamAnalysisIn, user_id=Depends(require_a
         base = report_data(payload, user_id, accept_language, True, db)
         language = "tr" if (accept_language or "").lower().startswith("tr") else "en"
     profile_key = f'{kind}:{"paid" if paid else "free"}:v{engine.MATCH_REPORT_VERSION}:headings-v2'
+    if kind == "assessment":
+        profile_key += f":assessment-v{engine.ASSESSMENT_VERSION}"
     if payload.reportId:
         cached = cached_profile(db, user_id, payload.reportId, profile_key)
         if cached is not None:
