@@ -19,11 +19,19 @@ def reconcile_subscription(db, user_id, *, allow_email_restore=False):
     user = db.execute(text('SELECT * FROM users WHERE id=:uid FOR UPDATE'), {'uid': user_id}).mappings().first()
     if not user:
         return None
+    now = dt.datetime.now(dt.timezone.utc)
+    expiry = user.get('subscription_end_at')
+    if (user.get('subscription_platform') == 'manual'
+            and not user.get('subscription_external_id')
+            and plan_priority(user.get('plan')) > 0
+            and expiry and expiry > now):
+        # An administrator grant is not a missing store purchase. Preserve its
+        # plan and expiry on login, /me refresh, and background reconciliation.
+        return user
     entitlements = list(db.execute(text('''SELECT * FROM subscription_entitlements
         WHERE last_seen_user_id=:uid OR
           (:restore AND last_seen_user_id IS NULL AND lower(last_seen_email)=lower(:email))
         FOR UPDATE'''), {'uid': user_id, 'restore': allow_email_restore, 'email': user['email']}).mappings().all())
-    now = dt.datetime.now(dt.timezone.utc)
     for e in entitlements:
         if e['last_seen_user_id'] is None and e.get('is_active') and e.get('expires_at') and e['expires_at'] > now:
             db.execute(text('''UPDATE subscription_entitlements SET last_seen_user_id=:uid,updated_at=NOW()
@@ -41,8 +49,11 @@ def reconcile_subscription(db, user_id, *, allow_email_restore=False):
     if winner:
         values = {'plan': plan_from_product_id(winner['product_id']), 'expiry': winner['expires_at'],
                   'renew': bool(winner['auto_renew']), 'platform': winner['platform'], 'external': winner['external_id']}
-    elif not entitlements and not user.get('subscription_external_id') and not user.get('subscription_end_at'):
-        # Preserve manually granted plans, which have no store purchase to reconcile.
+    elif (not entitlements and not user.get('subscription_external_id')
+          and user.get('subscription_platform') in (None, 'manual')
+          and (expiry is None or expiry > now)):
+        # Also preserve legacy manual grants without a platform marker. A dated
+        # grant must still be active; expired grants fall through to Free.
         return user
     else:
         values = {'plan': 'Free', 'expiry': None, 'renew': False, 'platform': None, 'external': None}
