@@ -12,6 +12,7 @@ from player_pool_module.utilities import (
     folded_text_sql,
     norm_name,
     numeric_filter_sql,
+    player_name_pattern,
     player_pool_table,
 )
 
@@ -409,9 +410,9 @@ def search_players(db: Session, filters: Dict[str, Any], *, all_matches: bool = 
         {
             **eligibility_params,
             "metadata_fields": metadata_fields,
-            "name_q": f"%{name}%" if name else None,
-            "name_norm_q": f"%{name_norm}%" if name_norm else None,
-            "name_folded_q": f"%{name_norm}%" if name_norm else None,
+            "name_q": player_name_pattern(name),
+            "name_norm_q": player_name_pattern(name_norm),
+            "name_folded_q": player_name_pattern(name_norm),
             "gender": gender,
             "candidate_roles": candidate_roles,
             **{f"choices_{key}": [norm_name(value) for value in (candidate_choices or {}).get(key, [])] or None for key in ("nationality", "team")},

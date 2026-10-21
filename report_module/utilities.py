@@ -1,3 +1,4 @@
+from player_pool_module.utilities import player_name_matches
 import re
 from typing import Any, Dict, List, Optional
 from sqlalchemy import text
@@ -40,6 +41,8 @@ def _score_candidate(meta: Dict[str, Any], ident: Dict[str, Any]) -> float:
             score += 10
         elif name_i in name_m or name_m in name_i:
             score += 7
+        elif player_name_matches(name_m, name_i):
+            score += 6
 
     if team_i and team_m:
         if team_i == team_m:

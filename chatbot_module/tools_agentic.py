@@ -1,3 +1,4 @@
+from player_pool_module.utilities import player_name_pattern
 
 import logging
 
@@ -2365,8 +2366,8 @@ def fetch_direct_player_candidate_by_name(name: str) -> Optional[Dict[str, Any]]
         return None
 
     name_norm = norm_name(clean_name)
-    name_raw_q = f"%{clean_name}%"
-    name_norm_q = f"%{name_norm}%"
+    name_raw_q = player_name_pattern(clean_name)
+    name_norm_q = player_name_pattern(name_norm)
     player_identity = {"name": clean_name}
     tokens = _lookup_tokens(name_norm)
     token_variants = sorted({variant for token in tokens for variant in _token_variants(token)})
@@ -2563,8 +2564,8 @@ def fetch_direct_player_candidates_by_name(name: str, limit: int = 20) -> List[D
         return []
 
     name_norm = norm_name(clean_name)
-    name_raw_q = f"%{clean_name}%"
-    name_norm_q = f"%{name_norm}%"
+    name_raw_q = player_name_pattern(clean_name)
+    name_norm_q = player_name_pattern(name_norm)
     tokens = _lookup_tokens(name_norm)
     pattern_stages = _direct_lookup_pattern_stages(name_norm)
 

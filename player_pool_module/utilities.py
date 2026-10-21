@@ -49,6 +49,21 @@ def player_name_pattern(value: str | None) -> str | None:
     return "%" + "%".join(escaped) + "%"
 
 
+def player_name_matches(value: str | None, query: str | None) -> bool:
+    """Compare name fragments in order without requiring adjacent words."""
+    candidate = norm_name(value)
+    parts = norm_name(query).split()
+    if not parts:
+        return False
+    start = 0
+    for part in parts:
+        index = candidate.find(part, start)
+        if index < 0:
+            return False
+        start = index + len(part)
+    return True
+
+
 def player_pool_table(world_cup_mode: bool = False) -> str:
     return "player_data_wc" if world_cup_mode else "player_data"
 

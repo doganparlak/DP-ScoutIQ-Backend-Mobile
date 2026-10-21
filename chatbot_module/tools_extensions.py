@@ -1,3 +1,4 @@
+from player_pool_module.utilities import player_name_matches, player_name_pattern
 from typing import Any, Dict, List, Optional, Tuple
 from sqlalchemy import text
 import re
@@ -203,6 +204,7 @@ def _score_candidate(meta: Dict[str, Any], ident: Dict[str, Any]) -> float:
     if name_i and name_m:
         if name_i == name_m: score += 10
         elif name_i in name_m or name_m in name_i: score += 7
+        elif player_name_matches(name_m, name_i): score += 6
 
     if nat_i and nat_m:
         if nat_i == nat_m: score += 4
@@ -242,8 +244,8 @@ def fetch_player_nonzero_stats(
     name_raw = str(name).strip()
     name_norm = norm_name(name_raw)
 
-    name_raw_q  = f"%{name_raw}%"
-    name_norm_q = f"%{name_norm}%"
+    name_raw_q  = player_name_pattern(name_raw)
+    name_norm_q = player_name_pattern(name_norm)
 
     nat = player_identity.get("nationality")
     nat_raw = nat.strip() if isinstance(nat, str) else ""
