@@ -38,6 +38,17 @@ def norm_name(value: str | None) -> str:
     return " ".join(translated.lower().split())
 
 
+def player_name_pattern(value: str | None) -> str | None:
+    """Match entered name fragments in order, allowing omitted middle names."""
+    parts = (value or "").split()
+    if not parts:
+        return None
+    # Only our separators are wildcards; user-entered %, _ and backslashes
+    # must remain literal characters in PostgreSQL LIKE/ILIKE patterns.
+    escaped = [part.replace("\\", "\\\\").replace("%", "\\%").replace("_", "\\_") for part in parts]
+    return "%" + "%".join(escaped) + "%"
+
+
 def player_pool_table(world_cup_mode: bool = False) -> str:
     return "player_data_wc" if world_cup_mode else "player_data"
 

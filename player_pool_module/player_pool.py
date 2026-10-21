@@ -16,6 +16,7 @@ from player_pool_module.utilities import (
     folded_text_sql,
     norm_name,
     numeric_filter_sql,
+    player_name_pattern,
     player_pool_table,
     role_short_sql,
     role_value_short_sql,
@@ -202,9 +203,9 @@ def search_players(db: Session, filters: Dict[str, Any]) -> List[Dict[str, Any]]
     rows = db.execute(
         query,
         {
-            "name_q": f"%{name}%" if name else None,
-            "name_norm_q": f"%{name_norm}%" if name_norm else None,
-            "name_folded_q": f"%{name_norm}%" if name_norm else None,
+            "name_q": player_name_pattern(name),
+            "name_norm_q": player_name_pattern(name_norm),
+            "name_folded_q": player_name_pattern(name_norm),
             "gender": gender,
             "contract_status": contract_status,
             "loan_end_date": loan_end_date,
