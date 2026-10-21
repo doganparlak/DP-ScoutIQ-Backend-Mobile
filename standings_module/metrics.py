@@ -132,7 +132,7 @@ class Aggregate:
                 item['ratingSum'] += p['rating']
                 item['ratedAppearances'] += 1
 
-    def finish(self):
+    def finish(self, *, season_awards=False):
         catalog = {}
         for team in self.teams.values():
             if not self.include_team_metrics:
@@ -153,7 +153,14 @@ class Aggregate:
         def rank(p):
             return (-p['ratingSum'] / p['ratedAppearances'], -p['ratedAppearances'], -p['minutes'], p['playerId'], p['teamId'])
         winners = {}
-        for player in sorted((p for p in self.players.values() if p['ratedAppearances']), key=rank):
+        eligible = (
+            p for p in self.players.values()
+            if p['ratedAppearances'] and (
+                not season_awards
+                or p['appearances'] * 2 >= self.teams[str(p['teamId'])]['matches']
+            )
+        )
+        for player in sorted(eligible, key=rank):
             tid = str(player['teamId'])
             if tid not in winners:
                 winners[tid] = {k: v for k, v in player.items() if k not in {'rating', 'ratingSum'}}

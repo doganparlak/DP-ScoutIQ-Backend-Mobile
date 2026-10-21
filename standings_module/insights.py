@@ -21,7 +21,9 @@ _stop = threading.Event()
 _wake = threading.Event()
 _thread = None
 CLAIM_LOCK = 716394820
-SCOPED_VERSION = 4
+# Award selection changes do not invalidate compact fixture contributions.
+SEASON_SUMMARY_VERSION = 2
+SCOPED_VERSION = 5
 
 
 def provider(session, path, **params):
@@ -67,6 +69,10 @@ def request_summary(db, league_id, season_id, period_start=None, scope=None):
     coverage = dict(season_result.get('coverage') or {})
     scoped = coverage.pop('stageSummaries', {})
     season_result['coverage'] = coverage
+    if league_id not in EUROPEAN_LEAGUES and row['calculation_version'] != SEASON_SUMMARY_VERSION:
+        # Never show the previous unrestricted season winners during rebuilding.
+        season_result.update(team_best_players={}, league_best_player=None,
+                             status='failed' if row['status'] == 'failed' else 'pending')
     scope = scope or ('league' if league_id in EUROPEAN_LEAGUES else 'overall')
     if league_id in EUROPEAN_LEAGUES:
         # Never serve the old whole-season cache while the scoped rebuild runs.
@@ -93,7 +99,7 @@ def request_summary(db, league_id, season_id, period_start=None, scope=None):
             'periodTimezone': 'Europe/Istanbul',
             # A missing period can wait for the next scheduled check; do not
             # make browsers poll for hours while no refresh is running.
-            'scope': scope, 'refreshing': row['status'] in {'pending', 'processing'} or (league_id in EUROPEAN_LEAGUES and not ready and row['status'] != 'failed')}
+            'scope': scope, 'refreshing': season_result['status'] in {'pending', 'processing'} or (league_id in EUROPEAN_LEAGUES and not ready and row['status'] != 'failed')}
 
 
 def claim_job():
@@ -109,7 +115,7 @@ def claim_job():
                OR (status IN ('ready','failed') AND next_refresh_at<=NOW())
                OR (status='ready' AND calculation_version<>CASE WHEN league_id IN (2,5,2286) THEN :scoped_version ELSE :version END)
             ORDER BY CASE WHEN status='pending' THEN 0 ELSE 1 END, computed_at NULLS FIRST, next_refresh_at NULLS FIRST, created_at
-            FOR UPDATE SKIP LOCKED LIMIT 1'''), {'version': VERSION, 'scoped_version': SCOPED_VERSION}).mappings().first()
+            FOR UPDATE SKIP LOCKED LIMIT 1'''), {'version': SEASON_SUMMARY_VERSION, 'scoped_version': SCOPED_VERSION}).mappings().first()
         if not row:
             return None
         job = {'league': row['league_id'], 'season': row['season_id'], 'token': str(uuid.uuid4())}
@@ -256,12 +262,12 @@ def publish(job, season):
             periods_written.add(period)
         for empty in {*previous_periods, period_for(datetime.now(PERIOD_ZONE).date())[0]} - periods_written:
             save_period(db, job, empty, Aggregate(include_team_metrics=False).finish())
-        result = aggregate.finish()
+        result = aggregate.finish(season_awards=True)
         if scoped:
             stage_summaries = {}
             current_period = period_for(datetime.now(PERIOD_ZONE).date())[0]
             for scope_key in SCOPES:
-                total = scope_totals[scope_key].finish()
+                total = scope_totals[scope_key].finish(season_awards=True)
                 total.pop('player_rating_totals', None)
                 total.pop('latest_included_kickoff_at', None)
                 hydrate_winner_images(db, total)
@@ -279,7 +285,7 @@ def publish(job, season):
             if '_main_team_count' in season:
                 result['coverage']['mainTeamCount'] = season['_main_team_count']
         hydrate_winner_images(db, result)
-        params = {**job, **result, 'version': SCOPED_VERSION if scoped else VERSION, 'season_name': season.get('name'),
+        params = {**job, **result, 'version': SCOPED_VERSION if scoped else SEASON_SUMMARY_VERSION, 'season_name': season.get('name'),
                   'league_name': (season.get('league') or {}).get('name'), 'finished': bool(season.get('finished'))}
         for field in ('team_metrics', 'metric_catalog', 'player_rating_totals', 'team_best_players', 'league_best_player', 'coverage'):
             params[field] = json.dumps(params[field])
@@ -404,7 +410,7 @@ def enqueue_season(db, standings):
     stale = db.execute(text('''UPDATE league_season_summaries SET status='pending', next_refresh_at=NOW()
         WHERE league_id=:league AND season_id=:season AND calculation_version<>:version
         AND status NOT IN ('pending','processing')'''),
-        {'league': standings['leagueId'], 'season': standings['seasonId'], 'version': SCOPED_VERSION if standings['leagueId'] in EUROPEAN_LEAGUES else VERSION}).rowcount
+        {'league': standings['leagueId'], 'season': standings['seasonId'], 'version': SCOPED_VERSION if standings['leagueId'] in EUROPEAN_LEAGUES else SEASON_SUMMARY_VERSION}).rowcount
     queued = db.execute(text('SELECT status FROM league_season_summaries WHERE league_id=:league AND season_id=:season'),
         {'league': standings['leagueId'], 'season': standings['seasonId']}).scalar() == 'pending'
     db.commit()
