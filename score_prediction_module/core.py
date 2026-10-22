@@ -12,6 +12,8 @@ from match_pool_module.fixtures import SPORTMONKS_BASE_URL, SportMonksError, _fi
 LEAGUES = {8: ('Premier League', 'England'), 564: ('La Liga', 'Spain'),
            301: ('Ligue 1', 'France'), 384: ('Serie A', 'Italy'),
            82: ('Bundesliga', 'Germany'), 600: ('Super Lig', 'Turkey')}
+# SportMonks team IDs: Galatasaray, Fenerbahçe, Beşiktaş, Trabzonspor, Başakşehir.
+SUPER_LIG_PRIORITY_TEAMS = (34, 88, 554, 688, 3702)
 ZONE = ZoneInfo('Europe/Istanbul')
 EXCLUDED = {'POSTP', 'POSTPONED', 'CANC', 'CANCELLED', 'ABAN', 'ABANDONED',
             'SUSP', 'SUSPENDED', 'INT', 'INTERRUPTED', 'WO', 'AWARDED', 'AP'}
@@ -83,29 +85,34 @@ def select_fixtures(fixtures, now=None, rng=None, competition_week=None):
             continue
         seen.add(item['fixtureId'])
         pools[league].append(item)
-    if sum(map(len, pools.values())) < 10:
+    # A round needs exactly three Turkish and seven foreign fixtures. Never
+    # exceed the Turkish cap to compensate for missing foreign fixtures.
+    if len(pools[600]) < 3 or sum(len(items) for lid, items in pools.items() if lid != 600) < 7:
         return []
-    selected = rng.sample(pools[600], min(2, len(pools[600])))
-    turkey = [item for item in pools[600] if item not in selected]
+    selected = []
+    selected_ids = set()
+    for team_id in SUPER_LIG_PRIORITY_TEAMS:
+        if len(selected) == 3:
+            break
+        matches = [item for item in pools[600]
+                   if team_id in {item['homeTeam']['id'], item['awayTeam']['id']}]
+        if any(item['fixtureId'] in selected_ids for item in matches):
+            continue  # A derby already covers both priority teams.
+        if matches:
+            chosen = min(matches, key=kickoff)
+            selected.append(chosen)
+            selected_ids.add(chosen['fixtureId'])
+    turkey = [item for item in pools[600] if item['fixtureId'] not in selected_ids]
+    selected.extend(rng.sample(turkey, 3 - len(selected)))
     remaining = []
-    missing_leagues = 0
     for lid, items in pools.items():
-        if lid == 600:
-            continue
-        if not items:
-            missing_leagues += 1
+        if lid == 600 or not items:
             continue
         chosen = rng.choice(items)
         selected.append(chosen)
         remaining.extend(item for item in items if item['fixtureId'] != chosen['fixtureId'])
-    # Missing league representation or a shortage in the usual eight foreign
-    # fixtures is covered by Super Lig first; then the other available leagues.
-    extra_turkey = min(len(turkey), max(missing_leagues, 8 - sum(len(v) for k, v in pools.items() if k != 600)))
-    chosen_turkey = rng.sample(turkey, extra_turkey)
-    selected.extend(chosen_turkey)
-    turkey = [item for item in turkey if item not in chosen_turkey]
-    selected.extend(rng.sample(remaining, min(10 - len(selected), len(remaining))))
-    selected.extend(rng.sample(turkey, 10 - len(selected)))
+    # With all five foreign leagues present this leaves two random matches.
+    selected.extend(rng.sample(remaining, 10 - len(selected)))
     return sorted(selected, key=kickoff)
 
 
