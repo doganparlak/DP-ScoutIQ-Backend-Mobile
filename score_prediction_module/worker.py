@@ -15,6 +15,7 @@ log = logging.getLogger(__name__)
 _stop = threading.Event()
 _wake = threading.Event()
 _thread = None
+_next_automation_check = None
 LOCK_ID = 81423019
 
 
@@ -141,9 +142,32 @@ def tick():
                     log.warning('Prediction refresh failed for round=%s (%s)', row['id'], type(exc).__name__)
                     with SessionLocal.begin() as db:
                         db.execute(text("UPDATE public.prediction_rounds SET next_check_at=NOW()+INTERVAL '15 minutes' WHERE id=:id"), {'id': row['id']})
+            check_community_automation()
         finally:
             lock.execute(text('SELECT pg_advisory_unlock(:key)'), {'key': LOCK_ID})
             lock.commit()
+
+
+def check_community_automation():
+    # The fixture worker still wakes every minute; automation does no database
+    # work until its separate six-hour deadline. The DB gate survives restarts.
+    global _next_automation_check
+    now = utcnow()
+    if _next_automation_check is not None and now < _next_automation_check:
+        return
+    _next_automation_check = now + timedelta(hours=6)
+    try:
+        from community_automation_module.automation import run
+        with SessionLocal.begin() as db:
+            ready = db.execute(text("SELECT to_regclass('public.community_automation_settings') IS NOT NULL")).scalar()
+            if not ready:
+                return
+            run(db, now=now)
+            due = db.execute(text('SELECT next_run_at FROM community_automation_settings WHERE id=TRUE AND enabled')).scalar()
+            if due and due > now:
+                _next_automation_check = due
+    except Exception as exc:
+        log.warning('Community automation failed (%s)', type(exc).__name__)
 
 
 def _run():
