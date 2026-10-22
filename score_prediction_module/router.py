@@ -41,7 +41,7 @@ def ranking(db, round_id, user_id):
         SELECT e.user_id,u.community_nickname AS nickname,e.base_points AS "basePoints",
         {BONUS_SQL} AS "bonusPoints",{SCORE_SQL} AS "totalPoints",e.exact_scores AS "exactScores",
         e.plan_tier AS tier,ROW_NUMBER() OVER(ORDER BY {ORDER_SQL}) AS rank
-        FROM public.prediction_entries e JOIN public.users u ON u.id=e.user_id
+        FROM public.community_league_prediction_entries e JOIN public.community_league_profiles u ON u.id=e.user_id
         WHERE e.round_id=:rid AND e.submitted_at IS NOT NULL)
         SELECT * FROM ranked WHERE rank<=50 OR user_id=:uid ORDER BY rank'''),
         {'rid': round_id, 'uid': user_id}).mappings().all()

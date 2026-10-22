@@ -18,12 +18,7 @@ NICKNAMES = '''emre1907 berkayylmz can1905 mert.10 furkan_61 oguzhn34 arda1903 a
  berkay.34 enesfb umt1903 eren.9 murat_06 alexm92 johnny_7 marco.10 lucasfc daniel_23
  tom.arsenal pedro_rm nico_1999 matteo_9 jamespl leo.messi10 andreasbvb adamcfc rafinha_11 erikfcb
  kadikoylu cimbomlu1905 karakartal03 bordo_mavi eskiacik premwatcher laliga_10 serieafan bundes_09 ucl.23'''.split()
-PLAN_NAMES = {'pro': 'Pro Monthly', 'plus': 'No Ads Monthly', 'free': 'Free'}
 SCHEMA = (
-    '''CREATE TABLE IF NOT EXISTS public.community_automation_accounts (
-        user_id bigint PRIMARY KEY REFERENCES public.users(id) ON DELETE CASCADE,
-        tier text NOT NULL CHECK(tier IN ('pro','plus','free')),
-        created_at timestamptz NOT NULL DEFAULT NOW())''',
     '''CREATE TABLE IF NOT EXISTS public.community_automation_cohorts (
         league text NOT NULL CHECK(league IN ('prediction','discovery')),
         week_start date NOT NULL,
@@ -41,33 +36,24 @@ SCHEMA = (
 def seed_accounts(db, rng=None):
     """Explicit administrative operation; never called by the periodic job."""
     rng = rng or random.SystemRandom()
-    db.execute(text('SELECT pg_advisory_xact_lock(:key)'), {'key': LOCK_ID})
+    from .storage import migrate
+    migrate(db)
     for statement in SCHEMA:
         db.execute(text(statement))
-    existing = db.execute(text('''SELECT u.community_nickname,a.tier FROM community_automation_accounts a
-        JOIN users u ON u.id=a.user_id''')).mappings().all()
+    existing = db.execute(text('SELECT nickname,tier FROM community_automation_accounts')).mappings().all()
     if existing:
-        if len(existing) != 50 or {r['community_nickname'] for r in existing} != set(NICKNAMES):
+        if len(existing) != 50 or {r['nickname'] for r in existing} != set(NICKNAMES):
             raise ValueError('Automation registry differs from the requested 50 accounts')
         return
-    collisions = db.execute(text('''SELECT count(*) FROM users
-        WHERE lower(community_nickname)=ANY(CAST(:names AS text[]))
-        OR email LIKE '%@community-automation.invalid' '''), {'names': [n.lower() for n in NICKNAMES]}).scalar_one()
+    collisions = db.execute(text('SELECT count(*) FROM users WHERE lower(community_nickname)=ANY(CAST(:names AS text[]))'),
+                            {'names': [n.lower() for n in NICKNAMES]}).scalar_one()
     if collisions:
-        raise ValueError('Nickname/email collision: refusing to alter an existing account')
+        raise ValueError('Nickname collision: refusing to reuse an existing user name')
     tiers = ['pro'] * 10 + ['plus'] * 18 + ['free'] * 22
     rng.shuffle(tiers)
-    now = utcnow()
     for nickname, tier in zip(NICKNAMES, tiers):
-        uid = db.execute(text('''INSERT INTO users(email,community_nickname,plan,
-            subscription_end_at,subscription_platform,subscription_auto_renew,
-            password_hash,salt,created_at,language,newsletter,consent)
-            VALUES(:email,:nickname,:plan,:expiry,'internal',FALSE,NULL,NULL,:now,'tr',FALSE,FALSE)
-            RETURNING id'''), {'email': nickname + '@community-automation.invalid',
-            'nickname': nickname, 'plan': PLAN_NAMES[tier],
-            'expiry': now + timedelta(days=3650) if tier != 'free' else None, 'now': now}).scalar_one()
-        db.execute(text('INSERT INTO community_automation_accounts(user_id,tier) VALUES(:uid,:tier)'),
-                   {'uid': uid, 'tier': tier})
+        db.execute(text('INSERT INTO community_automation_accounts(nickname,tier) VALUES(:nickname,:tier)'),
+                   {'nickname': nickname, 'tier': tier})
     db.execute(text('INSERT INTO community_automation_settings(id,enabled) VALUES(TRUE,TRUE) ON CONFLICT(id) DO UPDATE SET enabled=TRUE'))
 
 
@@ -113,13 +99,13 @@ def run(db, now=None, rng=None):
         if all(kickoff(f) > now for f in fixtures if phase(f) != 'excluded'):
             for uid in cohort(db, 'prediction', row['week_start'], accounts, 40, rng):
                 # Do not reroll guesses or change a first-submission tier/time.
-                if db.execute(text('SELECT 1 FROM prediction_entries WHERE round_id=:rid AND user_id=:uid'),
+                if db.execute(text('SELECT 1 FROM community_automation_prediction_entries WHERE round_id=:rid AND user_id=:uid'),
                               {'rid': row['id'], 'uid': uid}).scalar():
                     continue
                 tier = tiers[uid]
                 picks = random_picks(fixtures, rng)
                 score = score_entry(picks, fixtures, tier)
-                counts['prediction'] += db.execute(text('''INSERT INTO prediction_entries(
+                counts['prediction'] += db.execute(text('''INSERT INTO community_automation_prediction_entries(
                     round_id,user_id,picks,submitted_at,plan_tier,bonus_rate,base_points,
                     bonus_points,total_points,exact_scores,match_points)
                     VALUES(:rid,:uid,CAST(:picks AS jsonb),:now,:tier,0,:base,:bonus,:total,:exact,CAST(:details AS jsonb))
@@ -136,12 +122,12 @@ def run(db, now=None, rng=None):
         if not isinstance(choices, list) or len(choices) != 3 or len({str(c['id']) for c in choices}) != 3:
             raise ValueError('Daily challenge must have three distinct player choices')
         for uid in cohort(db, 'discovery', week, accounts, 30, rng):
-            if db.execute(text('SELECT 1 FROM daily_scout_attempts WHERE user_id=:uid AND challenge_date=:day'),
+            if db.execute(text('SELECT 1 FROM community_automation_discovery_attempts WHERE user_id=:uid AND challenge_date=:day'),
                           {'uid': uid, 'day': day}).scalar():
                 continue
             chosen = str(rng.choice(choices)['id'])
             correct = chosen == str(challenge['winner_player_id'])
-            counts['discovery'] += db.execute(text('''INSERT INTO daily_scout_attempts(
+            counts['discovery'] += db.execute(text('''INSERT INTO community_automation_discovery_attempts(
                 user_id,challenge_id,challenge_date,chosen_player_id,is_correct,score,completed_at,plan_tier)
                 VALUES(:uid,:cid,:day,:chosen,:correct,:score,:now,:tier)
                 ON CONFLICT(user_id,challenge_date) DO NOTHING'''),

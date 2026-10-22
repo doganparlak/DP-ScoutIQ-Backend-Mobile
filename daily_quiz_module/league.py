@@ -35,14 +35,14 @@ WEEKLY = """WITH stats AS (
       (array_agg(COALESCE(to_jsonb(a)->>'plan_tier', CASE
         WHEN member.subscription_end_at>:now AND member.plan IN ('Pro Monthly','Pro Yearly') THEN 'pro'
         WHEN member.subscription_end_at>:now AND member.plan='No Ads Monthly' THEN 'plus' ELSE 'free' END) ORDER BY a.completed_at,a.id))[1] AS tier
-    FROM public.daily_scout_attempts a JOIN public.users member ON member.id=a.user_id
+    FROM public.community_league_discovery_attempts a JOIN public.community_league_profiles member ON member.id=a.user_id
     WHERE a.completed_at IS NOT NULL AND a.challenge_date>=:week AND a.challenge_date<:end
       AND a.challenge_date<=:today
     GROUP BY a.user_id,member.plan,member.subscription_end_at
 ), scored AS (
     SELECT s.*,u.community_nickname AS nickname, correct*3 AS "basePoints",
       CASE tier WHEN 'pro' THEN 2 WHEN 'plus' THEN 1 ELSE 0 END AS "bonusPoints"
-    FROM stats s JOIN public.users u ON u.id=s.user_id
+    FROM stats s JOIN public.community_league_profiles u ON u.id=s.user_id
 ), ranked AS (
     SELECT *, "basePoints"+"bonusPoints" AS score,
       ROW_NUMBER() OVER (ORDER BY "basePoints"+"bonusPoints" DESC,
@@ -84,7 +84,7 @@ def all_time(sort: str = 'total', user_id: int = Depends(require_auth), db: Sess
           COUNT(*) FILTER (WHERE a.is_correct IS TRUE)*3 AS base,
           MAX(a.completed_at) AS last_answer,
           (array_agg(COALESCE(to_jsonb(a)->>'plan_tier','free') ORDER BY a.completed_at,a.id))[1] AS tier
-        FROM public.daily_scout_attempts a WHERE a.completed_at IS NOT NULL AND a.challenge_date<:week
+        FROM public.community_league_discovery_attempts a WHERE a.completed_at IS NOT NULL AND a.challenge_date<:week
         GROUP BY a.user_id,date_trunc('week',a.challenge_date)::date
     ), placements AS (
         SELECT *,ROW_NUMBER() OVER (PARTITION BY week ORDER BY
@@ -100,6 +100,6 @@ def all_time(sort: str = 'total', user_id: int = Depends(require_auth), db: Sess
     ), ranked AS (
         SELECT t.*,u.community_nickname AS nickname,
           ROW_NUMBER() OVER (ORDER BY {primary} DESC,"totalPoints" DESC,championships DESC,"secondPlaces" DESC,t.user_id) AS rank
-        FROM totals t JOIN public.users u ON u.id=t.user_id
+        FROM totals t JOIN public.community_league_profiles u ON u.id=t.user_id
     ) SELECT * FROM ranked WHERE rank<=50 OR user_id=:uid ORDER BY rank"""), {'week': week, 'uid': user_id}).mappings().all()
     return [{k: float(v) if k=='averagePoints' else v for k,v in dict(row,isYou=row['user_id']==user_id).items() if k!='user_id'} for row in rows]

@@ -45,16 +45,22 @@ def fixture_next_check(fixture, now):
 
 
 def rescore(db, round_id, fixtures):
-    last_user = 0
+    _rescore_table(db, round_id, fixtures, 'public.prediction_entries')
+    if db.execute(text("SELECT to_regclass('public.community_automation_prediction_entries') IS NOT NULL")).scalar():
+        _rescore_table(db, round_id, fixtures, 'public.community_automation_prediction_entries')
+
+
+def _rescore_table(db, round_id, fixtures, table):
+    last_user = -(2 ** 63)
     while True:
-        rows = db.execute(text('''SELECT user_id,picks,plan_tier FROM public.prediction_entries
+        rows = db.execute(text(f'''SELECT user_id,picks,plan_tier FROM {table}
             WHERE round_id=:rid AND submitted_at IS NOT NULL AND user_id>:last
             ORDER BY user_id LIMIT 500'''), {'rid': round_id, 'last': last_user}).mappings().all()
         if not rows:
             return
         for row in rows:
             score = score_entry(row['picks'], fixtures, row['plan_tier'])
-            db.execute(text('''UPDATE public.prediction_entries SET base_points=:base,
+            db.execute(text(f'''UPDATE {table} SET base_points=:base,
                 bonus_rate=0,bonus_points=:bonus,total_points=:total,exact_scores=:exact,
                 match_points=CAST(:details AS jsonb),updated_at=NOW()
                 WHERE round_id=:rid AND user_id=:uid'''),
