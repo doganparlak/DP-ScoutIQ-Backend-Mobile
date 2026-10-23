@@ -54,6 +54,7 @@ class FavoritePlayerIn(BaseModel):
     roles: List[str] = Field(default_factory=list)
 
 class FavoritePlayerOut(BaseModel):
+    performanceMetadata: Dict[str, Any] = Field(default_factory=dict)
     sportmonksId: Optional[int] = Field(default=None, gt=0)
     teamId: Optional[int] = Field(default=None, gt=0)
     leagueId: Optional[int] = Field(default=None, gt=0)

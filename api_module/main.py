@@ -979,6 +979,7 @@ def list_favorites(user_id: int = Depends(require_auth), db: Session = Depends(g
         out.append(FavoritePlayerOut(
             id=r["id"],
             playerId=r["source_player_id"],
+            performanceMetadata=metadata,
             imageUrl=str(r["image_url"]).strip() if r.get("image_url") else None,
             sportmonksId=resolved_provider_id,
             teamId=sportmonks_id(metadata.get("team_id")),
@@ -1215,6 +1216,7 @@ def add_favorite(
         return FavoritePlayerOut(
             id=existing["id"],
             playerId=str(identity_row["id"]) if identity_row else None,
+            performanceMetadata=identity_metadata,
             sportmonksId=provider_id,
             teamId=sportmonks_id(identity_metadata.get("team_id")),
             leagueId=sportmonks_id(identity_metadata.get("league_id")),
@@ -1311,6 +1313,7 @@ def add_favorite(
     return FavoritePlayerOut(
         id=str(saved_id),
         playerId=str(identity_row["id"]) if identity_row else None,
+        performanceMetadata=identity_metadata,
         sportmonksId=provider_id,
         teamId=sportmonks_id(identity_metadata.get("team_id")),
         leagueId=sportmonks_id(identity_metadata.get("league_id")),
