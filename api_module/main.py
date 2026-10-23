@@ -26,7 +26,7 @@ from mobile_pro_module.router import router as mobile_pro_router
 from score_prediction_module.router import router as score_prediction_router
 from daily_quiz_module.league import router as discovery_league_router
 from chatbot_module.tools_agentic import ensure_player_position_label_cache
-from report_module.report import build_report_foundation, complete_report_foundation, complete_report_section, generate_report_content, normalize_mobile_report_format
+from report_module.report import build_report_foundation, complete_report_foundation, complete_report_section, generate_report_content, normalize_mobile_report_format, SCOUT_REPORT_VERSION, LAZY_SCOUT_REPORT_VERSION
 # import our refactored pieces
 from api_module.utilities import (
     hash_pw, new_salt, now_iso, get_user_email_by_id, delete_user_everywhere, get_bearer_token, revoke_session,
@@ -883,9 +883,9 @@ def daily_scout_challenge_answer(
     db: Session = Depends(get_db),
 ):
     try:
-        return submit_daily_answer(db, user_id, payload.challengeId, payload.chosenPlayerId)
+        return submit_daily_answer(db, user_id, payload.challengeId, payload.chosenPlayerId, require_nickname=payload.requireNickname)
     except ValueError as exc:
-        raise HTTPException(status_code=400, detail=str(exc))
+        raise HTTPException(status_code=409 if str(exc) == "NICKNAME_REQUIRED" else 400, detail=str(exc))
 
 
 @app.post("/daily-scout-challenge/nickname", response_model=DailyScoutNicknameOut)
@@ -1755,7 +1755,7 @@ def create_player_pool_report(
     db: Session = Depends(get_db),
 ):
     lang = normalize_lang(accept_language) or normalize_lang(get_user_language(db, user_id)) or "en"
-    version = 5
+    version = SCOUT_REPORT_VERSION
     player_payload = payload.model_dump(exclude_none=True)
     player_payload.pop("tutorial_mode", None)
 
@@ -1954,7 +1954,7 @@ def create_player_pool_report_progress(
 ):
     """New-client durable flow. The legacy /player-pool/report contract stays synchronous."""
     lang = normalize_lang(accept_language) or normalize_lang(get_user_language(db, user_id)) or "en"
-    version = 6
+    version = LAZY_SCOUT_REPORT_VERSION
     player_payload = payload.model_dump(exclude_none=True)
     player_payload.pop("tutorial_mode", None)
     club_row = _resolve_player_pool_report_club_row(db, player_payload)
@@ -2010,7 +2010,7 @@ def create_player_pool_report_section(
     if section not in {"strengths","weaknesses","role_usage"}:
         raise HTTPException(status_code=404,detail="Unknown report section")
     lang = normalize_lang(accept_language) or normalize_lang(get_user_language(db,user_id)) or "en"
-    version = 6
+    version = LAZY_SCOUT_REPORT_VERSION
     player_payload = payload.model_dump(exclude_none=True);player_payload.pop("tutorial_mode",None)
     club_row = _resolve_player_pool_report_club_row(db,player_payload)
     if club_row is not None:
@@ -2041,7 +2041,7 @@ def get_or_create_report(
     db: Session = Depends(get_db),
 ):
     lang = normalize_lang(accept_language) or normalize_lang(get_user_language(db, user_id)) or "en"
-    version = 6 if lazy else 5
+    version = LAZY_SCOUT_REPORT_VERSION if lazy else SCOUT_REPORT_VERSION
     player_payload = payload.model_dump(exclude_none=True)
     tutorial_mode = bool(player_payload.pop("tutorial_mode", False))
 
@@ -2210,7 +2210,7 @@ def create_favorite_report_section(
     if section not in {"strengths","weaknesses","role_usage"}:
         raise HTTPException(status_code=404,detail="Unknown report section")
     lang = normalize_lang(accept_language) or normalize_lang(get_user_language(db,user_id)) or "en"
-    version = 6
+    version = LAZY_SCOUT_REPORT_VERSION
     owned = db.execute(text("SELECT * FROM favorite_players WHERE id=:fid AND user_id=:uid"),{"fid":favorite_id,"uid":user_id}).mappings().first()
     if not owned:
         raise HTTPException(status_code=404,detail="Favorite not found")

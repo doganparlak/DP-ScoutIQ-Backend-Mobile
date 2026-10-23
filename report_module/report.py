@@ -17,8 +17,12 @@ from sqlalchemy import text
 
 from constants_module.constants import ROLE_LONG_TO_SHORT, ROLE_SHORT_TO_LONG
 from report_module.phases import with_phase_distributions
+from report_module.percentiles import build_domestic_percentiles
 from report_module.prompts import report_system_prompt
 from report_module.utilities import _first_non_empty, _normalize_roles, _score_candidate, norm_name
+
+SCOUT_REPORT_VERSION = 9
+LAZY_SCOUT_REPORT_VERSION = 10
 
 load_dotenv()
 
@@ -604,6 +608,8 @@ def build_report_foundation(
             "role_usage": {"status": "pending"},
         },
     }
+    source_metadata = (docs[0].get("metadata") or {}) if docs else {}
+    content_json["domestic_percentiles"] = build_domestic_percentiles(db, source_metadata)
     return {"content": "", "content_json": with_phase_distributions(content_json)}
 
 

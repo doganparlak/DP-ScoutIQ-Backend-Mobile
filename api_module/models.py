@@ -279,6 +279,8 @@ class DailyScoutChallengeOut(BaseModel):
 class DailyScoutAnswerIn(BaseModel):
     challengeId: str
     chosenPlayerId: str
+    # Older builds register after answering; opt in when the pre-answer form exists.
+    requireNickname: bool = False
 
 
 class DailyScoutNicknameIn(BaseModel):

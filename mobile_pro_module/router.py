@@ -109,6 +109,20 @@ def inspect_player(db, payload, language):
     return {'row': {'id': row['id'], 'content': metadata}, 'stats': [{'metric': name, 'value': value} for name, value in values.items()], 'insights': insights, 'categories': categories}
 
 
+@router.get('/players/{player_id}/percentiles')
+def player_percentiles(player_id: int, user_id: int = Depends(require_auth), db: Session = Depends(get_db)):
+    """Read-only inspection data; no additional trial credit or plan tier."""
+    from report_module.percentiles import build_domestic_percentiles
+    from report_module.metric_validation import sanitize_percentages
+    if player_id <= 0:
+        raise HTTPException(422, 'Invalid player ID')
+    row = db.execute(text('SELECT metadata FROM player_data WHERE id = :id LIMIT 1'),
+                     {'id': player_id}).mappings().first()
+    if not row:
+        raise HTTPException(404, 'Player not found')
+    return sanitize_percentages(build_domestic_percentiles(db, dict(row['metadata'] or {})))
+
+
 @router.post('/inspect')
 def inspect(payload: InspectIn, user_id: int = Depends(require_auth), db: Session = Depends(get_db), accept_language: str | None = Header(default=None)):
     return credited(db, user_id, 'inspect', payload, lambda: inspect_player(db, payload, accept_language), language=accept_language)

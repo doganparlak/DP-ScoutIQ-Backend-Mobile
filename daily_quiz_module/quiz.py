@@ -423,22 +423,32 @@ def ensure_daily_challenge(db: Session) -> Dict[str, Any]:
 
 
 
+def _has_nickname(db: Session, user_id: int) -> bool:
+    if community_available(db):
+        nickname = db.execute(text('SELECT community_nickname FROM public.users WHERE id=:uid'),
+                              {'uid': user_id}).scalar()
+    else:
+        nickname = db.execute(text("""SELECT nickname FROM daily_scout_weekly_nicknames
+            WHERE user_id=:uid AND week_start=DATE_TRUNC('week', NOW())::date"""),
+                              {'uid': user_id}).scalar()
+    return bool(nickname and str(nickname).strip())
+
+
 def get_daily_status(db: Session, user_id: int) -> Dict[str, Any]:
     challenge = ensure_daily_challenge(db)
-    permanent = community_available(db)
-    join = "LEFT JOIN public.users n ON n.id=a.user_id" if permanent else "LEFT JOIN daily_scout_weekly_nicknames n ON n.user_id=a.user_id AND n.week_start=DATE_TRUNC('week', NOW())::date"
-    nickname_column = 'n.community_nickname' if permanent else 'n.nickname'
     attempt = db.execute(
-        text(f"""
-        SELECT a.*, {nickname_column} IS NULL AS needs_nickname
-        FROM daily_scout_attempts a
-        {join}
-        WHERE a.user_id = :uid AND a.challenge_id = :cid
+        text("""
+        SELECT * FROM daily_scout_attempts
+        WHERE user_id = :uid AND challenge_id = :cid
         LIMIT 1
         """),
         {"uid": user_id, "cid": challenge["id"]},
     ).mappings().first()
-    return _challenge_payload(db, challenge, dict(attempt) if attempt else None, skipped=bool(attempt and attempt.get("skipped_at")))
+    result = _challenge_payload(db, challenge, dict(attempt) if attempt else None,
+                                skipped=bool(attempt and attempt.get("skipped_at")))
+    # Registration is required before the first answer, even without an attempt.
+    result['attempt']['needsNickname'] = not _has_nickname(db, user_id)
+    return result
 
 
 def skip_daily_challenge(db: Session, user_id: int) -> Dict[str, Any]:
@@ -457,7 +467,7 @@ def skip_daily_challenge(db: Session, user_id: int) -> Dict[str, Any]:
     return get_daily_status(db, user_id)
 
 
-def submit_daily_answer(db: Session, user_id: int, challenge_id: str, chosen_player_id: str) -> Dict[str, Any]:
+def submit_daily_answer(db: Session, user_id: int, challenge_id: str, chosen_player_id: str, *, require_nickname: bool = False) -> Dict[str, Any]:
     challenge = db.execute(text("SELECT * FROM daily_scout_challenges WHERE id = :id"), {"id": challenge_id}).mappings().first()
     if not challenge:
         raise ValueError("Challenge not found")
@@ -466,6 +476,8 @@ def submit_daily_answer(db: Session, user_id: int, challenge_id: str, chosen_pla
     # Lock this account so concurrent answers cannot change the first selection
     # or capture different membership bonuses within the same week.
     user = db.execute(text('SELECT plan,subscription_end_at FROM public.users WHERE id=:uid FOR UPDATE'), {'uid': user_id}).mappings().one()
+    if require_nickname and not _has_nickname(db, user_id):
+        raise ValueError('NICKNAME_REQUIRED')
     now, current_day, week, _ = calendar()
     if challenge['challenge_date'] != current_day:
         raise ValueError('DAILY_CHALLENGE_EXPIRED')
