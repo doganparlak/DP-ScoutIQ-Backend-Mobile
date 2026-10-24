@@ -116,6 +116,8 @@ app.include_router(team_analysis_router)
 from api_module.social_auth import router as social_auth_router
 app.include_router(social_auth_router)
 app.include_router(referrals_router)
+from api_module.referral_notifications import router as referral_notifications_router
+app.include_router(referral_notifications_router)
 from api_module.auth_session import authenticated_session
 from api_module.subscription_access import reconcile_subscription
 from api_module.password_reset import COOKIE_NAME, COOKIE_PATH, verify_code as verify_password_reset_code, require_proof as require_password_reset_proof
@@ -1351,6 +1353,7 @@ def delete_favorite(favorite_id: str, user_id: int = Depends(require_auth), db: 
 @app.post("/me/subscription/iap")
 def activate_subscription(
     body: IAPActivateIn,
+    background_tasks: BackgroundTasks,
     user_id: int = Depends(require_auth),
     db: Session = Depends(get_db),
 ):  
@@ -1453,6 +1456,10 @@ def activate_subscription(
         db.execute(text('UPDATE users SET subscription_receipt=:receipt,subscription_last_checked_at=NOW() WHERE id=:uid'),
                    {'receipt': body.receipt, 'uid': user_id})
     db.commit()
+    # Referral analytics is outside the payment transaction and HTTP response.
+    # Failures are swallowed by the worker and retried by the daily cron.
+    from api_module.referral_billing import track_subscription_best_effort
+    background_tasks.add_task(track_subscription_best_effort, body.platform, body.external_id)
     return {
         "ok": True,
         "plan": effective['plan'],

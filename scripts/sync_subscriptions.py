@@ -11,6 +11,14 @@ def main():
         print("RUNNING USERS SUBSCRIPTION SYNC...")
         run_subscription_sync(db)
 
+        # Subscription access has already been committed. Analytics failures
+        # must never roll it back or prevent future cron executions.
+        try:
+            from api_module.referral_billing import run_referral_billing_sync
+            print("REFERRAL BILLING SYNC:", run_referral_billing_sync())
+        except Exception as exc:
+            print("REFERRAL BILLING SYNC FAILED:", type(exc).__name__)
+
         print("SYNC COMPLETE.")
     finally:
         print("CLOSING SESSION...")

@@ -67,7 +67,7 @@ def attach_referral(db, user_id, value):
     user = db.execute(text('SELECT referral_code FROM users WHERE id=:uid FOR UPDATE'), {'uid': user_id}).mappings().one()
     if user['referral_code'] and user['referral_code'] != row['code']:
         raise HTTPException(409, 'An account can only have one referral code')
-    db.execute(text('UPDATE users SET referral_code=:code WHERE id=:uid AND referral_code IS NULL'), {'code': row['code'], 'uid': user_id})
+    db.execute(text('UPDATE users SET referral_code=:code,referral_code_set_at=NOW() WHERE id=:uid AND referral_code IS NULL'), {'code': row['code'], 'uid': user_id})
 
 
 def public_offers(config, platform, storefront, store_environment='production'):
