@@ -14,6 +14,8 @@ from typing import Any
 
 import requests
 
+from report_module.crossing_metrics import CROSSING_RATE, normalize_crossing_rows
+
 from report_module.metric_validation import is_percentage, nonzero_evidence, percentage, rate_counts, valid_metric
 
 
@@ -85,6 +87,9 @@ TEAM_METRIC_CATEGORY: dict[str, tuple[str, str]] = {
     "Successful Long Passes Percentage": ("passing", "Long Balls Won (%)"),
     "Total Crosses": ("passing", "Total Crosses"),
     "Accurate Crosses": ("passing", "Accurate Crosses"),
+    "Successful Crosses Percentage": ("passing", "Accurate Crosses (%)"),
+    "Successful Crosses (%)": ("passing", "Accurate Crosses (%)"),
+    "Accurate Crosses (%)": ("passing", "Accurate Crosses (%)"),
     "Key Passes": ("passing", "Key Passes"),
     "Corners": ("set_pieces", "Corners"),
     "Goal Kicks": ("set_pieces", "Goal Kicks"),
@@ -129,7 +134,6 @@ PLAYER_METRIC_CATEGORY: dict[str, tuple[str, str]] = {
     "Passes In Final Third": ("passing", "Passes In Final Third"),
     "Backward Passes": ("passing", "Backward Passes"),
     "Long Balls": ("passing", "Long Balls"),
-    "Successful Crosses Percentage": ("passing", "Successful Crosses Percentage"),
     "Chances Created": ("contribution_impact", "Chances Created"),
     "Blocked Shots": ("defending", "Blocked Shots"),
     "Saves Insidebox": ("goalkeeping", "Saves Insidebox"),
@@ -232,9 +236,14 @@ def _upsert_percentage(
     numerator: float | None,
     denominator: float | None,
 ) -> None:
-    # Remove an old provider value even when its count inputs are invalid.
-    rows[:] = [row for row in rows if row.get("name") != name]
     value = percentage(numerator, denominator)
+    if name == CROSSING_RATE:
+        rows[:] = normalize_crossing_rows(rows)
+        # Incomplete counts must not discard a valid provider-only rate.
+        if value is None:
+            return
+    # Other derived percentages retain their existing invalid-count behaviour.
+    rows[:] = [row for row in rows if row.get("name") != name]
     if value is not None:
         rows.append(_metric(name, round(value, 1)))
 

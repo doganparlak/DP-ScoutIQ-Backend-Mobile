@@ -1,4 +1,5 @@
 """Durable mobile post-match reports; each completed section is checkpointed."""
+from report_module.crossing_metrics import normalize_crossing_metrics
 from report_module.narrative_numbers import format_narrative_fields
 from api_module.report_access import user_report_tier, scope_satisfies
 import json
@@ -39,7 +40,7 @@ def complete(content, tier='paid'):
 def read_report(favorite_id, user_id):
     with engine.connect() as db:
         row = db.execute(text('SELECT id, fixture_id, report_status, report_content FROM favorite_matches WHERE id=:id AND user_id=:uid AND report_type=\'post_match\''), {'id':favorite_id,'uid':user_id}).mappings().first()
-        return dict(row) if row else None
+        return {**row, "report_content": normalize_crossing_metrics(row["report_content"])} if row else None
 
 def public_report(row, language):
     content = row.get('report_content') or {}
@@ -49,7 +50,7 @@ def public_report(row, language):
     with _MUTEX:
         pending = str(row['id']) in _PENDING
     status = 'processing' if pending and row['report_status'] != 'ready' else row['report_status']
-    return {'favoriteId':str(row['id']), 'status':status, 'content':content}
+    return {'favoriteId':str(row['id']), 'status':status, 'content':normalize_crossing_metrics(content)}
 
 def save(favorite_id, user_id, content, status):
     content = format_narrative_fields(content, content.get("language", "en"))
@@ -62,9 +63,9 @@ def save(favorite_id, user_id, content, status):
         return result.rowcount == 1
 
 def clean_data(report):
-    data = dict(report)
-    data['lineups'] = [dict(p) for p in report.get('lineups') or []]
-    data['teams'] = [{**t, 'possession':next((m.get('value') for m in (t.get('categories') or {}).get('contribution_impact',[]) if m.get('name')=='Ball Possession %'),None)} for t in report.get('teams') or []]
+    data = normalize_crossing_metrics(report)
+    data['lineups'] = [dict(p) for p in data.get('lineups') or []]
+    data['teams'] = [{**t, 'possession':next((m.get('value') for m in (t.get('categories') or {}).get('contribution_impact',[]) if m.get('name')=='Ball Possession %'),None)} for t in data.get('teams') or []]
     return data
 
 def schedule(favorite_id, user_id, language, retry_failed=False):
