@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+from report_module.analysis_quality import generate_grounded
+
 from mobile_pro_module.fit_narratives import enforce_fit_word_limit
 from mobile_pro_module.comparison_insights import DiscoveryAnalysisContext, DISCOVERY_CONTEXT_PROMPT
 import json
@@ -98,7 +100,7 @@ def strategy_fit(db, user_id, payload, language):
     stage = 'generation'
     try:
         output = strategy_insight_model(available)
-        result = CHAT_LLM.with_structured_output(output).invoke([('system', PROMPT + (DISCOVERY_CONTEXT_PROMPT if payload.discoveryContext is not None else '')), ('human', json.dumps(evidence, ensure_ascii=False))])
+        result = generate_grounded(CHAT_LLM, output, [('system', PROMPT + (DISCOVERY_CONTEXT_PROMPT if payload.discoveryContext is not None else '')), ('human', json.dumps(evidence, ensure_ascii=False))], evidence)
         result = result if isinstance(result, output) else output.model_validate(result.model_dump() if isinstance(result, BaseModel) else result)
         stage = 'evidence_validation'
         values = resolve_insights(result, available)

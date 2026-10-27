@@ -1,3 +1,5 @@
+from report_module.analysis_quality import finish_narrative
+from report_module.terminology import FOOTBALL_TERMINOLOGY_GUIDANCE
 
 import logging
 
@@ -126,7 +128,7 @@ scoring_chain = scoring_prompt | CHAT_LLM | StrOutputParser()
 
 
 comparison_prompt = ChatPromptTemplate.from_messages([
-    ("system", AGENTIC_COMPARISON_PROMPT),
+    ("system", AGENTIC_COMPARISON_PROMPT + FOOTBALL_TERMINOLOGY_GUIDANCE),
     ("human",
      "Question:\n{question}\n\n"
      "Strategy:\n{strategy}\n\n"
@@ -140,7 +142,7 @@ comparison_chain = comparison_prompt | CHAT_LLM | StrOutputParser()
 
 
 named_comparison_prompt = ChatPromptTemplate.from_messages([
-    ("system", AGENTIC_NAMED_COMPARISON_PROMPT),
+    ("system", AGENTIC_NAMED_COMPARISON_PROMPT + FOOTBALL_TERMINOLOGY_GUIDANCE),
     ("human",
      "Question:\n{question}\n\n"
      "Strategy:\n{strategy}\n\n"
@@ -154,7 +156,7 @@ named_comparison_chain = named_comparison_prompt | CHAT_LLM | StrOutputParser()
 
 
 narrative_prompt = ChatPromptTemplate.from_messages([
-    ("system", AGENTIC_NARRATIVE_PROMPT),
+    ("system", AGENTIC_NARRATIVE_PROMPT + FOOTBALL_TERMINOLOGY_GUIDANCE),
     ("human",
      "Question:\n{question}\n\n"
      "Team strategy / philosophy (may be empty):\n{strategy}\n\n"
@@ -168,7 +170,7 @@ narrative_chain = narrative_prompt | CHAT_LLM | StrOutputParser()
 
 
 followup_prompt = ChatPromptTemplate.from_messages([
-    ("system", AGENTIC_FOLLOWUP_PROMPT),
+    ("system", AGENTIC_FOLLOWUP_PROMPT + FOOTBALL_TERMINOLOGY_GUIDANCE),
     ("human",
      "Question:\n{question}\n\n"
      "Strategy:\n{strategy}\n\n"
@@ -797,7 +799,7 @@ def _answer_named_comparison(
     }
     if trace is not None:
         _trace_step(trace, "agent", "named_comparison")
-    raw = named_comparison_chain.invoke(payload).strip()
+    raw = finish_narrative(named_comparison_chain.invoke(payload).strip(), payload, CHAT_LLM, lang, AGENTIC_NAMED_COMPARISON_PROMPT)
     if trace is not None:
         _trace_llm_cost(trace, AGENTIC_NAMED_COMPARISON_PROMPT + json.dumps(payload, ensure_ascii=False), raw)
     answer = raw
@@ -1008,7 +1010,7 @@ def _answer_seen_or_comparison(
         }
         if trace is not None:
             _trace_step(trace, "agent", "comparison")
-        raw = comparison_chain.invoke(payload).strip()
+        raw = finish_narrative(comparison_chain.invoke(payload).strip(), payload, CHAT_LLM, lang, AGENTIC_COMPARISON_PROMPT)
         if trace is not None:
             _trace_llm_cost(trace, AGENTIC_COMPARISON_PROMPT + json.dumps(payload, ensure_ascii=False), raw)
         answer = raw
@@ -1027,7 +1029,7 @@ def _answer_seen_or_comparison(
     }
     if trace is not None:
         _trace_step(trace, "agent", "seen_player_followup")
-    raw = followup_chain.invoke(payload).strip()
+    raw = finish_narrative(followup_chain.invoke(payload).strip(), payload, CHAT_LLM, lang, AGENTIC_FOLLOWUP_PROMPT)
     if trace is not None:
         _trace_llm_cost(trace, AGENTIC_FOLLOWUP_PROMPT + json.dumps(payload, ensure_ascii=False), raw)
     answer = raw
@@ -1594,17 +1596,14 @@ def answer_question(
         }
         _trace_step(trace, "agent", "final_narrative")
         try:
-            memory_out = narrative_chain.invoke(narrative_payload).strip()
+            memory_out = finish_narrative(narrative_chain.invoke(narrative_payload).strip(), narrative_payload, CHAT_LLM, lang, AGENTIC_NARRATIVE_PROMPT)
             _trace_llm_cost(trace, AGENTIC_NARRATIVE_PROMPT + json.dumps(narrative_payload, ensure_ascii=False), memory_out)
         except Exception as exc:
-            _pro_lookup_log("final_narrative_fallback", {
+            _pro_lookup_log("final_narrative_retry", {
                 "error": f"{type(exc).__name__}: {str(exc)[:160]}",
                 "player": profile_meta.get("name") or p0.get("name") or selected.get("name"),
             })
-            memory_out = _fallback_player_narrative({
-                "name": p0.get("name") or selected.get("name"),
-                **profile_meta,
-            }, lang)
+            memory_out = finish_narrative(narrative_chain.invoke(narrative_payload).strip(), narrative_payload, CHAT_LLM, lang, AGENTIC_NARRATIVE_PROMPT)
         answer = memory_out
         _trace_step(trace, "tool", "persist_memory")
         _persist_turn(session_id, ctx.translated_question, memory_out, payload)

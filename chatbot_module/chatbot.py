@@ -1,3 +1,5 @@
+from report_module.analysis_quality import finish_narrative
+from report_module.terminology import FOOTBALL_TERMINOLOGY_GUIDANCE
 from typing import Dict, Any, Optional, List
 from dotenv import load_dotenv
 load_dotenv()
@@ -289,7 +291,7 @@ def add_language_strategy_to_prompt(
     strategy: Optional[str],
     preamble_text: Optional[str] = None
 ) -> ChatPromptTemplate:
-    sys_msg = system_message
+    sys_msg = system_message + FOOTBALL_TERMINOLOGY_GUIDANCE
 
     if strategy:
         sys_msg += "\n\nCurrent scouting strategy / philosophy (must be followed):\n" + strategy + "\n"
@@ -376,14 +378,14 @@ translate_prompt = ChatPromptTemplate.from_messages([
 translate_chain = translate_prompt | TRANSLATE_LLM | StrOutputParser()
 
 output_tr_translate_prompt = ChatPromptTemplate.from_messages([
-    ("system", translate_en_to_tr_system_message),
+    ("system", translate_en_to_tr_system_message + FOOTBALL_TERMINOLOGY_GUIDANCE),
     ("human", "{text}"),
 ])
 output_tr_translate_chain = output_tr_translate_prompt | TRANSLATE_LLM | StrOutputParser()
 
 # ==== Interpratation =====
 interpretation_prompt = ChatPromptTemplate.from_messages([
-    ("system", interpretation_system_prompt),
+    ("system", interpretation_system_prompt + FOOTBALL_TERMINOLOGY_GUIDANCE),
     ("human",
      "Question:\n{question}\n\n"
      "Team strategy / philosophy (may be empty):\n{strategy}\n\n"
@@ -746,6 +748,8 @@ def answer_question(
             except Exception as e:
                 pass
         
+        out = finish_narrative(out, {"players": payload.get("players", []), "question": original_question, "strategy": strategy or ""}, CHAT_LLM, lang, interpretation_system_prompt)
+        memory_out = out
         stored_ai_content = "[[PAYLOAD_JSON]]\n" + json.dumps(payload, ensure_ascii=False) + "\n[[/PAYLOAD_JSON]]" + "\n\n" + memory_out
         db = get_db()
         try:

@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+from report_module.analysis_quality import generate_grounded
+
 from mobile_pro_module.fit_narratives import enforce_fit_word_limit
 from mobile_pro_module.comparison_insights import DiscoveryAnalysisContext, DISCOVERY_CONTEXT_PROMPT
 import json
@@ -362,7 +364,7 @@ def get_team_fit(db, payload: TeamFitIn, accept_language):
     stage = 'generation'
     try:
         output_model = team_fit_insight_model(candidate_stats, team_stats, peers)
-        result = CHAT_LLM.with_structured_output(output_model).invoke([('system', PROMPT + (DISCOVERY_CONTEXT_PROMPT if payload.discoveryContext is not None else '')), ('human', json.dumps(evidence, ensure_ascii=False))])
+        result = generate_grounded(CHAT_LLM, output_model, [('system', PROMPT + (DISCOVERY_CONTEXT_PROMPT if payload.discoveryContext is not None else '')), ('human', json.dumps(evidence, ensure_ascii=False))], evidence)
         result = result if isinstance(result, output_model) else output_model.model_validate(result)
         stage = 'evidence_validation'
         response = build_result(result, candidate_stats, team_stats, peers, evidence['player']['name'], evidence['team']['name'])

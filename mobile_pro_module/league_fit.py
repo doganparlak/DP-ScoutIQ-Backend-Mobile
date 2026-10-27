@@ -1,4 +1,6 @@
 from __future__ import annotations
+
+from report_module.analysis_quality import generate_grounded
 from mobile_pro_module.fit_narratives import enforce_fit_word_limit
 from mobile_pro_module.comparison_insights import DiscoveryAnalysisContext, DISCOVERY_CONTEXT_PROMPT
 import json
@@ -90,7 +92,7 @@ def league_fit_insights(db, payload, language, *, context=None):
     evidence['discovery_context'] = payload.discoveryContext.model_dump() if payload.discoveryContext else None
     stage = 'generation'
     try:
-        result = CHAT_LLM.with_structured_output(output).invoke([('system', PROMPT + (DISCOVERY_CONTEXT_PROMPT if payload.discoveryContext is not None else '')), ('human', json.dumps(evidence, ensure_ascii=False))])
+        result = generate_grounded(CHAT_LLM, output, [('system', PROMPT + (DISCOVERY_CONTEXT_PROMPT if payload.discoveryContext is not None else '')), ('human', json.dumps(evidence, ensure_ascii=False))], evidence)
         result = result if isinstance(result, output) else output.model_validate(result)
         values = result.model_dump()
         stage = 'evidence_validation'

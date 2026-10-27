@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+from report_module.terminology import FOOTBALL_TERMINOLOGY_GUIDANCE
+
 from player_pool_module.utilities import player_name_pattern
 from report_module.narrative_numbers import format_narrative_numbers
 
@@ -21,8 +23,8 @@ from report_module.percentiles import build_domestic_percentiles
 from report_module.prompts import report_system_prompt
 from report_module.utilities import _first_non_empty, _normalize_roles, _score_candidate, norm_name
 
-SCOUT_REPORT_VERSION = 9
-LAZY_SCOUT_REPORT_VERSION = 10
+SCOUT_REPORT_VERSION = 10
+LAZY_SCOUT_REPORT_VERSION = 11
 
 load_dotenv()
 
@@ -58,7 +60,7 @@ role-relevant positive/output metrics as conditional development limits or tacti
 point in an actual supplied value, describe the game situation where it matters, and add a practical mitigation.
 Do not relabel LOW_RISK_NEGATIVES as poor performance. Never fill a weakness bullet by saying that a concern,
 weakness, metric, or evidence is absent, unverified, unavailable, or not a problem.
-For role usage, never recommend a role family outside ROLE_CONSTRAINTS."""),
+For role usage, never recommend a role family outside ROLE_CONSTRAINTS.""" + FOOTBALL_TERMINOLOGY_GUIDANCE),
         ("human", """lang: {lang}
 SECTION_HEADER: {heading}
 SECTION_RULES: {rules}

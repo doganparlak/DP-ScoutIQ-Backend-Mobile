@@ -26,6 +26,8 @@ from pydantic import BaseModel, Field, field_validator
 from concurrent.futures import ThreadPoolExecutor
 from . import report as engine
 from .report import generate_match_report, build_team_report_metrics, build_team_report_player_perspectives, build_team_report_momentum_perspectives, build_team_report_regional_perspective, build_team_report_attack_profile, build_team_report_defense_profile, build_team_report_score_flow_profile, build_team_report_strengths, build_team_report_weaknesses, build_team_report_overview
+from report_module.profile_editor import review_team_profiles
+from report_module.profile_evidence import free_profile_snapshot
 
 from collections import OrderedDict
 from copy import deepcopy
@@ -49,6 +51,38 @@ def _raw_report(fixture_id, language):
         while len(_RAW_REPORTS) > 32:
             _RAW_REPORTS.popitem(last=False)
     return report
+
+
+def _profile_cache_key(kind, paid):
+    key = f'{kind}:{"paid" if paid else "free"}:v{engine.MATCH_REPORT_VERSION}:headings-v3'
+    return key + (f':assessment-v{engine.ASSESSMENT_VERSION}' if kind == 'assessment' else '')
+
+
+def _review_profiles(profiles, payload, user_id, db, language, paid):
+    if not paid:
+        # Never run paid narrative generation/review for free accounts.
+        return {key: free_profile_snapshot(value) for key, value in profiles.items()}
+    context = dict(profiles)
+    if payload.reportId:
+        for kind, keys in [('attack', ['attackProfile']), ('defense', ['defenseProfile']),
+                           ('assessment', ['strengths', 'weaknesses'])]:
+            if all(key in context for key in keys):
+                continue
+            cached = cached_profile(db, user_id, payload.reportId, _profile_cache_key(kind, True))
+            if cached:
+                if kind == 'assessment':
+                    context.update({key: cached[key] for key in keys if key in cached and key not in context})
+                else:
+                    context.setdefault(keys[0], cached)
+    # Lazy sections are reviewed with available cached sections as read-only
+    # context. Creating another section never silently rewrites a saved one.
+    reviewed = review_team_profiles(context, language, editable_sections=set(profiles), task_contract=(
+        'Mobile report: every team and player analysis is ONE paragraph targeting 20-30 words. '
+        'Team counts and player counts are BOTH per 90, not per match. Rates retain percentages. '
+        'Use at most four cards and preserve plan visibility. Cached sections without editable '
+        'passage IDs are read-only context. Evidence_values in cached rows are source-verified values.'
+    ))
+    return {key: reviewed[key] for key in profiles}
 
 class TeamAnalysisIn(BaseModel):
     team: TeamPoolSearchRow | None = None
@@ -116,9 +150,7 @@ def report_profile(kind: str, payload: TeamAnalysisIn, user_id=Depends(require_a
     else:
         base = report_data(payload, user_id, accept_language, True, db)
         language = "tr" if (accept_language or "").lower().startswith("tr") else "en"
-    profile_key = f'{kind}:{"paid" if paid else "free"}:v{engine.MATCH_REPORT_VERSION}:headings-v2'
-    if kind == "assessment":
-        profile_key += f":assessment-v{engine.ASSESSMENT_VERSION}"
+    profile_key = _profile_cache_key(kind, paid)
     if payload.reportId:
         cached = cached_profile(db, user_id, payload.reportId, profile_key)
         if cached is not None:
@@ -133,7 +165,7 @@ def report_profile(kind: str, payload: TeamAnalysisIn, user_id=Depends(require_a
             profile["themes"] = (profile.get("themes") or [])[:2]
             for item in profile["themes"]:
                 item["analysis"] = engine._mobile_profile_analysis(item.get("analysis"))
-        result = {"strengths": strengths, "weaknesses": weaknesses}
+        result = _review_profiles({"strengths": strengths, "weaknesses": weaknesses}, payload, user_id, db, language, paid)
         if payload.reportId:
             save_profile(db, user_id, payload.reportId, profile_key, result)
         return result
@@ -143,6 +175,8 @@ def report_profile(kind: str, payload: TeamAnalysisIn, user_id=Depends(require_a
         profile["themes"] = (profile.get("themes") or [])[:2]
         for item in [*profile.get("themes", []), *profile.get("players", [])]:
             item["analysis"] = engine._mobile_profile_analysis(item.get("analysis"))
+        key = "attackProfile" if kind == "attack" else "defenseProfile"
+        profile = _review_profiles({key: profile}, payload, user_id, db, language, paid)[key]
         if payload.reportId:
             save_profile(db, user_id, payload.reportId, profile_key, profile)
         return profile

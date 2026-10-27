@@ -12,8 +12,8 @@ from team_analysis_module.report import generate_match_report
 from .team_analysis import build_team_analysis
 from .player_perspectives import build_player_perspectives
 
-VERSION = 3
-TEAM_ANALYSIS_VERSION = 2
+VERSION = 4
+TEAM_ANALYSIS_VERSION = 3
 _EXECUTOR = ThreadPoolExecutor(max_workers=3, thread_name_prefix="mobile-match-report")
 _PENDING = set()
 _LAZY_PENDING = set()

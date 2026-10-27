@@ -1,3 +1,4 @@
+from report_module.terminology import FOOTBALL_TERMINOLOGY_GUIDANCE
 # report_module/prompts.py
 
 report_system_prompt = """
@@ -134,3 +135,5 @@ Rules:
 
 Now produce the report.
 """
+
+report_system_prompt += FOOTBALL_TERMINOLOGY_GUIDANCE
