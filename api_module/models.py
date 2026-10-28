@@ -210,6 +210,7 @@ class PlayerPoolWeeklyPopularIn(BaseModel):
 
 
 class PlayerPoolFilterOptionsOut(BaseModel):
+    teamsByLeague: Dict[str, List[str]] = Field(default_factory=dict)
     teams: List[str]
     leagues: List[str]
     nationalities: List[str]

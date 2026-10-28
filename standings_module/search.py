@@ -19,7 +19,16 @@ def get_league_performance_options(db, leagues=None, countries=None):
             ORDER BY league_country_name
         ) AS countries
     """), {'leagues': _clean_many(leagues), 'countries': _clean_many(countries)}).mappings().one()
-    return {key: list(row[key] or []) for key in ('leagues', 'countries')}
+    result = {key: list(row[key] or []) for key in ('leagues', 'countries')}
+    choices = db.execute(text("""
+        SELECT DISTINCT league_id AS id, league_name AS name,
+            COALESCE(league_country_name, '') AS country
+        FROM player_comp_data
+        WHERE league_id IS NOT NULL AND COALESCE(league_name, '') <> ''
+        ORDER BY country, name, id
+    """)).mappings().all()
+    result['leagueChoices'] = [dict(choice) for choice in choices]
+    return result
 
 
 def search_league_performance(db, leagues=None, countries=None, limit=100):

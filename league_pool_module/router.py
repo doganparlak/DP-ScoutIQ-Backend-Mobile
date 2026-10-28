@@ -18,6 +18,7 @@ class LeaguePoolSearch(LeaguePoolFilters):
     limit: int = Field(default=100, ge=1, le=200)
 
 class LeaguePoolOptions(BaseModel):
+    leagueChoices: List[Dict[str, str]]
     leagues: List[str]
     countries: List[str]
     positions: List[str]

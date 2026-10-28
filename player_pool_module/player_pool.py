@@ -317,7 +317,21 @@ def get_player_pool_filter_options(db: Session, world_cup_mode: bool = False) ->
             league_name for league_name in league_options if league_name not in countries_by_league
         ]
 
+    membership_rows = db.execute(text(f"""
+        SELECT DISTINCT p.metadata->>'team_name' AS team, p.metadata->>'league_name' AS league,
+                        c.league_country_name AS country
+        FROM {table_name} p
+        LEFT JOIN player_comp_data c ON c.player_id::text = p.metadata->>'player_id'
+          AND c.league_name = p.metadata->>'league_name'
+        WHERE COALESCE(p.metadata->>'team_name', '') <> ''
+          AND COALESCE(p.metadata->>'league_name', '') <> ''
+    """)).mappings().all()
+    teams_by_league = {}
+    for row in membership_rows:
+        for label in (row['league'], f"{row['league']} | {row['country']}" if row['country'] else row['league']):
+            teams_by_league.setdefault(label, set()).add(row['team'])
     return {
+        "teamsByLeague": {label: sorted(teams) for label, teams in teams_by_league.items()},
         "teams": distinct_metadata_values("team_name"),
         "leagues": league_options,
         "nationalities": distinct_metadata_values("nationality_name"),

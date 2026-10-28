@@ -622,3 +622,85 @@ def search_fixtures(filters: dict[str, Any]) -> dict[str, Any]:
         params["page"] = int(params["page"]) + 1
 
     return {"fixtures": collected, "pagination": {"page": page, "hasMore": has_more, "pagesRead": pages_read}}
+
+
+def team_fixture_options(db: Session, league_id: int | None = None) -> dict[str, Any]:
+    leagues = db.execute(text("""
+        SELECT DISTINCT league_id AS id, league_name AS name, league_country_name AS country
+        FROM player_comp_data WHERE league_id IS NOT NULL AND COALESCE(league_name, '') <> ''
+        ORDER BY league_country_name, league_name, league_id
+    """)).mappings().all()
+    teams = db.execute(text("""
+        WITH memberships AS (
+            SELECT team_id, league_id, MAX(team_name) AS name, COUNT(*) AS coverage
+            FROM player_comp_data
+            WHERE team_id IS NOT NULL AND league_id IS NOT NULL
+              AND COALESCE(team_name, '') <> ''
+              AND (:league IS NULL OR league_id = :league)
+            GROUP BY team_id, league_id
+        ), ranked AS (
+            SELECT *, ROW_NUMBER() OVER (PARTITION BY team_id ORDER BY coverage DESC, league_id) AS rank
+            FROM memberships
+        )
+        SELECT team_id AS id, name, league_id AS "leagueId"
+        FROM ranked WHERE rank = 1 ORDER BY name, team_id
+    """), {"league": league_id}).mappings().all()
+    return {"leagues": [dict(r) for r in leagues], "teams": [dict(r) for r in teams]}
+
+
+def search_team_fixtures(db: Session, league_id: int, team_id: int) -> dict[str, Any]:
+    valid = db.execute(text("SELECT 1 FROM player_comp_data WHERE league_id=:league AND team_id=:team LIMIT 1"),
+                       {"league": league_id, "team": team_id}).scalar()
+    if not valid:
+        raise ValueError("Select a team from the selected league")
+    token = os.getenv("SPORTMONKS_API_KEY")
+    if not token:
+        raise SportMonksError("ScoutWise data service is not configured")
+
+    def fetch(path, **params):
+        response = requests.get(f"{SPORTMONKS_BASE_URL}/{path}", params={"api_token": token, **params}, timeout=45)
+        if response.status_code != 200:
+            raise SportMonksError(f"Fixture data request failed (HTTP {response.status_code})")
+        return response.json()
+
+    league = fetch(f"leagues/{league_id}", include="currentSeason;seasons").get("data") or {}
+    season = league.get("currentseason") or league.get("currentSeason")
+    if not season:
+        seasons = [s for s in league.get("seasons", []) if s.get("starting_at") and s["starting_at"][:10] <= date.today().isoformat()]
+        season = max(seasons, key=lambda s: s["starting_at"], default={})
+    try:
+        start = date.fromisoformat(season["starting_at"][:10])
+        end = date.fromisoformat(season["ending_at"][:10])
+    except (KeyError, TypeError, ValueError):
+        raise SportMonksError("The league's current season dates are unavailable") from None
+    if end < start or (end - start).days > 730:
+        raise SportMonksError("The league's season dates are invalid")
+    windows = []
+    while start <= end:
+        stop = min(start + timedelta(days=MAX_DATE_RANGE_DAYS), end)
+        windows.append((start, stop))
+        start = stop + timedelta(days=1)
+
+    def window_fixtures(window):
+        first, last = window
+        page, rows = 1, []
+        while True:
+            payload = fetch(f"fixtures/between/{first}/{last}/{team_id}",
+                            include="participants;league.country;season;stage;round;venue;state;referees;scores",
+                            order="asc", per_page=50, page=page)
+            for raw in payload.get("data") or []:
+                item = _fixture_out(raw)
+                if item and team_id in (item["homeTeam"]["id"], item["awayTeam"]["id"]):
+                    rows.append(item)
+            pagination = payload.get("pagination") or payload.get("meta", {}).get("pagination", {})
+            if not pagination.get("has_more"):
+                return rows, page
+            page += 1
+            if page > 100:
+                raise SportMonksError("Fixture pagination exceeded the supported range")
+
+    with ThreadPoolExecutor(max_workers=4) as executor:
+        results = list(executor.map(window_fixtures, windows))
+    fixtures = {item["fixtureId"]: item for rows, _ in results for item in rows}
+    return {"fixtures": sorted(fixtures.values(), key=lambda f: (f["startingAt"], f["fixtureId"])),
+            "pagination": {"hasMore": False, "page": 1, "pagesRead": sum(pages for _, pages in results)}}

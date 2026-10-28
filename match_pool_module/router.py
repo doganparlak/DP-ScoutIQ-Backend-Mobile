@@ -583,3 +583,20 @@ def ensure_saved_pre_match_section(fixture_id: int, section: str, language: str 
     if not section_ready(content,section,report_tier(db,user_id)):
         schedule_lazy(str(row['id']),user_id,language,section)
     return public_report(row,language)
+
+
+@router.post("/match-pool/team-options")
+def team_options(payload: TeamFixtureOptionsIn, user_id=Depends(require_auth), db: Session=Depends(get_db)):
+    from .fixtures import team_fixture_options
+    return team_fixture_options(db, payload.leagueId)
+
+
+@router.post("/match-pool/team-search", response_model=MatchAnalysisSearchOut)
+def team_search(payload: TeamFixtureSearchIn, user_id=Depends(require_auth), db: Session=Depends(get_db)):
+    from .fixtures import search_team_fixtures
+    try:
+        return search_team_fixtures(db, payload.leagueId, payload.teamId)
+    except ValueError as exc:
+        raise HTTPException(400, str(exc)) from exc
+    except (SportMonksError, requests.RequestException):
+        raise HTTPException(502, "Team fixtures could not be loaded. Please retry.") from None

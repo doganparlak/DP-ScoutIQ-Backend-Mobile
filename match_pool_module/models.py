@@ -34,3 +34,12 @@ class EnterpriseFavoriteMatchOut(BaseModel):
 
 class SaveMatchIn(BaseModel):
     fixtureId: int = Field(gt=0)
+
+
+class TeamFixtureOptionsIn(BaseModel):
+    leagueId: Optional[int] = Field(default=None, gt=0)
+
+
+class TeamFixtureSearchIn(BaseModel):
+    leagueId: int = Field(gt=0)
+    teamId: int = Field(gt=0)

@@ -49,4 +49,12 @@ def dashboard_summary(user_id: int = Depends(require_auth), db: Session = Depend
     result['weeklyPlayerPredictions'] = int(db.execute(text("""SELECT COUNT(*) FROM public.daily_scout_attempts
         WHERE user_id=:uid AND completed_at IS NOT NULL AND challenge_date>=:week AND challenge_date<=:today"""),
         {'uid': user_id, 'week': quiz_week, 'today': today}).scalar() or 0)
+    result['dailyPlayerQuestionAvailable'] = bool(db.execute(text("""SELECT EXISTS (
+        SELECT 1 FROM public.daily_scout_challenges c
+        WHERE c.challenge_date=:today AND NOT EXISTS (
+          SELECT 1 FROM public.daily_scout_attempts a
+          WHERE a.user_id=:uid AND a.challenge_id=c.id
+            AND (a.completed_at IS NOT NULL OR a.skipped_at IS NOT NULL)
+        )
+    )"""), {'uid': user_id, 'today': today}).scalar())
     return result

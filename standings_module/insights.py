@@ -89,6 +89,29 @@ def request_summary(db, league_id, season_id, period_start=None, scope=None):
         season_result.pop('player_rating_totals', None)
     if biweekly_result:
         biweekly_result['coverage'] = {k: v for k, v in (biweekly_result.get('coverage') or {}).items() if k != 'stageSummaries'}
+    if league_id in EUROPEAN_LEAGUES and scope == 'overall':
+        # Overall covers the main competition only; qualifiers remain separate.
+        results = {}
+        contributions = db.execute(text("""SELECT team_contributions FROM league_match_contributions
+            WHERE league_id=:league AND season_id=:season AND included_in_aggregation=TRUE
+            AND coverage->>'scope' IN ('league','knockout')"""), params).scalars()
+        for teams in contributions:
+            for team_id, team in (teams or {}).items():
+                item = results.setdefault(team_id, dict(won=0, drawn=0, lost=0, goalsFor=0, goalsAgainst=0, covered=0))
+                metrics = team.get('metrics') or {}
+                goals_for = metrics.get('Goals')
+                opponent = next((other for key, other in teams.items() if key != team_id), {})
+                goals_against = metrics.get('Goals Conceded', (opponent.get('metrics') or {}).get('Goals'))
+                if goals_for is None or goals_against is None:
+                    continue
+                item['covered'] += 1
+                item['goalsFor'] += goals_for
+                item['goalsAgainst'] += goals_against
+                item['won' if goals_for > goals_against else 'lost' if goals_for < goals_against else 'drawn'] += 1
+        for team_id, team in season_result.get('team_metrics', {}).items():
+            item = results.get(team_id)
+            team['results'] = ({**item, 'goalDifference': item['goalsFor'] - item['goalsAgainst']}
+                               if item and item['covered'] == team['matches'] else None)
     # Images can be refreshed independently of the statistics cache.
     hydrate_winner_images(db, season_result)
     if biweekly_result:
