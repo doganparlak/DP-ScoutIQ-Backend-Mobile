@@ -1,5 +1,8 @@
 from __future__ import annotations
 
+from report_module.penalty_xg import PENALTY_XG, penalty_xg_sample, penalty_xg_average
+
+from report_module.metric_aliases import normalize_report_metrics
 from report_module.terminology import FOOTBALL_TERMINOLOGY_GUIDANCE
 from report_module.profile_generation import generate_profile_json
 from report_module.profile_evidence import PROFILE_EVIDENCE_GUIDANCE, build_evidence_profile, free_profile_snapshot
@@ -26,7 +29,7 @@ from report_module.metric_validation import is_percentage, nonzero_evidence, per
 SPORTMONKS_BASE_URL = os.getenv(
     "SPORTMONKS_BASE_URL", "https://api.sportmonks.com/v3/football"
 ).rstrip("/")
-MATCH_REPORT_VERSION = 46
+MATCH_REPORT_VERSION = 47
 ASSESSMENT_VERSION = 3
 
 MATCH_REPORT_INCLUDE = ";".join(
@@ -1270,6 +1273,7 @@ def generate_match_report(fixture_id: int, lang: str = "en", build_narratives: b
                 "info": row.get("info"),
                 "addition": row.get("addition"),
                 "type_id": row.get("type_id"),
+                "rescinded": row.get("rescinded"),
                 "type": (row.get("type") or {}).get("name"),
             }
         )
@@ -1397,7 +1401,7 @@ def generate_match_report(fixture_id: int, lang: str = "en", build_narratives: b
         "OPENAI_MATCH_REPORT_MODEL",
         os.getenv("OPENAI_REPORT_MODEL", "gpt-5.6-luna"),
     )
-    return report
+    return normalize_report_metrics(report)
 
 
 def build_team_report_metrics(
@@ -1405,6 +1409,7 @@ def build_team_report_metrics(
 ) -> tuple[dict[str, list[dict[str, Any]]], dict[str, str]]:
     samples: dict[str, dict[str, list[float]]] = defaultdict(lambda: defaultdict(list))
     match_rows: list[dict[str, Any]] = []
+    penalty_samples = []
     for report in reports:
         team = next(
             (row for row in report.get("teams") or [] if int(row.get("id") or 0) == int(team_id)),
@@ -1427,6 +1432,9 @@ def build_team_report_metrics(
                     continue
                 samples[group][name].append(value)
                 match_values.setdefault(group, {})[name] = value
+        penalty_sample = penalty_xg_sample(match_values.get("expected", {}).get(PENALTY_XG), report.get("events") or [], team_id)
+        if penalty_sample is not None:
+            penalty_samples.append(penalty_sample)
         match_rows.append({
             "fixture": (report.get("fixture") or {}).get("name") or (report.get("fixture") or {}).get("id"),
             "metrics": match_values,
@@ -1435,6 +1443,13 @@ def build_team_report_metrics(
     for group, metrics in samples.items():
         aggregate[group] = []
         for name, values in metrics.items():
+            if group == "expected" and name == PENALTY_XG:
+                average = penalty_xg_average(penalty_samples)
+                if average is not None:
+                    aggregate[group].append({"name": name, "value": average, "perMatch": average,
+                        "aggregation": "average", "matchesCovered": len(penalty_samples),
+                        "attempts": sum(count for _, count in penalty_samples)})
+                continue
             is_average = "%" in name or "percentage" in name.casefold() or "performance" in name.casefold()
             total = sum(values)
             numerator_denominator = DERIVED_PERCENTAGE_METRICS.get(name)

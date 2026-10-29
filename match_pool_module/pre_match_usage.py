@@ -7,6 +7,8 @@ Maç Önü Analizi as the report sections are introduced.
 
 from __future__ import annotations
 
+from report_module.penalty_xg import PENALTY_XG, penalty_xg_sample, penalty_xg_average
+
 from report_module.terminology import FOOTBALL_TERMINOLOGY_GUIDANCE
 
 import logging
@@ -420,6 +422,7 @@ def _aggregate_team_comparison(
     """
     samples: dict[str, dict[str, list[float]]] = defaultdict(lambda: defaultdict(list))
     match_values = []
+    penalty_samples = []
     for fixture in fixtures:
         statistic_rows = [
             row for row in fixture.get("statistics") or []
@@ -448,11 +451,21 @@ def _aggregate_team_comparison(
                 if name and valid_metric(name, value):
                     samples[group][name].append(value)
                     fixture_values.setdefault(group, {})[name] = value
+        penalty_sample = penalty_xg_sample(fixture_values.get("expected", {}).get(PENALTY_XG), fixture.get("events") or [], team_id)
+        if penalty_sample is not None:
+            penalty_samples.append(penalty_sample)
         match_values.append(fixture_values)
     aggregate: dict[str, list[dict[str, Any]]] = {}
     for group, metrics in samples.items():
         rows = []
         for name, values in metrics.items():
+            if group == "expected" and name == PENALTY_XG:
+                average = penalty_xg_average(penalty_samples)
+                if average is not None:
+                    rows.append({"name": name, "value": average, "total": average,
+                        "aggregation": "average", "matches_covered": len(penalty_samples),
+                        "attempts": sum(count for _, count in penalty_samples)})
+                continue
             total = sum(values)
             average = total / len(values)
             rate = "%" in name or "percentage" in name.casefold() or "performance" in name.casefold()

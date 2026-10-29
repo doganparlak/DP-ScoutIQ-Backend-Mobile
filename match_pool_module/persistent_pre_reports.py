@@ -1,3 +1,4 @@
+from report_module.metric_aliases import normalize_report_metrics
 """Durable mobile pre-match reports; each completed section is checkpointed."""
 from report_module.narrative_numbers import format_narrative_fields
 from api_module.report_access import user_report_tier, scope_satisfies
@@ -11,7 +12,7 @@ from .pre_match_card import build_pre_match_card
 from .pre_match_usage import _pre_match_player_perspectives, _pre_match_momentum_perspectives, _pre_match_team_analysis, sanitize_pre_match_standout_metrics
 from .pre_match_standings import get_league_standings
 
-VERSION = 5
+VERSION = 6
 _EXECUTOR = ThreadPoolExecutor(max_workers=3, thread_name_prefix="mobile-match-report")
 _PENDING = set()
 _LAZY_PENDING = set()
@@ -46,7 +47,7 @@ def public_report(row, language):
     with _MUTEX:
         pending = str(row['id']) in _PENDING
     status = 'processing' if pending and row['report_status'] != 'ready' else row['report_status']
-    return {'favoriteId':str(row['id']), 'status':status, 'content':sanitize_pre_match_standout_metrics(content)}
+    return {'favoriteId':str(row['id']), 'status':status, 'content':normalize_report_metrics(sanitize_pre_match_standout_metrics(content))}
 
 def save(favorite_id, user_id, content, status):
     content = format_narrative_fields(content, content.get("language", "en"))

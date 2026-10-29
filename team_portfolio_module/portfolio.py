@@ -1,3 +1,4 @@
+from report_module.metric_aliases import normalize_report_metrics
 """User-owned saved team snapshots and independently persisted analysis selections."""
 import hashlib
 import json
@@ -212,7 +213,7 @@ def finish_report(db, user_id, job, content=None):
 
 def public_content(content):
     # Paid lazy-section caches are not part of the public base report response.
-    return {key: value for key, value in (content or {}).items() if key != '_profiles'}
+    return normalize_report_metrics({key: value for key, value in (content or {}).items() if key != '_profiles'})
 
 
 def cached_profile(db, user_id, report_id, key):
