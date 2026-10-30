@@ -14,6 +14,7 @@ from api_module.utilities import require_auth
 from .core import draw_window, head_start, kickoff, phase, plan_bonus, score_entry, utcnow, week_start
 from .worker import start_worker, stop_worker, wake_worker
 from .honors import BONUS_SQL, SCORE_SQL, ORDER_SQL, all_time_ranking, podium_finishes
+from .scoutwise import EMAIL as SCOUTWISE_EMAIL
 
 router = APIRouter(prefix='/score-prediction', tags=['score-prediction'])
 
@@ -39,12 +40,13 @@ def ranking(db, round_id, user_id):
     # Rank every submitted entry, return a bounded list and the user's own rank.
     rows = db.execute(text(f'''WITH ranked AS (
         SELECT e.user_id,u.community_nickname AS nickname,e.base_points AS "basePoints",
+        EXISTS(SELECT 1 FROM public.users bot WHERE bot.id=e.user_id AND bot.email=:scoutwise) AS "isScoutWise",
         {BONUS_SQL} AS "bonusPoints",{SCORE_SQL} AS "totalPoints",e.exact_scores AS "exactScores",
         e.plan_tier AS tier,ROW_NUMBER() OVER(ORDER BY {ORDER_SQL}) AS rank
         FROM public.community_league_prediction_entries e JOIN public.community_league_profiles u ON u.id=e.user_id
         WHERE e.round_id=:rid AND e.submitted_at IS NOT NULL)
         SELECT * FROM ranked WHERE rank<=50 OR user_id=:uid ORDER BY rank'''),
-        {'rid': round_id, 'uid': user_id}).mappings().all()
+        {'rid': round_id, 'uid': user_id, 'scoutwise': SCOUTWISE_EMAIL}).mappings().all()
     result = [{**dict(row), 'isYou': row['user_id'] == user_id} for row in rows]
     for row in result:
         del row['user_id']
@@ -86,7 +88,12 @@ def current(weekStart: date | None = None, user_id: int = Depends(require_auth),
         now = utcnow()
         entry = None
         favorites = []
+        scoutwise_picks = {}
         if row:
+            scoutwise_picks = db.execute(text('''SELECT e.picks FROM public.prediction_entries e
+                JOIN public.users u ON u.id=e.user_id WHERE e.round_id=:rid
+                AND u.email=:email AND e.submitted_at IS NOT NULL'''),
+                {'rid': row['id'], 'email': SCOUTWISE_EMAIL}).scalar() or {}
             entry = db.execute(text('SELECT * FROM public.prediction_entries WHERE round_id=:rid AND user_id=:uid'), {'rid': row['id'], 'uid': user_id}).mappings().first()
             ids = [int(f['fixtureId']) for f in row['fixtures']]
             if ids:
@@ -101,7 +108,9 @@ def current(weekStart: date | None = None, user_id: int = Depends(require_auth),
                 'round': None if not row else {'id': row['id'], 'weekStart': row['week_start'], 'deadline': row['deadline'],
                     'status': 'unavailable' if row['status'] == 'waiting' and not draw_window(row['week_start'], now) else
                               'closed' if row['status'] == 'open' and now >= row['deadline'] else row['status'],
-                    'fixtures': [{**f, 'predictionStatus': phase(f)} for f in row['fixtures']], 'updatedAt': row['updated_at']},
+                    'fixtures': [{**f, 'predictionStatus': phase(f),
+                        'scoutWisePredicted': str(f['fixtureId']) in scoutwise_picks}
+                        for f in row['fixtures']], 'updatedAt': row['updated_at']},
                 'leaderboard': ranking(db, row['id'], user_id) if row else [],
                 **podium_finishes(db, user_id)}
     except ProgrammingError as exc:

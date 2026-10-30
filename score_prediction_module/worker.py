@@ -86,6 +86,8 @@ def process_round(row):
                 WHERE id=:id AND status='waiting' '''),
                 {'id': row['id'], 'fixtures': json.dumps(fixtures), 'deadline': deadline,
                  'next': min(now + timedelta(hours=6), deadline)})
+        from .scoutwise import wake_worker as wake_scoutwise
+        wake_scoutwise()
         return
 
     verify = row['status'] == 'finalizing'
@@ -191,6 +193,8 @@ def start_worker():
     global _thread
     if os.getenv('SCORE_PREDICTION_WORKER_ENABLED', '1') == '0':
         return
+    from .scoutwise import start_worker as start_scoutwise
+    start_scoutwise()
     if _thread is None or not _thread.is_alive():
         _stop.clear()
         _thread = threading.Thread(target=_run, name='score-predictions', daemon=True)
@@ -198,6 +202,8 @@ def start_worker():
 
 
 def stop_worker():
+    from .scoutwise import stop_worker as stop_scoutwise
+    stop_scoutwise()
     _stop.set()
     _wake.set()
 

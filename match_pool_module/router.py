@@ -600,3 +600,17 @@ def team_search(payload: TeamFixtureSearchIn, user_id=Depends(require_auth), db:
         raise HTTPException(400, str(exc)) from exc
     except (SportMonksError, requests.RequestException):
         raise HTTPException(502, "Team fixtures could not be loaded. Please retry.") from None
+
+
+@router.get('/match-pool/fixtures/{fixture_id}/forecast')
+def match_forecast(fixture_id: int, retry: bool = False, user_id=Depends(require_auth), db: Session=Depends(get_db)):
+    from .forecast import forecast_for_tier, get_forecast
+    from api_module.subscription_access import plan_priority
+    if fixture_id <= 0:
+        raise HTTPException(400, 'Invalid fixture')
+    try:
+        plan = db.execute(text('SELECT plan FROM users WHERE id=:uid'), {'uid': user_id}).scalar()
+        tier = ('free', 'plus', 'pro')[plan_priority(plan)]
+        return forecast_for_tier(get_forecast(fixture_id, retry=retry), tier)
+    except Exception:
+        raise HTTPException(503, 'Match forecast is temporarily unavailable') from None

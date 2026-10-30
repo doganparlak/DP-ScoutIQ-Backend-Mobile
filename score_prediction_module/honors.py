@@ -1,5 +1,6 @@
 """Competition honors derived from settled rounds; no extra tables or counters."""
 from sqlalchemy import text
+from .scoutwise import EMAIL as SCOUTWISE_EMAIL
 
 BONUS_SQL = "CASE e.plan_tier WHEN 'pro' THEN 4 WHEN 'plus' THEN 2 ELSE 0 END"
 SCORE_SQL = f"(e.base_points + {BONUS_SQL})"
@@ -47,11 +48,12 @@ def all_time_ranking(db, user_id, sort='total'):
         FROM placements GROUP BY user_id
     ), ranked AS (
         SELECT t.*, u.community_nickname AS nickname,
+            EXISTS(SELECT 1 FROM public.users bot WHERE bot.id=t.user_id AND bot.email=:scoutwise) AS "isScoutWise",
             ROW_NUMBER() OVER (ORDER BY {primary} DESC, t."totalPoints" DESC, t.championships DESC,
                 t."secondPlaces" DESC, t.user_id) AS rank
         FROM totals t JOIN public.community_league_profiles u ON u.id=t.user_id
-    ) SELECT * FROM ranked WHERE rank<=50 OR user_id=:uid ORDER BY rank'''), {'uid': user_id}).mappings().all()
-    return [{'nickname': row['nickname'], 'championships': int(row['championships']),
+    ) SELECT * FROM ranked WHERE rank<=50 OR user_id=:uid ORDER BY rank'''), {'uid': user_id, 'scoutwise': SCOUTWISE_EMAIL}).mappings().all()
+    return [{'nickname': row['nickname'], 'isScoutWise': row['isScoutWise'], 'championships': int(row['championships']),
              'secondPlaces': int(row['secondPlaces']), 'thirdPlaces': int(row['thirdPlaces']),
              'totalPoints': int(row['totalPoints']), 'weeksParticipated': int(row['weeksParticipated']),
              'averagePoints': float(row['averagePoints']), 'rank': int(row['rank']),
