@@ -51,7 +51,7 @@ def initialize():
     return user_id
 
 
-def predict_fixtures(fixtures, model, now):
+def predict_fixtures(fixtures, model, now, on_forecast=None):
     from match_pool_module.forecast import build_forecast, utc
     picks, skipped = {}, []
     for fixture in fixtures:
@@ -64,12 +64,14 @@ def predict_fixtures(fixtures, model, now):
             skipped.append({'fixtureId': fixture['fixtureId'], 'reason': result.get('reason')})
             continue
         best = result['forecast']['topScores'][0]
+        if on_forecast:
+            on_forecast(result)
         picks[str(fixture['fixtureId'])] = {'home': best['home'], 'away': best['away']}
     return picks, skipped
 
 
 def process_round(round_id, user_id):
-    from match_pool_module.forecast import train_shared_model
+    from match_pool_module.forecast import train_shared_model, save_forecast_snapshot
     # The persisted refresh key also makes recovery after a process restart
     # reuse the completed model instead of training twice for the same round.
     result = train_shared_model(refresh_key=f'score-prediction:{round_id}')
@@ -81,7 +83,7 @@ def process_round(round_id, user_id):
         with engine.begin() as db:
             db.execute(text("UPDATE scoutwise_prediction_runs SET status='closed',model_id=:model,updated_at=NOW() WHERE round_id=:id"), {'model': result['modelId'], 'id': round_id})
         return
-    picks, skipped = predict_fixtures(row['fixtures'], {**model, 'modelId': result['modelId']}, now)
+    picks, skipped = predict_fixtures(row['fixtures'], {**model, 'modelId': result['modelId']}, now, save_forecast_snapshot)
     with SessionLocal.begin() as db:
         # Match the human submission lock and recheck after the upstream work.
         fresh = db.execute(text('SELECT * FROM prediction_rounds WHERE id=:id FOR SHARE'), {'id': round_id}).mappings().one()

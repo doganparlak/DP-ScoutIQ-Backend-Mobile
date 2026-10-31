@@ -60,7 +60,21 @@ def _schema():
                 artifact jsonb NOT NULL, is_active boolean NOT NULL DEFAULT FALSE
             )"""))
             db.execute(text("CREATE UNIQUE INDEX IF NOT EXISTS mobile_forecast_one_active_model ON mobile_match_forecast_models(is_active) WHERE is_active"))
-            for table in ('mobile_match_forecast_models', 'mobile_match_forecast_cache'):
+            db.execute(text('''CREATE TABLE IF NOT EXISTS mobile_match_forecast_snapshots (
+                fixture_id bigint PRIMARY KEY, payload jsonb NOT NULL,
+                updated_at timestamptz NOT NULL DEFAULT NOW())'''))
+            # Preserve genuine pre-kickoff forecasts, including expired cache
+            # entries. Never turn a post-match reconstruction into a prediction.
+            db.execute(text('''INSERT INTO mobile_match_forecast_snapshots(fixture_id,payload)
+                SELECT DISTINCT ON ((payload->'forecast'->>'fixtureId')::bigint)
+                    (payload->'forecast'->>'fixtureId')::bigint,payload
+                FROM mobile_match_forecast_cache WHERE payload->>'status'='ready'
+                AND (payload->'forecast'->>'generatedAt')::timestamptz < (payload->'forecast'->>'startingAt')::timestamptz
+                AND (payload->'forecast'->>'asOf')::timestamptz < (payload->'forecast'->>'startingAt')::timestamptz
+                ORDER BY (payload->'forecast'->>'fixtureId')::bigint,
+                    (payload->'forecast'->>'generatedAt')::timestamptz DESC
+                ON CONFLICT(fixture_id) DO NOTHING'''))
+            for table in ('mobile_match_forecast_models', 'mobile_match_forecast_cache', 'mobile_match_forecast_snapshots'):
                 enabled = db.execute(text('SELECT relrowsecurity FROM pg_class WHERE oid=to_regclass(:table)'), {'table': table}).scalar()
                 if not enabled:
                     db.execute(text(f'ALTER TABLE {table} ENABLE ROW LEVEL SECURITY'))
@@ -78,10 +92,58 @@ def _cache_key(fixture_id):
 
 def _write(key, payload, expires):
     with engine.begin() as db:
+        _save_snapshot(db, payload)
         db.execute(text('''INSERT INTO mobile_match_forecast_cache(cache_key,payload,expires_at)
             VALUES(:key,CAST(:payload AS jsonb),:expires) ON CONFLICT(cache_key) DO UPDATE
             SET payload=EXCLUDED.payload,expires_at=EXCLUDED.expires_at,updated_at=NOW()'''),
             {'key': key, 'payload': json.dumps(payload, allow_nan=False), 'expires': expires})
+
+
+def _save_snapshot(db, payload):
+    forecast = payload.get('forecast') or {}
+    if payload.get('status') != 'ready' or utc(forecast['generatedAt']) >= utc(forecast['startingAt']) or utc(forecast['asOf']) >= utc(forecast['startingAt']):
+        return
+    db.execute(text('''INSERT INTO mobile_match_forecast_snapshots(fixture_id,payload)
+        VALUES(:id,CAST(:payload AS jsonb)) ON CONFLICT(fixture_id) DO UPDATE
+        SET payload=EXCLUDED.payload,updated_at=NOW()
+        WHERE (EXCLUDED.payload->'forecast'->>'startingAt')::timestamptz>NOW()
+        AND (EXCLUDED.payload->'forecast'->>'generatedAt')::timestamptz
+          > (mobile_match_forecast_snapshots.payload->'forecast'->>'generatedAt')::timestamptz'''),
+        {'id': forecast['fixtureId'], 'payload': json.dumps(payload, allow_nan=False)})
+
+
+def save_forecast_snapshot(payload):
+    _schema()
+    with engine.begin() as db:
+        _save_snapshot(db, payload)
+
+
+def get_forecast_review(fixture_id):
+    _schema()
+    with engine.connect() as db:
+        saved = db.execute(text('SELECT payload FROM mobile_match_forecast_snapshots WHERE fixture_id=:id'), {'id': fixture_id}).scalar()
+    fixture = get_fixture(fixture_id)
+    if not fixture or str((fixture.get('state') or {}).get('code', '')).upper() not in {'FT', 'AET', 'PEN'}:
+        return {'status': 'unavailable', 'reason': 'match_not_completed'}
+    if saved:
+        return {**saved, 'reviewSource': 'saved'}
+    # Keep reconstructed reviews separate from genuine pre-kickoff snapshots.
+    # Both use exactly the same forecasting function and UI. The recorded
+    # generation time stays truthful, and no post-kickoff model may participate.
+    key = 'review:' + _cache_key(fixture_id)
+    cached = _read(key)
+    if cached:
+        return cached
+    kickoff = utc(fixture['startingAt'])
+    model = load_saved_model(kickoff)
+    if not model:
+        return {'status': 'unavailable', 'reason': 'model_unavailable'}
+    if utc(model['asOf']) >= kickoff:
+        return {'status': 'unavailable', 'reason': 'model_unavailable'}
+    result = {**build_forecast(fixture, kickoff, model), 'reviewSource': 'reconstructed'}
+    if result['status'] == 'ready':
+        _write(key, result, max(datetime.now(timezone.utc), kickoff) + timedelta(days=730))
+    return result
 
 
 def _request(path, params):

@@ -603,14 +603,17 @@ def team_search(payload: TeamFixtureSearchIn, user_id=Depends(require_auth), db:
 
 
 @router.get('/match-pool/fixtures/{fixture_id}/forecast')
-def match_forecast(fixture_id: int, retry: bool = False, user_id=Depends(require_auth), db: Session=Depends(get_db)):
-    from .forecast import forecast_for_tier, get_forecast
+def match_forecast(fixture_id: int, retry: bool = False, review: bool = False, user_id=Depends(require_auth), db: Session=Depends(get_db)):
+    from .forecast import forecast_for_tier, get_forecast, get_forecast_review
     from api_module.subscription_access import plan_priority
     if fixture_id <= 0:
         raise HTTPException(400, 'Invalid fixture')
     try:
         plan = db.execute(text('SELECT plan FROM users WHERE id=:uid'), {'uid': user_id}).scalar()
         tier = ('free', 'plus', 'pro')[plan_priority(plan)]
-        return forecast_for_tier(get_forecast(fixture_id, retry=retry), tier)
+        result = get_forecast_review(fixture_id) if review else get_forecast(fixture_id, retry=retry)
+        if review:
+            return {**result, 'accessTier': tier}
+        return forecast_for_tier(result, tier)
     except Exception:
         raise HTTPException(503, 'Match forecast is temporarily unavailable') from None

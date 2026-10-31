@@ -21,6 +21,22 @@ from mobile_pro_module.comparison_insights import DiscoveryAnalysisContext
 router = APIRouter(prefix='/pro', tags=['Mobile Pro'])
 
 
+@router.get('/match-forecast/{fixture_id}')
+def match_forecast_access(fixture_id: int, user_id: int = Depends(require_auth), db: Session = Depends(get_db)):
+    from .match_forecast import forecast_access
+    if fixture_id <= 0:
+        raise HTTPException(400, 'Invalid fixture')
+    return forecast_access(db, user_id, fixture_id)
+
+
+@router.post('/match-forecast/{fixture_id}')
+def unlock_match_forecast(fixture_id: int, user_id: int = Depends(require_auth), db: Session = Depends(get_db)):
+    from .match_forecast import forecast_access
+    if fixture_id <= 0:
+        raise HTTPException(400, 'Invalid fixture')
+    return forecast_access(db, user_id, fixture_id, unlock=True)
+
+
 class WorkspaceRequest(BaseModel):
     requestId: str = Field(min_length=1, max_length=128)
     sessionId: str = Field(min_length=1, max_length=128)
