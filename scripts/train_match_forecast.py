@@ -1,4 +1,4 @@
-"""Fit and activate the shared current-season model: python -m scripts.train_match_forecast."""
+"""Fit, evaluate and conditionally activate the shared current-season model: python -m scripts.train_match_forecast."""
 import json
 
 from api_module.database import engine  # Loads the backend environment.

@@ -164,6 +164,18 @@ def stop_daily_fixture_cache() -> None:
     stop_daily_warmer()
 
 
+@app.on_event("startup")
+def start_forecast_history_refresh() -> None:
+    from match_pool_module.forecast_history import start_history_refresh
+    start_history_refresh()
+
+
+@app.on_event("shutdown")
+def stop_forecast_history_refresh() -> None:
+    from match_pool_module.forecast_history import stop_history_refresh
+    stop_history_refresh()
+
+
 # ---------- endpoints ----------
 @app.get("/health")
 async def health() -> Dict[str, Any]:

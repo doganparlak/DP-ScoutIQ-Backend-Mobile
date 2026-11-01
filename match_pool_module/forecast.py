@@ -1,7 +1,7 @@
 """Shared pre-kickoff match forecasts: small fitted Poisson models, no LLM calls."""
 from __future__ import annotations
 
-from collections import Counter, defaultdict
+from collections import Counter, OrderedDict, defaultdict
 from concurrent.futures import ThreadPoolExecutor
 from datetime import datetime, timedelta, timezone
 import json
@@ -20,7 +20,7 @@ from api_module.database import engine
 from .fixtures import SPORTMONKS_BASE_URL, get_fixture
 
 LOG = logging.getLogger(__name__)
-VERSION = 2
+VERSION = 5
 CACHE_REVISION = 1
 WINDOW = 10
 MIN_HISTORY = 5
@@ -29,10 +29,15 @@ _POOL = ThreadPoolExecutor(max_workers=2, thread_name_prefix='match-forecast')
 _PENDING: set[int] = set()
 _LOCK = Lock()
 _SCHEMA_READY = False
+_MODEL_LOCK = Lock()
+_MODEL_ARTIFACTS = OrderedDict()
 # Standardized inputs; weights are learned from completed historical fixtures.
 # Turkey, top-five European leagues, UEFA competitions, Belgium, Portugal,
-# Netherlands, Austria and Scotland; only each competition's current season.
-TRAINING_LEAGUES = (600, 603, 8, 564, 82, 384, 301, 2, 5, 2286, 208, 462, 72, 181, 501)
+# Expanded domestic coverage in Europe, Saudi Arabia and the Americas.
+# Only each competition's current season; no previous-season fixtures.
+TRAINING_LEAGUES = (600, 603, 8, 564, 82, 384, 301, 2, 5, 2286, 208, 462, 72, 181, 501,
+    9, 12, 14, 74, 85, 88, 184, 211, 229, 244, 262, 271, 304, 325, 334, 387,
+    444, 453, 465, 474, 531, 540, 555, 567, 591, 944, 636, 648, 779)
 STAT_NAMES = ('Shots On Target', 'Shots Total', 'Shots Insidebox', 'Big Chances Created', 'Ball Possession %', 'Expected Goals')
 
 
@@ -183,29 +188,29 @@ def _compact(fixture):
                   for s in fixture.get('scores') or [] if s.get('description') == '1ST_HALF'}
     valid_half = all(first_half.get(side) is not None and first_half[side].is_integer()
                      and first_half[side] <= float(scores[side]) for side in ('home', 'away'))
-    stats = defaultdict(dict)
-    for row in [*(fixture.get('statistics') or []), *(fixture.get('xgfixture') or [])]:
-        name = str((row.get('type') or {}).get('name') or '')
-        if name in {'Expected Goals (xG)', 'Expected Goals'}:
-            name = 'Expected Goals'
-        if name not in STAT_NAMES:
-            continue
-        data = row.get('data') or {}
-        value = _number(data.get('value') if isinstance(data, dict) else data)
-        if value is not None:
-            stats[str(row.get('participant_id'))][name] = value
+    from .forecast_learning import canonical_stats
+    stats = canonical_stats(fixture)
+    from .forecast_candidates import card_context
+    events = fixture.get('events')
+    cards = {'available': isinstance(events, list), 'reds': [
+        {'team': event.get('participant_id'), 'minute': event.get('minute'),
+         'extra': event.get('extra_minute'), 'type': event.get('type_id')}
+        for event in (events or []) if event.get('type_id') in (20, 21) and event.get('player_id')]}
     return {'id': int(fixture['id']), 'at': fixture['starting_at'],
             'home': int(sides['home']['id']), 'away': int(sides['away']['id']),
             'hg': int(scores['home']), 'ag': int(scores['away']), 'stats': dict(stats),
             'hhg': int(first_half['home']) if valid_half else None,
             'hag': int(first_half['away']) if valid_half else None,
-            'league': int(fixture.get('league_id') or 0), 'season': int(fixture.get('season_id') or 0)}
+            'league': int(fixture.get('league_id') or 0), 'season': int(fixture.get('season_id') or 0),
+            'cardContext': card_context(cards, int(sides['home']['id']), int(sides['away']['id']))}
 
 
-def _history(league_id, cutoff, season):
+def _history(league_id, cutoff, season, since=None, include_events=False):
     # Date windows respect SportMonks' maximum of 100 days; paginate each one.
     windows = []
     start = utc(season['starting_at']).date()
+    if since is not None:
+        start = max(start, utc(since).date())
     while start <= cutoff.date():
         end = min(start + timedelta(days=99), cutoff.date())
         windows.append((start, end))
@@ -216,7 +221,7 @@ def _history(league_id, cutoff, season):
         rows = []
         for page in range(1, 31):
             payload = _request(f'fixtures/between/{start}/{end}', {
-                'include': 'participants;state;scores;statistics.type;xGFixture.type',
+                'include': 'participants;state;scores;statistics.type;xGFixture.type;pressure' + (';events' if include_events else ''),
                 'filters': f'fixtureLeagues:{league_id}', 'per_page': 100, 'page': page})
             for fixture in payload.get('data') or []:
                 if int(fixture.get('season_id') or 0) == int(season['id']) and int(fixture.get('league_id') or 0) == league_id and utc(fixture['starting_at']) < cutoff:
@@ -302,47 +307,59 @@ def _half_share(own, opponent, prior, strength):
     return (scored_first + conceded_first + strength * prior) / (scored_full + conceded_full + strength)
 
 
-def fit_half_model(matches):
+def fit_half_model(matches, league_balance_power=0.):
     """Learn the temporal split without changing the full-match goal model."""
-    histories, totals, examples, times = defaultdict(list), {}, [], []
-    for _, simultaneous in groupby(matches, key=lambda match: utc(match['at'])):
-        batch = list(simultaneous)
-        for match in batch:
-            own, opponent = histories[match['home']], histories[match['away']]
-            if min(len(own), len(opponent)) < MIN_HISTORY or match.get('hhg') is None or match.get('hag') is None:
-                continue
+    histories, totals, examples, times, leagues = defaultdict(list), {}, [], [], []
+    matches = sorted(matches, key=lambda m: (utc(m['at']), m['id']))
+    pending, index = [], 0
+    for match in matches:
+        while index < len(pending) and utc(pending[index]['at']) + timedelta(hours=3) <= utc(match['at']):
+            settled = pending[index]
+            _append(histories, settled); _update_half_totals(settled, totals)
+            index += 1
+        own, opponent = histories[match['home']], histories[match['away']]
+        if min(len(own), len(opponent)) >= MIN_HISTORY and match.get('hhg') is not None and match.get('hag') is not None:
             pair = []
             for a, b, home, first, full in ((own, opponent, True, 'hhg', 'hg'), (opponent, own, False, 'hag', 'ag')):
                 prior = _half_prior(totals, match['league'], home)
                 pair.append({'shares': [_half_share(a, b, prior, strength) for strength in (5., 15., 30., 60., None)],
                              'first': match[first], 'full': match[full]})
-            examples.append(pair); times.append(match['at'])
-        for match in batch:
-            _append(histories, match); _update_half_totals(match, totals)
+            examples.append(pair); times.append(match['at']); leagues.append(match['league'])
+        pending.append(match)
+    for match in pending[index:]:
+        _append(histories, match); _update_half_totals(match, totals)
     if len(examples) < MIN_TRAINING:
         return None
-    boundary = int(len(examples) * .8)
+    boundary = int(len(examples) * .6)
+    final = int(len(examples) * .8)
     while boundary > 1 and times[boundary - 1] == times[boundary]:
         boundary -= 1
-    validation = [row for pair in examples[boundary:] for row in pair]
-    goals = sum(row['full'] for row in validation)
-    if not goals:
+    while final > boundary and times[final - 1] == times[final]:
+        final -= 1
+    from .forecast_learning import league_weights
+    weights = league_weights(leagues, league_balance_power, leagues[:boundary])
+    tuning_weights = [weight for weight in weights[boundary:final] for _ in (0, 1)]
+    validation_weights = [weight for weight in weights[final:] for _ in (0, 1)]
+    tuning = [row for pair in examples[boundary:final] for row in pair]
+    validation = [row for pair in examples[final:] for row in pair]
+    def loss(rows, index, row_weights):
+        goals = sum(row['full'] * weight for row, weight in zip(rows, row_weights))
+        if not goals:
+            return None
+        return sum(weight * (-row['first'] * math.log(max(row['shares'][index], 1e-12))
+            - (row['full'] - row['first']) * math.log(max(1 - row['shares'][index], 1e-12))) for row, weight in zip(rows, row_weights)) / goals
+    losses = [loss(tuning, i, tuning_weights) for i in range(5)]
+    if any(value is None for value in losses):
         return None
-    losses = []
-    for index in range(5):
-        loss = sum(-row['first'] * math.log(max(row['shares'][index], 1e-12))
-                   - (row['full'] - row['first']) * math.log(max(1 - row['shares'][index], 1e-12))
-                   for row in validation) / goals
-        losses.append(loss)
     best = min(range(5), key=losses.__getitem__)
     return {'priorStrength': (5., 15., 30., 60., None)[best],
             'leagueTotals': {str(key): value for key, value in totals.items()},
             'inputMatches': sum(row[0] for row in totals.values()),
-            'trainingMatches': len(examples), 'validationMatches': len(examples) - boundary,
-            'validationGoalLogLoss': losses[best], 'leagueBaselineGoalLogLoss': losses[-1]}
+            'trainingMatches': len(examples), 'validationMatches': len(examples) - final,
+            'validationGoalLogLoss': loss(validation, best, validation_weights), 'leagueBaselineGoalLogLoss': loss(validation, 4, validation_weights)}
 
 
-def half_scenarios(home_rate, away_rate, own, opponent, league, model):
+def half_scenarios(home_rate, away_rate, own, opponent, league, model, rho=0.):
     if not model:
         return None
     totals = {int(key): value for key, value in model['leagueTotals'].items()}
@@ -350,20 +367,34 @@ def half_scenarios(home_rate, away_rate, own, opponent, league, model):
     away_share = _half_share(opponent, own, _half_prior(totals, league, False), model['priorStrength'])
     first_home, first_away = home_rate * home_share, away_rate * away_share
     comparison = score_distribution(first_home + first_away, home_rate + away_rate - first_home - first_away)['outcomes']
+    first_btts = (1 - math.exp(-first_home)) * (1 - math.exp(-first_away))
+    if rho:
+        # Thin the same corrected full-match joint distribution into halves.
+        # Only the four Dixon-Coles cells change; this exact adjustment avoids
+        # expensive goal-by-goal simulations and keeps every scenario coherent.
+        from .forecast_learning import bounded_rho
+        delta = math.exp(-home_rate - away_rate) * home_rate * away_rate * bounded_rho(home_rate, away_rate, rho)
+        comparison['home'] += delta * (home_share + away_share - home_share * away_share)
+        comparison['away'] += delta * (1 - home_share * away_share)
+        comparison['draw'] -= delta * (1 + home_share + away_share - 2 * home_share * away_share)
+        first_btts -= delta * home_share * away_share
     return {'moreGoalsHalf': {'first': comparison['home'], 'equal': comparison['draw'], 'second': comparison['away']},
-            'firstHalfBothTeamsScore': (1 - math.exp(-first_home)) * (1 - math.exp(-first_away))}
+            'firstHalfBothTeamsScore': first_btts}
 
 
-def _fit(x, y, penalty):
+
+def _fit(x, y, penalty, sample_weight=None):
     beta = np.zeros(x.shape[1])
-    beta[0] = math.log(max(float(y.mean()), .1))
+    weights = np.ones(len(y)) if sample_weight is None else np.asarray(sample_weight, dtype=float)
+    weights = weights / weights.mean()
+    beta[0] = math.log(max(float(np.average(y, weights=weights)), .1))
     ridge = np.eye(x.shape[1]) * penalty
     ridge[0, 0] = .000001
     for _ in range(30):
         eta = np.clip(x @ beta, -5, 3)
         mu = np.exp(eta)
-        gradient = x.T @ (mu - y) + ridge @ beta
-        hessian = (x.T * mu) @ x + ridge
+        gradient = x.T @ ((mu - y) * weights) + ridge @ beta
+        hessian = (x.T * (mu * weights)) @ x + ridge
         step = np.linalg.solve(hessian, gradient)
         # Damping prevents a sparse feature from producing an extreme rate.
         factor = min(1., 1. / max(float(np.max(np.abs(step))), 1.))
@@ -373,13 +404,24 @@ def _fit(x, y, penalty):
     return beta
 
 
-def _prepare(raw, fit_end, columns):
+def _prepare(raw, fit_end, columns, sample_weight=None):
     selected = raw[:, columns]
     train = selected[:fit_end]
-    medians = np.array([np.median(col[np.isfinite(col)]) if np.isfinite(col).any() else 0. for col in train.T])
+    weights = None if sample_weight is None else np.asarray(sample_weight, dtype=float)[:fit_end]
+    def median(column):
+        valid = np.isfinite(column)
+        if not valid.any():
+            return 0.
+        if weights is None:
+            return np.median(column[valid])
+        order = np.argsort(column[valid])
+        values, available_weights = column[valid][order], weights[valid][order]
+        return values[np.searchsorted(np.cumsum(available_weights), available_weights.sum() / 2)]
+    medians = np.array([median(col) for col in train.T])
     imputed = np.where(np.isfinite(selected), selected, medians)
-    mean = imputed[:fit_end].mean(axis=0)
-    scale = np.maximum(imputed[:fit_end].std(axis=0), .1)
+    mean = np.average(imputed[:fit_end], axis=0, weights=weights)
+    variance = np.average((imputed[:fit_end] - mean) ** 2, axis=0, weights=weights)
+    scale = np.maximum(np.sqrt(variance), .1)
     x = np.column_stack([np.ones(len(raw)), (imputed - mean) / scale])
     # Missingness indicators allow the model to learn availability differences.
     x = np.column_stack([x, (~np.isfinite(selected)).astype(float)])
@@ -407,7 +449,7 @@ def _update_context(match, totals, ratings):
     ratings[home], ratings[away] = a + change, b - change
 
 
-def fit_model(matches):
+def _fit_model_legacy(matches):
     histories, totals, ratings = defaultdict(list), {}, {}
     features, targets, times, leagues = [], [], [], []
     matches = sorted(matches, key=lambda m: (utc(m['at']), m['id']))
@@ -469,7 +511,18 @@ def fit_model(matches):
             'histories': {str(k): v[-WINDOW:] for k, v in histories.items()}}
 
 
+
+def fit_model(matches):
+    from .forecast_learning import fit_model as fit
+    from .forecast_refined import fit_refined
+    baseline = fit(matches)
+    return fit_refined(matches, baseline) if baseline else None
+
+
 def _rate(model, own, opponent, home, context=None):
+    if model.get('featureSchema') == 3:
+        from .forecast_learning import rate
+        return rate(model, own, opponent, home, context or {})
     raw = np.array(_features(own, opponent, home, context), dtype=float)[model['columns']]
     missing = ~np.isfinite(raw)
     raw = np.where(missing, model['medians'], raw)
@@ -477,7 +530,7 @@ def _rate(model, own, opponent, home, context=None):
     return float(np.exp(np.clip(x @ np.array(model['beta']), math.log(.05), math.log(8.))))
 
 
-def score_distribution(home_rate, away_rate):
+def score_distribution(home_rate, away_rate, rho=0.):
     # Adaptive tail makes the visible grid a subset of a complete distribution.
     def goals(rate):
         probabilities = [math.exp(-rate)]
@@ -490,7 +543,8 @@ def score_distribution(home_rate, away_rate):
         return probabilities
     home, away = goals(home_rate), goals(away_rate)
     total = sum(home) * sum(away)
-    scores = [{'home': h, 'away': a, 'probability': p * q / total}
+    from .forecast_learning import dc_factor
+    scores = [{'home': h, 'away': a, 'probability': p * q * dc_factor(home_rate, away_rate, h, a, rho) / total}
               for h, p in enumerate(home) for a, q in enumerate(away)]
     return {'outcomes': {'home': sum(r['probability'] for r in scores if r['home'] > r['away']),
                          'draw': sum(r['probability'] for r in scores if r['home'] == r['away']),
@@ -499,6 +553,9 @@ def score_distribution(home_rate, away_rate):
             'cleanSheet': {'home': sum(r['probability'] for r in scores if r['away'] == 0),
                            'away': sum(r['probability'] for r in scores if r['home'] == 0)},
             'over25': sum(r['probability'] for r in scores if r['home'] + r['away'] >= 3),
+            'totalGoalRanges': [sum(r['probability'] for r in scores if r['home'] + r['away'] <= 1),
+                                sum(r['probability'] for r in scores if 2 <= r['home'] + r['away'] <= 3),
+                                sum(r['probability'] for r in scores if r['home'] + r['away'] >= 4)],
             'topScores': sorted(scores, key=lambda r: r['probability'], reverse=True)[:3],
             'grid': [r for r in scores if r['home'] <= 5 and r['away'] <= 5],
             'gridRemainder': sum(r['probability'] for r in scores if r['home'] > 5 or r['away'] > 5),
@@ -508,7 +565,7 @@ def score_distribution(home_rate, away_rate):
 
 def forecast_coverage_reason(fixture, cutoff, model):
     """Cheap shared eligibility check; no fitting, provider calls or prediction."""
-    if not model or (model.get('asOf') and utc(model['asOf']) >= cutoff):
+    if not model or (model.get('asOf') and utc(model['asOf']) >= cutoff) or (model.get('historyAsOf') and utc(model['historyAsOf']) >= cutoff):
         return 'model_unavailable'
     season = str((fixture.get('season') or {}).get('name') or '').replace(' ', '').replace('/', '')
     trained_seasons = {str(c['seasonName']).replace(' ', '').replace('/', '') for c in model.get('competitions', [])}
@@ -534,32 +591,80 @@ def build_forecast(fixture, cutoff, model):
     totals = {int(k): v for k, v in model['leagueTotals'].items()}
     ratings = {int(k): v for k, v in model['ratings'].items()}
     league = fixture['league']['id']
-    a = _rate(model, own, opponent, True, _context(totals, ratings, league, home['id'], away['id']))
-    b = _rate(model, opponent, own, False, _context(totals, ratings, league, away['id'], home['id']))
-    return {'status': 'ready', 'forecast': {'fixtureId': fixture['fixtureId'], 'modelVersion': VERSION,
-            'startingAt': fixture['startingAt'], 'asOf': model.get('asOf', cutoff.isoformat()), 'generatedAt': datetime.now(timezone.utc).isoformat(),
-            'scope': 'current_season_last_10', 'modelId': model.get('modelId'), 'trainingCompetitions': model.get('competitions', []), 'regulationMinutes': 90,
+    a = _rate(model, own, opponent, True, {**_context(totals, ratings, league, home['id'], away['id']), 'kickoff': fixture['startingAt']})
+    b = _rate(model, opponent, own, False, {**_context(totals, ratings, league, away['id'], home['id']), 'kickoff': fixture['startingAt']})
+    if model.get('refinedEnsemble'):
+        from .forecast_refined import predict_rates
+        a, b = (float(value) for value in predict_rates(model, fixture, cutoff, (a, b)))
+    return {'status': 'ready', 'forecast': {'fixtureId': fixture['fixtureId'], 'modelVersion': model.get('version', 2),
+            'startingAt': fixture['startingAt'], 'asOf': model.get('historyAsOf') or model.get('asOf', cutoff.isoformat()), 'generatedAt': datetime.now(timezone.utc).isoformat(),
+            'scope': model.get('scope', 'current_season_last_10'), 'modelId': model.get('modelId'), 'trainingCompetitions': model.get('competitions', []), 'regulationMinutes': 90,
             'home': {'id': home['id'], 'name': home['name'], 'imageUrl': home.get('imageUrl'), 'matches': len(own), 'projectedGoals': a},
             'away': {'id': away['id'], 'name': away['name'], 'imageUrl': away.get('imageUrl'), 'matches': len(opponent), 'projectedGoals': b},
             'trainingMatches': model['trainingMatches'], 'validationMatches': model['validationMatches'],
             'usesTeamStats': model['usesTeamStats'], 'features': model['features'],
-            'halfScenarios': half_scenarios(a, b, own, opponent, league, model.get('halfTimeModel')),
-            **score_distribution(a, b)}}
+            'halfScenarios': half_scenarios(a, b, own, opponent, league, model.get('halfTimeModel'), model.get('rho', 0.)),
+            **score_distribution(a, b, model.get('rho', 0.))}}
 
 
 def load_saved_model(cutoff):
+    # Immutable artifact cache plus a dated daily-input snapshot, selected only
+    # from information available before the requested prediction cutoff.
     with engine.connect() as db:
-        row = db.execute(text("""SELECT id,artifact FROM mobile_match_forecast_models
-            WHERE model_version=:version AND training_cutoff<:cutoff
-            ORDER BY is_active DESC,training_cutoff DESC LIMIT 1"""),
-            {'version': VERSION, 'cutoff': cutoff}).mappings().first()
-    return {**row['artifact'], 'modelId': row['id']} if row else None
+        model_id = db.execute(text("""SELECT id FROM mobile_match_forecast_models
+            WHERE model_version IN (:version,4,3,2) AND training_cutoff<:cutoff
+            AND (model_version=2 OR validation_metrics->>'promotionApproved'='true')
+            ORDER BY is_active DESC,training_cutoff DESC,model_version DESC LIMIT 1"""),
+            {'version': VERSION, 'cutoff': cutoff}).scalar()
+        if model_id is None:
+            return None
+        with _MODEL_LOCK:
+            model = _MODEL_ARTIFACTS.get(model_id)
+            if model is None:
+                artifact = db.execute(text('SELECT artifact FROM mobile_match_forecast_models WHERE id=:id'), {'id': model_id}).scalar_one()
+                model = {**artifact, 'modelId': model_id}
+                _MODEL_ARTIFACTS[model_id] = model
+                while len(_MODEL_ARTIFACTS) > 3:
+                    _MODEL_ARTIFACTS.popitem(last=False)
+            _MODEL_ARTIFACTS.move_to_end(model_id)
+    from .forecast_history import attach_snapshot
+    return attach_snapshot(model, cutoff)
+
+
+def store_shared_model(model, activate=False):
+    """Atomically activate a validated offline artifact; preserve older versions."""
+    _schema()
+    cutoff = utc(model['asOf'])
+    if model.get('version') != VERSION or model.get('featureSchema') != 3:
+        raise ValueError('Unexpected forecast model schema')
+    if any(utc(row['at']) >= cutoff for rows in model['histories'].values() for row in rows):
+        raise ValueError('Model history crosses training cutoff')
+    if activate and not model.get('promotionEvaluation', {}).get('passed'):
+        raise ValueError('Forecast candidate has not passed promotion checks')
+    model = {**model, 'promotionStatus': 'approved' if activate else 'candidate'}
+    payload = json.dumps(model, allow_nan=False)
+    validation = {k: v for k, v in model.items() if k.startswith('validation')}
+    validation['promotionApproved'] = activate
+    with engine.begin() as db:
+        db.execute(text("SELECT pg_advisory_xact_lock(hashtextextended('activate_shared_match_forecast',0))"))
+        if activate:
+            db.execute(text('UPDATE mobile_match_forecast_models SET is_active=FALSE WHERE is_active'))
+            db.execute(text("""DELETE FROM mobile_match_forecast_cache
+                WHERE cache_key LIKE :pattern AND
+                (payload->>'status' <> 'ready' OR (payload->'forecast'->>'startingAt')::timestamptz>NOW())"""),
+                {'pattern': f'fixture:%:v{VERSION}:%'})
+        return db.execute(text("""INSERT INTO mobile_match_forecast_models
+            (model_version,training_cutoff,training_matches,validation_matches,competitions,validation_metrics,artifact,is_active)
+            VALUES(:version,:cutoff,:training,:validation,CAST(:competitions AS jsonb),CAST(:metrics AS jsonb),CAST(:artifact AS jsonb),:active)
+            RETURNING id"""), {'version': VERSION, 'cutoff': cutoff, 'training': model['trainingMatches'],
+            'validation': model['validationMatches'], 'competitions': json.dumps(model['competitions']),
+            'metrics': json.dumps(validation, allow_nan=False), 'artifact': payload, 'active': activate}).scalar_one()
 
 
 def train_shared_model(refresh_key=None):
     """Explicit offline operation. Never invoked by report endpoints."""
     _schema()
-    cutoff = datetime.now(timezone.utc)
+    cutoff = datetime.now(timezone.utc) - timedelta(hours=3)
     with engine.begin() as lock:
         lock.execute(text("SELECT pg_advisory_xact_lock(hashtextextended('train_shared_match_forecast',0))"))
         if refresh_key:
@@ -573,7 +678,7 @@ def train_shared_model(refresh_key=None):
             season = league.get('currentseason') or {}
             if not season.get('id') or not season.get('starting_at'):
                 raise ValueError(f'Current season missing for competition {league_id}')
-            matches = _history(league_id, cutoff, season)
+            matches = _history(league_id, cutoff, season, include_events=True)
             if not matches:
                 raise ValueError(f'Current season fixtures missing for competition {league_id}')
             return {'leagueId': league_id, 'name': league['name'], 'seasonId': season['id'],
@@ -586,24 +691,16 @@ def train_shared_model(refresh_key=None):
         model = fit_model(matches)
         if not model:
             raise ValueError('Insufficient current-season data for a shared model')
-        model.update(asOf=cutoff.isoformat(), competitions=competitions, version=VERSION)
+        model.update(asOf=datetime.now(timezone.utc).isoformat(), dataCutoff=cutoff.isoformat(), competitions=competitions, version=VERSION)
         if refresh_key:
             model['refreshKey'] = refresh_key
-        validation = {k: v for k, v in model.items() if k.startswith('validation') or k == 'baselineValidationLoss'}
-        with engine.begin() as db:
-            db.execute(text('UPDATE mobile_match_forecast_models SET is_active=FALSE WHERE is_active'))
-            db.execute(text("""DELETE FROM mobile_match_forecast_cache
-                WHERE (cache_key LIKE :pattern OR cache_key LIKE :legacy) AND
-                (payload->>'status' <> 'ready' OR (payload->'forecast'->>'startingAt')::timestamptz>NOW())"""),
-                {'pattern': f'fixture:%:v{VERSION}:%', 'legacy': f'fixture:%:v{VERSION}'})
-            model_id = db.execute(text("""INSERT INTO mobile_match_forecast_models
-                (model_version,training_cutoff,training_matches,validation_matches,competitions,validation_metrics,artifact,is_active)
-                VALUES(:version,:cutoff,:training,:validation,CAST(:competitions AS jsonb),CAST(:metrics AS jsonb),CAST(:artifact AS jsonb),TRUE)
-                RETURNING id"""), {'version': VERSION, 'cutoff': cutoff, 'training': model['trainingMatches'],
-                'validation': model['validationMatches'], 'competitions': json.dumps(competitions),
-                'metrics': json.dumps(validation, allow_nan=False), 'artifact': json.dumps(model, allow_nan=False)}).scalar_one()
+        from .forecast_learning import promotion_check
+        model['promotionEvaluation'] = promotion_check(matches, model)
+        validation = {k: v for k, v in model.items() if k.startswith('validation')}
+        model_id = store_shared_model(model, activate=model['promotionEvaluation']['passed'])
         return {'modelId': model_id, 'inputMatches': len(matches), 'trainingMatches': model['trainingMatches'],
                 'validationMatches': model['validationMatches'], 'usesTeamStats': model['usesTeamStats'],
+                'activated': model['promotionEvaluation']['passed'], 'promotionEvaluation': model['promotionEvaluation'],
                 'competitions': [{**c, 'trainingExamples': model['trainingByCompetition'].get(str(c['leagueId']), 0)} for c in competitions], 'metrics': validation, 'elapsedSeconds': round(perf_counter() - started, 2)}
 
 
@@ -620,7 +717,7 @@ def _run(fixture_id):
             kickoff = utc(fixture['startingAt'])
             cutoff = min(datetime.now(timezone.utc), kickoff)
             # Select a model trained strictly before kickoff; never retrain here.
-            model = load_saved_model(kickoff)
+            model = load_saved_model(cutoff)
             result = build_forecast(fixture, cutoff, model) if model else {'status': 'unavailable', 'reason': 'model_unavailable'}
             _write(key, result, kickoff + timedelta(days=730) if kickoff <= datetime.now(timezone.utc) else min(kickoff, datetime.now(timezone.utc) + timedelta(hours=1)))
     except Exception as exc:

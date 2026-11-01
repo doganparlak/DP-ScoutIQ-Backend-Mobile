@@ -71,12 +71,15 @@ def predict_fixtures(fixtures, model, now, on_forecast=None):
 
 
 def process_round(round_id, user_id):
-    from match_pool_module.forecast import train_shared_model, save_forecast_snapshot
+    from match_pool_module.forecast import train_shared_model, save_forecast_snapshot, load_saved_model
     # The persisted refresh key also makes recovery after a process restart
     # reuse the completed model instead of training twice for the same round.
     result = train_shared_model(refresh_key=f'score-prediction:{round_id}')
+    model = load_saved_model(utcnow())
+    if not model:
+        raise ValueError('No approved ScoutWise forecast model is available')
+    result = {**result, 'modelId': model['modelId']}
     with engine.connect() as db:
-        model = db.execute(text('SELECT artifact FROM mobile_match_forecast_models WHERE id=:id'), {'id': result['modelId']}).scalar_one()
         row = db.execute(text('SELECT * FROM prediction_rounds WHERE id=:id'), {'id': round_id}).mappings().one()
     now = utcnow()
     if row['status'] != 'open' or now >= row['deadline']:
