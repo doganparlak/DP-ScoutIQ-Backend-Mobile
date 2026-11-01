@@ -30,7 +30,9 @@ _PENDING: set[int] = set()
 _LOCK = Lock()
 _SCHEMA_READY = False
 # Standardized inputs; weights are learned from completed historical fixtures.
-TRAINING_LEAGUES = (600, 603, 8, 564, 82, 384, 301, 2, 5, 2286)
+# Turkey, top-five European leagues, UEFA competitions, Belgium, Portugal,
+# Netherlands, Austria and Scotland; only each competition's current season.
+TRAINING_LEAGUES = (600, 603, 8, 564, 82, 384, 301, 2, 5, 2286, 208, 462, 72, 181, 501)
 STAT_NAMES = ('Shots On Target', 'Shots Total', 'Shots Insidebox', 'Big Chances Created', 'Ball Possession %', 'Expected Goals')
 
 
@@ -504,18 +506,31 @@ def score_distribution(home_rate, away_rate):
                                   'away': away[:6] + [max(0., 1 - sum(away[:6]))]}}
 
 
-def build_forecast(fixture, cutoff, model):
-    home, away = fixture['homeTeam'], fixture['awayTeam']
+def forecast_coverage_reason(fixture, cutoff, model):
+    """Cheap shared eligibility check; no fitting, provider calls or prediction."""
+    if not model or (model.get('asOf') and utc(model['asOf']) >= cutoff):
+        return 'model_unavailable'
     season = str((fixture.get('season') or {}).get('name') or '').replace(' ', '').replace('/', '')
     trained_seasons = {str(c['seasonName']).replace(' ', '').replace('/', '') for c in model.get('competitions', [])}
     if season and season not in trained_seasons:
-        return {'status': 'unavailable', 'reason': 'season_mismatch'}
-    own, opponent = model['histories'].get(str(home['id']), []), model['histories'].get(str(away['id']), [])
+        return 'season_mismatch'
+    own = model['histories'].get(str(fixture['homeTeam']['id']), [])
+    opponent = model['histories'].get(str(fixture['awayTeam']['id']), [])
     if min(len(own), len(opponent)) < MIN_HISTORY:
-        return {'status': 'unavailable', 'reason': 'insufficient_history'}
-    # Even cached histories are bounded strictly by the requested forecast cutoff.
-    if any(utc(r['at']) >= cutoff for r in own + opponent):
+        return 'insufficient_history'
+    if any(utc(row['at']) >= cutoff for row in own + opponent):
+        return 'history_after_cutoff'
+    return None
+
+
+def build_forecast(fixture, cutoff, model):
+    reason = forecast_coverage_reason(fixture, cutoff, model)
+    if reason == 'history_after_cutoff':
         raise ValueError('Forecast history crosses kickoff')
+    if reason:
+        return {'status': 'unavailable', 'reason': reason}
+    home, away = fixture['homeTeam'], fixture['awayTeam']
+    own, opponent = model['histories'].get(str(home['id']), []), model['histories'].get(str(away['id']), [])
     totals = {int(k): v for k, v in model['leagueTotals'].items()}
     ratings = {int(k): v for k, v in model['ratings'].items()}
     league = fixture['league']['id']

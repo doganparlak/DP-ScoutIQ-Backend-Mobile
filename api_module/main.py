@@ -152,6 +152,18 @@ def ensure_favorite_players_columns() -> None:
         db.close()
 
 
+@app.on_event("startup")
+def start_daily_fixture_cache() -> None:
+    from match_pool_module.daily import start_daily_warmer
+    start_daily_warmer()
+
+
+@app.on_event("shutdown")
+def stop_daily_fixture_cache() -> None:
+    from match_pool_module.daily import stop_daily_warmer
+    stop_daily_warmer()
+
+
 # ---------- endpoints ----------
 @app.get("/health")
 async def health() -> Dict[str, Any]:

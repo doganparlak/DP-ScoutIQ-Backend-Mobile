@@ -1,5 +1,7 @@
 from api_module.report_access import user_report_tier, report_tier
-from fastapi import APIRouter, Depends, HTTPException
+from pydantic import BaseModel, Field
+from datetime import date
+from fastapi import APIRouter, Depends, HTTPException, Query
 from sqlalchemy import text
 from sqlalchemy.orm import Session
 from sqlalchemy.exc import ProgrammingError
@@ -11,6 +13,50 @@ from .fixtures import get_match_filter_options, resolve_league_id, resolve_team_
 import requests
 import json
 router = APIRouter(tags=["match-pool"])
+
+
+class WatchlistChangeIn(BaseModel):
+    fixtureId: int = Field(gt=0)
+    starred: bool
+
+
+@router.get('/match-pool/watchlist')
+def match_watchlist(user_id=Depends(require_auth), db: Session=Depends(get_db)):
+    ids = db.execute(text("SELECT fixture_id FROM match_watchlist WHERE user_id=:uid ORDER BY created_at DESC, fixture_id"), {"uid": user_id}).scalars().all()
+    return {"fixtureIds": ids}
+
+
+@router.post('/match-pool/watchlist')
+def set_match_watchlist(payload: WatchlistChangeIn, user_id=Depends(require_auth), db: Session=Depends(get_db)):
+    params = {"uid": user_id, "fid": payload.fixtureId}
+    if payload.starred:
+        db.execute(text("INSERT INTO match_watchlist (user_id, fixture_id) VALUES (:uid, :fid) ON CONFLICT (user_id, fixture_id) DO NOTHING"), params)
+    else:
+        db.execute(text("DELETE FROM match_watchlist WHERE user_id=:uid AND fixture_id=:fid"), params)
+    db.commit()
+    return {"fixtureId": payload.fixtureId, "starred": payload.starred}
+
+
+@router.get('/match-pool/calendar')
+def match_calendar(timezone: str = 'Europe/Istanbul', user_id=Depends(require_auth), db: Session=Depends(get_db)):
+    from .daily import calendar_bounds
+    try:
+        return calendar_bounds(db, timezone)
+    except ValueError as exc:
+        raise HTTPException(400, str(exc)) from exc
+    except (SportMonksError, requests.RequestException):
+        raise HTTPException(502, 'Fixture calendar is temporarily unavailable') from None
+
+
+@router.get('/match-pool/daily')
+def daily_matches(day: date = Query(...), timezone: str = 'Europe/Istanbul', user_id=Depends(require_auth), db: Session=Depends(get_db)):
+    from .daily import daily_fixtures
+    try:
+        return daily_fixtures(db, day, timezone)
+    except ValueError as exc:
+        raise HTTPException(400, str(exc)) from exc
+    except (SportMonksError, requests.RequestException):
+        raise HTTPException(502, 'Fixture data service is temporarily unavailable') from None
 
 @router.post("/match-pool/options", response_model=MatchAnalysisOptionsOut)
 def options(payload: MatchAnalysisOptionsIn, user_id=Depends(require_auth), db: Session=Depends(get_db)):
