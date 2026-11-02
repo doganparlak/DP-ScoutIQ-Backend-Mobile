@@ -26,6 +26,8 @@ _WARM_THREAD = None
 _WARM_ZONES = OrderedDict()
 _LOG = logging.getLogger(__name__)
 _INCLUDES = 'participants;league.country;season;state;scores;periods'
+LIVE_REFRESH_SECONDS = 8
+
 LIVE_STATES = {'INPLAY_1ST_HALF', 'INPLAY_2ND_HALF', 'HT', 'INPLAY_ET', 'ET', 'BREAK', 'PEN_LIVE', 'LIVE', '1ST', '2ND', 'INT', 'SUSP'}
 
 
@@ -273,16 +275,17 @@ def _refresh_day(selected: date, timezone_name: str, leagues):
                 live = _cached(live_key)
                 if live is None:
                     live = [item for raw in _pages('livescores', leagues) if (item := _compact(raw))]
-                    _remember(live_key, live, 60)
+                    _remember(live_key, live, LIVE_REFRESH_SECONDS)
             # This feed also includes games finished in the last 15 minutes,
             # so final scores replace in-play rows rather than disappearing.
             for item in live:
                 if item['league']['id'] in leagues and _kickoff(item).astimezone(zone).date() == selected:
                     fixtures[item['fixtureId']] = item
         ordered = sorted(fixtures.values(), key=lambda item: (_kickoff(item), item['fixtureId']))
-        seconds = 60 if any(is_live(item) for item in ordered) else 300
+        has_live = any(is_live(item) for item in ordered)
+        seconds = LIVE_REFRESH_SECONDS if has_live else 300
         result = {'date': selected.isoformat(), 'fixtures': ordered,
-                  'refreshAfter': seconds if selected == today or seconds == 60 else None, 'stale': False}
+                  'refreshAfter': seconds if selected == today or has_live else None, 'stale': False}
         _remember(key, result, seconds if abs((selected - today).days) <= 1 else 1800)
         return _forecast_capabilities(result)
 
@@ -312,7 +315,7 @@ def daily_fixtures(db, selected: date, timezone_name: str):
         with _LOCK:
             failed = _RETRY_AT.get(key, 0) > monotonic()
         # A short silent follow-up fetch picks up the completed refresh.
-        return _forecast_capabilities({**previous, 'refreshAfter': 30 if failed else 5, 'stale': failed})
+        return _forecast_capabilities({**previous, 'refreshAfter': 30 if failed else LIVE_REFRESH_SECONDS, 'stale': failed})
     return _refresh_day(selected, timezone_name, leagues)
 
 
@@ -338,7 +341,7 @@ def start_daily_warmer():
                     if _cached(calendar_key) is None:
                         _queue_refresh(calendar_key, lambda name=name: _refresh_calendar(name, leagues))
                     key = ('day', selected.isoformat(), name, leagues)
-                    # Keep the existing 60/300-second provider cadence; callers
+                    # Keep the shared 8/300-second provider cadence; callers
                     # can still read the old snapshot while this job refreshes.
                     with _LOCK:
                         entry = _CACHE.get(key)
@@ -347,7 +350,7 @@ def start_daily_warmer():
                         _queue_refresh(key, lambda selected=selected, name=name: _refresh_day(selected, name, leagues))
             except Exception:
                 _LOG.warning('Daily fixture cache warm-up failed; retrying later')
-            _WARM_STOP.wait(15)
+            _WARM_STOP.wait(2)
 
     _WARM_THREAD = Thread(target=warm, name='daily-warmer', daemon=True)
     _WARM_THREAD.start()
