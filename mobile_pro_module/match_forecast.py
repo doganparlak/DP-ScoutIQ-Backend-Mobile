@@ -7,7 +7,7 @@ from fastapi import HTTPException
 from sqlalchemy import text
 
 from api_module.database import engine
-from match_pool_module.forecast import get_forecast, utc
+from match_pool_module.forecast import get_forecast, utc, active_model_id
 
 _READY = False
 _LOCK = Lock()
@@ -52,12 +52,26 @@ def _public(result, account, unlocked=False):
             'freeChatMessagesRemaining': None if account['unlimited'] else account['free_chat_messages_remaining']}
 
 
+def _refresh_opened(db, user_id, fixture_id, saved):
+    forecast = saved.get('forecast') or {}
+    if utc(forecast['startingAt']) <= datetime.now(timezone.utc) or forecast.get('modelId') == active_model_id():
+        return saved
+    result = get_forecast(fixture_id)
+    if result.get('status') == 'ready' and utc(result['forecast']['startingAt']) > datetime.now(timezone.utc):
+        db.execute(text('''UPDATE mobile_pro_forecast_unlocks SET payload=CAST(:payload AS jsonb)
+            WHERE user_id=:uid AND fixture_id=:fid
+            AND (payload->'forecast'->>'startingAt')::timestamptz>NOW()'''),
+            {'uid': user_id, 'fid': fixture_id, 'payload': json.dumps(result, allow_nan=False)})
+        db.commit()
+    return result
+
+
 def forecast_access(db, user_id, fixture_id, unlock=False):
     _schema()
     account = _account(db, user_id)
     saved = _opened(db, user_id, fixture_id)
     if saved:
-        return _public(saved, account, True)
+        return _public(_refresh_opened(db, user_id, fixture_id, saved), account, True)
     if not unlock:
         return _public({'status': 'locked'}, account)
     if not account['unlimited'] and (account['plan'] not in ('Free', 'No Ads Monthly') or account['free_chat_messages_remaining'] <= 0):
@@ -75,7 +89,7 @@ def forecast_access(db, user_id, fixture_id, unlock=False):
         saved = _opened(db, user_id, fixture_id)
         if saved:
             db.rollback()
-            return _public(saved, account, True)
+            return _public(_refresh_opened(db, user_id, fixture_id, saved), account, True)
         if not account['unlimited'] and (account['plan'] not in ('Free', 'No Ads Monthly') or account['free_chat_messages_remaining'] <= 0):
             raise HTTPException(403, 'CHAT_TRIAL_EXHAUSTED')
         # A forecast becoming ready exactly at kickoff cannot be purchased.

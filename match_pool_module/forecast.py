@@ -20,7 +20,7 @@ from api_module.database import engine
 from .fixtures import SPORTMONKS_BASE_URL, get_fixture
 
 LOG = logging.getLogger(__name__)
-VERSION = 5
+VERSION = 6
 CACHE_REVISION = 1
 WINDOW = 10
 MIN_HISTORY = 5
@@ -512,11 +512,15 @@ def _fit_model_legacy(matches):
 
 
 
-def fit_model(matches):
+def fit_model(matches, competitions=None, association_prior=None):
     from .forecast_learning import fit_model as fit
     from .forecast_refined import fit_refined
     baseline = fit(matches)
-    return fit_refined(matches, baseline) if baseline else None
+    refined = fit_refined(matches, baseline) if baseline else None
+    if refined and competitions is not None:
+        from .forecast_league_offsets import fit_adjusted_model
+        refined = fit_adjusted_model(matches, refined, competitions, association_prior)
+    return refined
 
 
 def _rate(model, own, opponent, home, context=None):
@@ -591,8 +595,10 @@ def build_forecast(fixture, cutoff, model):
     totals = {int(k): v for k, v in model['leagueTotals'].items()}
     ratings = {int(k): v for k, v in model['ratings'].items()}
     league = fixture['league']['id']
-    a = _rate(model, own, opponent, True, {**_context(totals, ratings, league, home['id'], away['id']), 'kickoff': fixture['startingAt']})
-    b = _rate(model, opponent, own, False, {**_context(totals, ratings, league, away['id'], home['id']), 'kickoff': fixture['startingAt']})
+    from .forecast_league_offsets import fixture_elo_gap, adjust_elo_context
+    gap = fixture_elo_gap(model, fixture)
+    a = _rate(model, own, opponent, True, {**adjust_elo_context(_context(totals, ratings, league, home['id'], away['id']), gap, True), 'kickoff': fixture['startingAt']})
+    b = _rate(model, opponent, own, False, {**adjust_elo_context(_context(totals, ratings, league, away['id'], home['id']), gap, False), 'kickoff': fixture['startingAt']})
     if model.get('refinedEnsemble'):
         from .forecast_refined import predict_rates
         a, b = (float(value) for value in predict_rates(model, fixture, cutoff, (a, b)))
@@ -612,7 +618,7 @@ def load_saved_model(cutoff):
     # from information available before the requested prediction cutoff.
     with engine.connect() as db:
         model_id = db.execute(text("""SELECT id FROM mobile_match_forecast_models
-            WHERE model_version IN (:version,4,3,2) AND training_cutoff<:cutoff
+            WHERE model_version IN (:version,5,4,3,2) AND training_cutoff<:cutoff
             AND (model_version=2 OR validation_metrics->>'promotionApproved'='true')
             ORDER BY is_active DESC,training_cutoff DESC,model_version DESC LIMIT 1"""),
             {'version': VERSION, 'cutoff': cutoff}).scalar()
@@ -652,7 +658,7 @@ def store_shared_model(model, activate=False):
             db.execute(text("""DELETE FROM mobile_match_forecast_cache
                 WHERE cache_key LIKE :pattern AND
                 (payload->>'status' <> 'ready' OR (payload->'forecast'->>'startingAt')::timestamptz>NOW())"""),
-                {'pattern': f'fixture:%:v{VERSION}:%'})
+                {'pattern': 'fixture:%'})
         return db.execute(text("""INSERT INTO mobile_match_forecast_models
             (model_version,training_cutoff,training_matches,validation_matches,competitions,validation_metrics,artifact,is_active)
             VALUES(:version,:cutoff,:training,:validation,CAST(:competitions AS jsonb),CAST(:metrics AS jsonb),CAST(:artifact AS jsonb),:active)
@@ -674,21 +680,23 @@ def train_shared_model(refresh_key=None):
             if previous:
                 return {'modelId': previous, 'reused': True}
         def collect(league_id):
-            league = _request(f'leagues/{league_id}', {'include': 'currentSeason'}).get('data') or {}
+            league = _request(f'leagues/{league_id}', {'include': 'currentSeason;country'}).get('data') or {}
             season = league.get('currentseason') or {}
             if not season.get('id') or not season.get('starting_at'):
                 raise ValueError(f'Current season missing for competition {league_id}')
             matches = _history(league_id, cutoff, season, include_events=True)
             if not matches:
                 raise ValueError(f'Current season fixtures missing for competition {league_id}')
-            return {'leagueId': league_id, 'name': league['name'], 'seasonId': season['id'],
+            return {'leagueId': league_id, 'name': league['name'], 'country': (league.get('country') or {}).get('name'), 'seasonId': season['id'],
                     'seasonName': season['name'], 'startsAt': season['starting_at'], 'matches': len(matches)}, matches
         started = perf_counter()
         with ThreadPoolExecutor(max_workers=3) as pool:
             batches = list(pool.map(collect, TRAINING_LEAGUES))
         competitions = [b[0] for b in batches]
         matches = list({m['id']: m for _, rows in batches for m in rows}.values())
-        model = fit_model(matches)
+        from pathlib import Path
+        prior = json.loads(Path(__file__).with_name('association_priors_2025.json').read_text())
+        model = fit_model(matches, competitions=competitions, association_prior=prior)
         if not model:
             raise ValueError('Insufficient current-season data for a shared model')
         model.update(asOf=datetime.now(timezone.utc).isoformat(), dataCutoff=cutoff.isoformat(), competitions=competitions, version=VERSION)
@@ -728,6 +736,11 @@ def _run(fixture_id):
             _PENDING.discard(fixture_id)
 
 
+def active_model_id():
+    with engine.connect() as db:
+        return db.execute(text('SELECT id FROM mobile_match_forecast_models WHERE is_active')).scalar()
+
+
 def get_forecast(fixture_id, retry=False):
     _schema()
     key = _cache_key(fixture_id)
@@ -736,6 +749,8 @@ def get_forecast(fixture_id, retry=False):
         with engine.begin() as db:
             db.execute(text("DELETE FROM mobile_match_forecast_cache WHERE cache_key=:key AND payload->>'status' IN ('failed','unavailable')"), {'key': key})
         cached = None
+    if cached and cached.get('status') == 'ready' and utc(cached['forecast']['startingAt']) > datetime.now(timezone.utc):
+        if cached['forecast'].get('modelId') != active_model_id(): cached = None
     if cached:
         return cached
     with _LOCK:

@@ -7,6 +7,7 @@ from collections import OrderedDict, defaultdict
 from concurrent.futures import ThreadPoolExecutor
 from datetime import datetime, timedelta, timezone
 import json
+import copy
 import logging
 from threading import Event, Lock, Thread
 
@@ -58,10 +59,15 @@ def apply_matches(model, matches, as_of):
     half = model.get('halfTimeModel')
     half_totals = {int(k): list(v) for k, v in (half or {}).get('leagueTotals', {}).items()}
     seen = {row['id'] for rows in histories.values() for row in rows}
+    if refined_state is not None: seen.update(refined_state.seen)
+    offsets = copy.deepcopy(model.get('leagueOffsets'))
     added = 0
     for match in sorted(matches, key=lambda m: (f.utc(m['at']), m['id'])):
         if match['id'] in seen or f.utc(match['at']) + timedelta(hours=3) > as_of:
             continue
+        if offsets:
+            from .forecast_league_offsets import observe_match
+            observe_match(offsets, match, ratings)
         if model.get('featureSchema') == 3:
             append_match(histories, match, ratings)
         else:
@@ -74,8 +80,12 @@ def apply_matches(model, matches, as_of):
     selected = {name.split(':', 1)[-1] for name in model['features'] if ':' in name}
     compact = {str(team): [{**row, **{side: {key: value for key, value in row[side].items() if key in selected}
                for side in ('own', 'opponent')}} for row in sorted(rows, key=lambda r: (f.utc(r['at']), r['id']))[-f.WINDOW:]] for team, rows in histories.items()}
+    if offsets:
+        from .forecast_league_offsets import refresh_offsets
+        offsets = refresh_offsets(offsets, as_of)
+    offset_update = {'leagueOffsets': offsets} if offsets else {}
     refined_update = {'refinedEnsemble': {**refined, 'state': pack_state(refined_state)}} if refined else {}
-    return {**model, **refined_update, 'histories': compact, 'leagueTotals': {str(k): v for k, v in totals.items()},
+    return {**model, **refined_update, **offset_update, 'histories': compact, 'leagueTotals': {str(k): v for k, v in totals.items()},
             'ratings': {str(k): v for k, v in ratings.items()},
             'halfTimeModel': {**half, 'leagueTotals': {str(k): v for k, v in half_totals.items()}} if half else None,
             'historyAsOf': as_of.isoformat(), 'historyMatchesAdded': added}
@@ -153,6 +163,8 @@ def refresh_active_history(now=None):
         fields = ('histories', 'leagueTotals', 'ratings', 'halfTimeModel', 'historyMatchesAdded')
         if refreshed.get('refinedEnsemble'):
             fields += ('refinedEnsemble',)
+        if refreshed.get('leagueOffsets'):
+            fields += ('leagueOffsets',)
         payload = {**{key: refreshed[key] for key in fields}, 'historyAsOf': as_of.isoformat(), 'historyInputCutoff': data_cutoff.isoformat()}
         owner.execute(text('''INSERT INTO mobile_match_forecast_histories(model_id,as_of,data_cutoff,payload)
             VALUES(:id,:stamp,:cutoff,CAST(:payload AS jsonb))'''),

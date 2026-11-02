@@ -123,6 +123,8 @@ def predict_rates(model, fixture, cutoff, base_rates):
         raise ValueError('Insufficient refined history')
     raw = np.array([c.features(state, home, away, True, fixture['league']['id'], fixture['startingAt'], model['strategy']),
                     c.features(state, away, home, False, fixture['league']['id'], fixture['startingAt'], model['strategy'])], float)
+    from .forecast_league_offsets import fixture_elo_gap, apply_elo_gap
+    raw = apply_elo_gap(raw, component['featureNames'], [fixture_elo_gap(model, fixture)])
     tree_rates = c.tree_predict(component['nonlinear'], raw)
     return weights['incumbent'] * np.asarray(base_rates) + weights['nonlinear'] * tree_rates
 
@@ -137,6 +139,12 @@ def promotion_check(matches, candidate):
         return {'passed': False, 'reason': 'insufficient_baseline_history'}
     baseline.update(asOf=cutoff.isoformat(), version=f.VERSION)
     fitted = fit_refined(prior, baseline)
+    if candidate.get('leagueOffsets'):
+        from .forecast_league_offsets import fit_adjusted_model
+        baseline = fitted
+        prior_state = candidate['leagueOffsets']['prior']
+        prior_payload = {'coefficients': prior_state['coefficients'], 'availableAt': prior_state['available_at'], 'source': prior_state['source']}
+        fitted = fit_adjusted_model(prior, baseline, candidate['competitions'], prior_payload)
     models = {'baseline': baseline, 'candidate': fitted}
     rates = {name: [] for name in models}
     goals = []
@@ -157,9 +165,10 @@ def promotion_check(matches, candidate):
             histories = model['histories'];totals={int(k):v for k,v in model['leagueTotals'].items()};ratings={int(k):v for k,v in model['ratings'].items()}
             predicted=[]
             for team, other, home in ((match['home'],match['away'],True),(match['away'],match['home'],False)):
-                context={**f._context(totals,ratings,match['league'],team,other),'kickoff':match['at']}
+                from .forecast_league_offsets import fixture_elo_gap, adjust_elo_context
+                context={**adjust_elo_context(f._context(totals,ratings,match['league'],team,other), fixture_elo_gap(model, fixture), home), 'kickoff':match['at']}
                 predicted.append(f._rate(model,histories[str(team)],histories[str(other)],home,context))
-            if name == 'candidate':
+            if model.get('refinedEnsemble'):
                 predicted = predict_rates(model,fixture,f.utc(match['at']),predicted)
             rates[name].extend(predicted)
         goals.extend((match['hg'],match['ag']))
