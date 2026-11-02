@@ -75,7 +75,7 @@ def _recent_team_fixtures(
     competition_id: int,
     reference_date: str,
 ) -> list[dict[str, Any]]:
-    """Return the three latest completed matches from the active season."""
+    """Return the five latest completed matches from the active season."""
     token = os.getenv("SPORTMONKS_API_KEY")
     if not token:
         raise SportMonksError("ScoutWise data service is not configured")
@@ -117,14 +117,14 @@ def _recent_team_fixtures(
     # Form represents the current season across all competitions. Competition
     # schedules can expose different season IDs for the same season label, so
     # use the union rather than treating the name match as a fallback. This
-    # keeps domestic-league and European matches in one latest-three sequence.
+    # keeps domestic-league and European matches in one latest-five sequence.
     source_by_id = {
         _as_int(item.get("id")): item
         for item in [*season_fixtures, *same_named_season_fixtures]
         if _as_int(item.get("id"))
     }
     source = [item for item in source_by_id.values() if str(item.get("starting_at") or "").replace("T", " ") < reference.strftime("%Y-%m-%d %H:%M:%S")]
-    return sorted(source, key=lambda item: item.get("starting_at") or "", reverse=True)[:3]
+    return sorted(source, key=lambda item: item.get("starting_at") or "", reverse=True)[:5]
 
 
 def _fixture_lineup_usage(fixture_id: int, team_id: int) -> dict[str, Any]:
