@@ -51,6 +51,19 @@ def initialize():
     return user_id
 
 
+def outcome_aligned_score(forecast):
+    """Choose the modal score within the leading full-match outcome.
+
+    If outcomes tie exactly, prefer the most probable score among those tied
+    outcomes rather than giving the home team an arbitrary advantage.
+    """
+    outcomes = forecast['outcomes']
+    highest = max(outcomes.values())
+    candidates = [forecast['outcomeTopScores'][key] for key, value in outcomes.items()
+                  if value == highest and forecast['outcomeTopScores'][key] is not None]
+    return max(candidates, key=lambda score: score['probability'])
+
+
 def predict_fixtures(fixtures, model, now, on_forecast=None):
     from match_pool_module.forecast import build_forecast, utc
     picks, skipped = {}, []
@@ -63,7 +76,7 @@ def predict_fixtures(fixtures, model, now, on_forecast=None):
         if result['status'] != 'ready':
             skipped.append({'fixtureId': fixture['fixtureId'], 'reason': result.get('reason')})
             continue
-        best = result['forecast']['topScores'][0]
+        best = outcome_aligned_score(result['forecast'])
         if on_forecast:
             on_forecast(result)
         picks[str(fixture['fixtureId'])] = {'home': best['home'], 'away': best['away']}

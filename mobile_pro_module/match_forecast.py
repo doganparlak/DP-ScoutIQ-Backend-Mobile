@@ -54,7 +54,7 @@ def _public(result, account, unlocked=False):
 
 def _refresh_opened(db, user_id, fixture_id, saved):
     forecast = saved.get('forecast') or {}
-    if utc(forecast['startingAt']) <= datetime.now(timezone.utc) or forecast.get('modelId') == active_model_id():
+    if utc(forecast['startingAt']) <= datetime.now(timezone.utc) or (forecast.get('modelId') == active_model_id() and forecast.get('scoreMargins') and (not forecast.get('halfScenarios') or forecast['halfScenarios'].get('projectedGoals'))):
         return saved
     result = get_forecast(fixture_id)
     if result.get('status') == 'ready' and utc(result['forecast']['startingAt']) > datetime.now(timezone.utc):

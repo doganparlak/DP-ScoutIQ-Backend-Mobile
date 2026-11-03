@@ -21,7 +21,7 @@ from .fixtures import SPORTMONKS_BASE_URL, get_fixture
 
 LOG = logging.getLogger(__name__)
 VERSION = 6
-CACHE_REVISION = 1
+CACHE_REVISION = 3
 WINDOW = 10
 MIN_HISTORY = 5
 MIN_TRAINING = 120
@@ -379,7 +379,9 @@ def half_scenarios(home_rate, away_rate, own, opponent, league, model, rho=0.):
         comparison['draw'] -= delta * (1 + home_share + away_share - 2 * home_share * away_share)
         first_btts -= delta * home_share * away_share
     return {'moreGoalsHalf': {'first': comparison['home'], 'equal': comparison['draw'], 'second': comparison['away']},
-            'firstHalfBothTeamsScore': first_btts}
+            'firstHalfBothTeamsScore': first_btts,
+            'projectedGoals': {'first': {'home': first_home, 'away': first_away},
+                               'second': {'home': home_rate - first_home, 'away': away_rate - first_away}}}
 
 
 
@@ -553,6 +555,12 @@ def score_distribution(home_rate, away_rate, rho=0.):
     return {'outcomes': {'home': sum(r['probability'] for r in scores if r['home'] > r['away']),
                          'draw': sum(r['probability'] for r in scores if r['home'] == r['away']),
                          'away': sum(r['probability'] for r in scores if r['home'] < r['away'])},
+            'scoreMargins': {
+                'homeOne': sum(r['probability'] for r in scores if r['home'] - r['away'] == 1),
+                'homeTwoPlus': sum(r['probability'] for r in scores if r['home'] - r['away'] >= 2),
+                'draw': sum(r['probability'] for r in scores if r['home'] == r['away']),
+                'awayOne': sum(r['probability'] for r in scores if r['away'] - r['home'] == 1),
+                'awayTwoPlus': sum(r['probability'] for r in scores if r['away'] - r['home'] >= 2)},
             'bothTeamsScore': sum(r['probability'] for r in scores if r['home'] and r['away']),
             'cleanSheet': {'home': sum(r['probability'] for r in scores if r['away'] == 0),
                            'away': sum(r['probability'] for r in scores if r['home'] == 0)},
@@ -560,6 +568,11 @@ def score_distribution(home_rate, away_rate, rho=0.):
             'totalGoalRanges': [sum(r['probability'] for r in scores if r['home'] + r['away'] <= 1),
                                 sum(r['probability'] for r in scores if 2 <= r['home'] + r['away'] <= 3),
                                 sum(r['probability'] for r in scores if r['home'] + r['away'] >= 4)],
+            # Keep each outcome's best score from the complete distribution.
+            'outcomeTopScores': {
+                'home': max((r for r in scores if r['home'] > r['away']), key=lambda r: r['probability'], default=None),
+                'draw': max((r for r in scores if r['home'] == r['away']), key=lambda r: r['probability'], default=None),
+                'away': max((r for r in scores if r['home'] < r['away']), key=lambda r: r['probability'], default=None)},
             'topScores': sorted(scores, key=lambda r: r['probability'], reverse=True)[:3],
             'grid': [r for r in scores if r['home'] <= 5 and r['away'] <= 5],
             'gridRemainder': sum(r['probability'] for r in scores if r['home'] > 5 or r['away'] > 5),
@@ -767,6 +780,6 @@ def forecast_for_tier(result, tier):
     forecast = result.get('forecast')
     if tier == 'free' and isinstance(forecast, dict):
         fields = ('fixtureId', 'modelVersion', 'startingAt', 'regulationMinutes',
-                  'home', 'away', 'outcomes', 'topScores', 'grid', 'gridRemainder')
+                  'home', 'away', 'outcomes', 'topScores', 'grid', 'gridRemainder', 'scoreMargins')
         scoped['forecast'] = {key: forecast[key] for key in fields if key in forecast}
     return scoped

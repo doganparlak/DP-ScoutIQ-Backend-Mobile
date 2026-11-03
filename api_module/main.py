@@ -179,7 +179,7 @@ def stop_forecast_history_refresh() -> None:
 # ---------- endpoints ----------
 @app.get("/health")
 async def health() -> Dict[str, Any]:
-    return {"ok": True, "forecastRuntimeVersion": 6}
+    return {"ok": True, "forecastRuntimeVersion": 6, "scorePredictionPolicy": "outcome_aligned_v1"}
 
 @app.post("/auth/signup")
 def signup(payload: SignUpIn, db: Session = Depends(get_db)):
