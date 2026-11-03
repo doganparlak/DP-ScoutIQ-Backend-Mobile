@@ -21,6 +21,29 @@ class ActivationTests(unittest.TestCase):
         self.assertIn('UPDATE mobile_pro_forecast_unlocks',str(db.execute.call_args.args[0]))
         db.commit.assert_called_once()
 
+    def test_unlocked_legacy_format_refreshes_on_same_model_without_credit(self):
+        saved=self.payload(1,10)
+        saved['forecast'].update(scoreMargins={'draw':.3},halfScenarios={'firstHalfBothTeamsScore':.2})
+        fresh=self.payload(1,10)
+        fresh['forecast'].update(scoreMargins={'draw':.3},halfScenarios={'projectedGoals':{'first':{'home':.5,'away':.4},'second':{'home':.7,'away':.6}}})
+        db=Mock()
+        with patch.object(access,'_schema'),patch.object(access,'_account',return_value={'unlimited':False,'free_chat_messages_remaining':0}),patch.object(access,'_opened',return_value=saved),patch.object(access,'active_model_id',return_value=10),patch.object(access,'get_forecast',return_value=fresh) as fetch:
+            result=access.forecast_access(db,123,456)
+        fetch.assert_called_once_with(456)
+        self.assertEqual(result['forecast'],fresh['forecast'])
+        self.assertTrue(result['unlocked'])
+        self.assertEqual(result['freeChatMessagesRemaining'],0)
+        self.assertEqual(db.execute.call_count,1)
+        self.assertIn('UPDATE mobile_pro_forecast_unlocks',str(db.execute.call_args.args[0]))
+
+    def test_current_format_keeps_existing_unlock(self):
+        saved=self.payload(1,10)
+        saved['forecast'].update(scoreMargins={'draw':.3},halfScenarios={'projectedGoals':{'first':{},'second':{}}})
+        db=Mock()
+        with patch.object(access,'active_model_id',return_value=10),patch.object(access,'get_forecast') as fetch:
+            self.assertIs(access._refresh_opened(db,123,456,saved),saved)
+        fetch.assert_not_called();db.execute.assert_not_called()
+
     def test_past_unlock_unchanged(self):
         saved=self.payload(-1);db=Mock()
         with patch.object(access,'get_forecast') as fetch:
