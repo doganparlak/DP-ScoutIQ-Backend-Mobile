@@ -5,7 +5,7 @@ Does not activate or write to the database. Keeps the incumbent timing recipe.
 import argparse
 from collections import Counter
 from copy import deepcopy
-from datetime import datetime, timezone
+from datetime import datetime, timezone, timedelta
 import hashlib
 import json
 from pathlib import Path
@@ -43,9 +43,10 @@ def main():
     # Keep the exact incumbent timing parameters and history window. Only its
     # normal current-season input totals advance to the new data cutoff.
     half=deepcopy(old['halfTimeModel']);half['leagueTotals']={str(k):v for k,v in state.half_totals.items()}
+    input_cutoff=(cutoff-timedelta(hours=3)).isoformat()
     now=datetime.now(timezone.utc).isoformat()
-    model={'version':6,'featureSchema':3,'modelId':None,'asOf':cutoff.isoformat(),'dataCutoff':cutoff.isoformat(),
-        'historyInputCutoff':cutoff.isoformat(),'historyAsOf':cutoff.isoformat(),
+    model={'version':6,'featureSchema':3,'modelId':None,'asOf':cutoff.isoformat(),'dataCutoff':input_cutoff,
+        'historyInputCutoff':input_cutoff,'historyAsOf':cutoff.isoformat(),
         'scope':'three_seasons_recency_weighted','trainingRecipe':'multiseason_linear_v1','trainingPolicy':'offline_refit_only',
         'strategy':'opponent','featureNames':schema,'columns':serving_columns,'features':names,
         **prep,'beta':beta,'goalRateCalibration':{'home':{'factor':1.},'away':{'factor':1.}},
