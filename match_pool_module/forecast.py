@@ -692,6 +692,13 @@ def train_shared_model(refresh_key=None):
                 ORDER BY id DESC LIMIT 1"""), {'version': VERSION, 'key': refresh_key}).scalar()
             if previous:
                 return {'modelId': previous, 'reused': True}
+        approved = lock.execute(text("""SELECT id FROM mobile_match_forecast_models
+            WHERE is_active AND artifact->>'trainingPolicy'='offline_refit_only'""")).scalar()
+        if approved is not None:
+            # Daily input snapshots still refresh normally. A weekly score-league
+            # job must not replace an explicitly approved multi-season champion
+            # with a candidate trained by the legacy current-season-only recipe.
+            return {'modelId': approved, 'reused': True, 'trainingPolicy': 'offline_refit_only'}
         def collect(league_id):
             league = _request(f'leagues/{league_id}', {'include': 'currentSeason;country'}).get('data') or {}
             season = league.get('currentseason') or {}
