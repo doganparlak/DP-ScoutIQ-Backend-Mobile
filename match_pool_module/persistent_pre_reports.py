@@ -44,6 +44,11 @@ def public_report(row, language):
     content = row.get('report_content') or {}
     if not compatible(content, language):
         return {'favoriteId':str(row['id']), 'status':'processing', 'content':None}
+    if content.get('squad') and content.get('data'):
+        from standings_module.comparison_ranks import enrich_comparison_ranks
+        card = content['data']
+        rank_fixture = {**card, 'startingAt': (card.get('fixture') or {}).get('starting_at') or (card.get('fixture') or {}).get('startingAt')}
+        content = {**content, 'squad': enrich_comparison_ranks(content['squad'], rank_fixture)}
     with _MUTEX:
         pending = str(row['id']) in _PENDING
     status = 'processing' if pending and row['report_status'] != 'ready' else row['report_status']

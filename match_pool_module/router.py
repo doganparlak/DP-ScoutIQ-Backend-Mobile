@@ -497,7 +497,8 @@ def pre_match_squad(fixture_id: int, user_id=Depends(require_auth)):
             return {**{key:raw.get(key) for key in ('team_id','team_name','location','sample_size','formations','summary','results','performance_summary','momentum','score_flow','team_comparison')},'players':[dict(player) for player in raw.get('players') or []]}
         with ThreadPoolExecutor(max_workers=2) as pool:
             usages=list(pool.map(usage,fixture.get('participants') or []))
-        return {'teams':usages}
+        from standings_module.comparison_ranks import enrich_comparison_ranks
+        return enrich_comparison_ranks({'teams':usages}, {**fixture, 'startingAt':fixture.get('starting_at')})
     except (SportMonksError, requests.RequestException, ValueError):
         raise HTTPException(502, "Squad usage is temporarily unavailable") from None
 
@@ -551,7 +552,7 @@ def pre_match_score_flow(fixture_id: int, user_id=Depends(require_auth)):
 @router.get("/match-pool/fixtures/{fixture_id}/pre-match-comparison")
 def pre_match_comparison(fixture_id: int, user_id=Depends(require_auth)):
     result=pre_match_squad(fixture_id,user_id)
-    return {'teams':[{key:team.get(key) for key in ('team_id','sample_size','team_comparison')} for team in result['teams']]}
+    return {**({'competition_ranking':result['competition_ranking']} if result.get('competition_ranking') else {}), 'teams':[{key:team.get(key) for key in ('team_id','sample_size','team_comparison')} for team in result['teams']]}
 
 
 @router.get("/match-pool/fixtures/{fixture_id}/pre-match-team-analysis")
