@@ -4,6 +4,7 @@ No metric is zero-filled. A player's league stints are combined before rates
 are derived. Percentiles use equal player weights, tied midranks, and the same
 300-minute and top-two/20-percentage-point position rules on both sides.
 """
+from report_module.rate_evidence import apply_merged_rates, key as rate_key, rate_value
 from bisect import bisect_left, bisect_right
 from collections import defaultdict
 from datetime import datetime, timezone
@@ -15,7 +16,7 @@ from similar_players_module.features import eligible_roles
 
 MIN_MINUTES = 300
 MIN_PEERS = 5
-BENCHMARK_VERSION = 4
+BENCHMARK_VERSION = 5
 POSITION_GROUPS = {
     'central_midfield': ('CDM', 'CM', 'CAM'),
     'full_back': ('LB', 'RB'),
@@ -134,17 +135,23 @@ def aggregate(rows):
             metrics[label] = {'value': total * 90 / total_minutes, 'perMatch': total / total_matches,
                               'total': total, 'basis': 'per90', 'lowerIsBetter': label in NEGATIVE,
                               'rankable': True}
-    for label, (num, den, minimum) in RATIOS.items():
-        if num not in totals or any(key not in totals for key in den):
+    merged_values = {key: total / total_matches for key, total in totals.items()}
+    for label in RATIOS:
+        merged_values.setdefault(rate_key(label), None)
+    evidence = apply_merged_rates(merged_values, [r.get('stats') or {} for r in rows], matches)
+    for label, (_, _, minimum) in RATIOS.items():
+        state = evidence['rates'].get(rate_key(label))
+        value = rate_value(label, state)
+        if value is None:
             continue
-        denominator = sum(totals[key] for key in den)
-        numerator = totals[num]
-        if denominator <= 0 or numerator > denominator:
-            continue
-        value = numerator / denominator * 100
+        denominator = state['denominator']
         metrics[label] = {'value': value, 'basis': 'percentage', 'attempts': denominator,
                           'minimumAttempts': minimum, 'rankable': denominator >= minimum,
                           'lowerIsBetter': False}
+    # Incomplete volume totals must not appear as complete per-90 counts.
+    for label in list(metrics):
+        if merged_values.get(COUNTS.get(label), 'available') is None:
+            metrics.pop(label)
     metrics['Match Count'] = {'value': total_matches, 'basis': 'context', 'rankable': False, 'lowerIsBetter': False}
     metrics['Minutes Played'] = {'value': total_minutes, 'basis': 'context', 'rankable': False, 'lowerIsBetter': False}
     if 'captain' in totals:

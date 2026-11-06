@@ -1,4 +1,5 @@
 from __future__ import annotations
+from report_module.rate_evidence import apply_merged_rates
 
 import re
 from decimal import Decimal
@@ -322,6 +323,12 @@ def aggregate_player_seasons(
         for metric, total in metric_totals.items()
         if metric_weights.get(metric, 0) > 0
     }
+    for row in selected:
+        for metric, value in (row.get("stats") or {}).items():
+            if value is None:
+                stats.setdefault(metric, None)
+    apply_merged_rates(stats, [row.get("stats") or {} for row in selected],
+                       [max(int(row.get("match_count") or 0), 0) for row in selected])
     seasons = list(dict.fromkeys(str(row.get("season_name") or "") for row in selected if row.get("season_name")))
     teams = list(dict.fromkeys(str(row.get("team_name") or "") for row in selected if row.get("team_name")))
     competitions = list(dict.fromkeys(str(row.get("league_name") or "") for row in selected if row.get("league_name")))
@@ -341,6 +348,6 @@ def aggregate_player_seasons(
         "teams": teams,
         "competitions": competitions,
         "positionCounts": {key: round(value, 2) for key, value in position_counts.items()},
-        "stats": stats,
+        "stats": {name: value for name, value in stats.items() if _number(value) is not None},
         "selectedRows": [_row_out(row) for row in selected],
     }

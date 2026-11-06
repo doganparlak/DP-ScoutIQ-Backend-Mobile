@@ -1,11 +1,14 @@
 """Compact, mergeable standings statistics. No network, database or AI calls."""
 from __future__ import annotations
 
+from report_module.rate_evidence import empty, add_sample, rate_value, key as rate_key, RATES
 import hashlib
 import json
 import math
 from datetime import date, datetime, timedelta, timezone
 from zoneinfo import ZoneInfo
+
+from report_module.metric_validation import percentage
 
 from .metric_definitions import DERIVED_PERCENTAGE_METRICS, TEAM_METRIC_CATEGORY
 
@@ -87,6 +90,26 @@ def normalize_fixture(fixture):
     return result
 
 
+def _write_rates(metrics, evidence, names):
+    for name in names:
+        state = evidence['rates'].get(rate_key(name))
+        value = rate_value(name, state)
+        if value is None:
+            metrics.pop(name, None)
+            continue
+        metrics[name] = {'numerator': state['numerator'], 'denominator': state['denominator'],
+                         'matchesCovered': state['coverage'], 'numeratorMatchesCovered': state['coverage'],
+                         'rateValue': value}
+
+
+def _hide_incomplete_attempts(metrics, evidence):
+    incomplete = {RATES[name][1] for name, state in evidence.get('rates', {}).items()
+                  if state.get('missing_attempts')}
+    for name in list(metrics):
+        if rate_key(name) in incomplete:
+            metrics.pop(name)
+
+
 class Aggregate:
     def __init__(self, *, include_team_metrics=True):
         self.include_team_metrics = include_team_metrics
@@ -108,19 +131,12 @@ class Aggregate:
             if not self.include_team_metrics:
                 continue
             metrics = source['metrics']
+            add_sample(team.setdefault('_rate_inputs', empty()), metrics)
             for name, value in metrics.items():
                 if name in DERIVED_PERCENTAGE_METRICS:
                     continue  # Never average provider percentages for known ratios.
                 item = team['metrics'].setdefault(name, {'sum': 0.0, 'matchesCovered': 0})
                 item['sum'] += value
-                item['matchesCovered'] += 1
-            for name, (numerator, denominator) in DERIVED_PERCENTAGE_METRICS.items():
-                n, d = metrics.get(numerator), metrics.get(denominator)
-                if n is None or d is None or d < 0:
-                    continue
-                item = team['metrics'].setdefault(name, {'numerator': 0.0, 'denominator': 0.0, 'matchesCovered': 0})
-                item['numerator'] += n
-                item['denominator'] += d
                 item['matchesCovered'] += 1
         for p in row['player_contributions']:
             key = f"{p['teamId']}:{p['playerId']}"
@@ -137,10 +153,12 @@ class Aggregate:
         for team in self.teams.values():
             if not self.include_team_metrics:
                 continue
+            _write_rates(team['metrics'], team.get('_rate_inputs') or empty(), DERIVED_PERCENTAGE_METRICS)
+            _hide_incomplete_attempts(team['metrics'], team.get('_rate_inputs') or empty())
             for name, metric in team['metrics'].items():
                 kind = 'derived_rate' if name in DERIVED_PERCENTAGE_METRICS else 'average' if name in AVERAGES or '%' in name or 'percentage' in name.casefold() or 'performance' in name.casefold() else 'total'
                 if kind == 'derived_rate':
-                    value = metric['numerator'] / metric['denominator'] * 100 if metric['denominator'] else None
+                    value = metric.get('rateValue')
                     per_match = value
                 else:
                     per_match = metric['sum'] / metric['matchesCovered']

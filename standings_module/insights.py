@@ -22,8 +22,8 @@ _wake = threading.Event()
 _thread = None
 CLAIM_LOCK = 716394820
 # Award selection changes do not invalidate compact fixture contributions.
-SEASON_SUMMARY_VERSION = 2
-SCOPED_VERSION = 5
+SEASON_SUMMARY_VERSION = 4
+SCOPED_VERSION = 7
 
 
 def provider(session, path, **params):

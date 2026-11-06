@@ -1,5 +1,8 @@
 from __future__ import annotations
 
+from report_module.rate_evidence import apply_merged_rates, RATES, key as rate_key, missing_attempt_names
+from report_module.metric_validation import pooled_rate_counts
+
 from report_module.analysis_quality import generate_grounded
 
 from mobile_pro_module.fit_narratives import enforce_fit_word_limit
@@ -129,6 +132,9 @@ def metrics(row):
             value = number(item.get('value'))
             if value is not None:
                 result[str(item.get('name'))] = value
+    for name, (numerator, denominator) in DERIVED_PERCENTAGE_METRICS.items():
+        if "Shot Quality" not in name and denominator in result and numerator not in result:
+            result[numerator] = 0.0
     return result
 
 
@@ -137,21 +143,26 @@ def aggregate(rows, player=False):
     if player:
         samples = [row for row in samples if row.get('Minutes Played', 0) > 0]
     names = set().union(*(row.keys() for row in samples)) if samples else set()
+    names.update(name for name, (numerator, denominator) in DERIVED_PERCENTAGE_METRICS.items()
+                 if numerator in names and denominator in names)
+    protected = set().union(*(missing_attempt_names(row) for row in samples))
     result = {}
     for name in sorted(names):
+        if rate_key(name) in protected:
+            continue
         if name == 'Minutes Played':
             continue
         values = [(row[name], row.get('Minutes Played', 0)) for row in samples if name in row]
         covered = sum(minutes for _, minutes in values)
-        if player and covered < 90:
-            continue
         pair = DERIVED_PERCENTAGE_METRICS.get(name)
         if pair:
-            paired = [row for row in samples if pair[0] in row and pair[1] in row]
-            denominator = sum(row[pair[1]] for row in paired)
-            if denominator <= 0 or (player and sum(row.get('Minutes Played', 0) for row in paired) < 90):
+            pooled = pooled_rate_counts(name, [(row, row.get('Minutes Played', 0) if player else 1)
+                                              for row in samples], *pair)
+            if pooled is None or (player and pooled[2] < 90):
                 continue
-            value = sum(row[pair[0]] for row in paired) / denominator * 100
+            value = pooled[0] / pooled[1] * 100
+        elif player and covered < 90:
+            continue
         elif rate(name):
             value = sum(value * minutes for value, minutes in values) / covered if player else sum(value for value, _ in values) / len(values)
         else:
@@ -179,7 +190,22 @@ def stored_peer_metrics(rows):
             if canonical and value is not None and (canonical == 'Minutes Played' or peer_metric(canonical)):
                 values[canonical] = value * matches
         samples.append({'extra_metrics': [{'name': name, 'value': value} for name, value in values.items()]})
-    return aggregate(samples, player=True)
+    result = aggregate(samples, player=True)
+    merged_values = {name: None for name in DERIVED_PERCENTAGE_METRICS}
+    evidence = apply_merged_rates(merged_values, [row.get('stats') or {} for row in rows],
+                                [number(row.get('match_count')) or 0 for row in rows])
+    for name, value in merged_values.items():
+        if rate_key(name) not in RATES:
+            continue
+        result.pop(name, None)
+        state = evidence['rates'].get(rate_key(name))
+        # Source coverage is appearances; existing player evidence requires 90 minutes.
+        covered_minutes = sum((number((r.get('stats') or {}).get('minutes_played')) or 0) *
+                              (number(r.get('match_count')) or 0) for r in rows)
+        if value is not None and state and covered_minutes >= 90:
+            result[name] = round(value, 3)
+    protected = {RATES[name][1] for name, state in evidence['rates'].items() if state.get('missing_attempts')}
+    return {name: value for name, value in result.items() if rate_key(name) not in protected}
 
 
 def target_metrics(metadata):

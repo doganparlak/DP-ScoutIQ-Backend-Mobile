@@ -122,11 +122,6 @@ def existing_report(favorite_id: str, user_id=Depends(require_auth), db: Session
         row=db.execute(text("SELECT fixture_id, fixture_payload, report_type, report_status, report_content FROM favorite_matches WHERE id=:id AND user_id=:uid"), {"id":favorite_id,"uid":user_id}).mappings().first()
         if not row:
             raise HTTPException(404,"Saved match not found")
-        fixture=get_fixture(int(row["fixture_id"])) or row["fixture_payload"]
-        completed=_is_completed_enterprise_fixture(fixture)
-        allowed=(_is_not_started_enterprise_fixture(fixture) or (completed and row["report_status"]=="ready")) if row["report_type"]=="pre_match" else completed
-        if not allowed:
-            raise HTTPException(409,"Report is unavailable for the current match status")
         if row["report_status"]!="ready" or not row["report_content"]:
             raise HTTPException(409,"No completed report is available. Report generation is not implemented yet.")
         content = row["report_content"]
@@ -577,7 +572,14 @@ def open_saved_pre_match_report(fixture_id: int, language: str = "tr", lazy: boo
         saved = _save_match(EnterpriseFavoriteMatchIn(fixture=fixture, reportType='pre_match'),user_id,db)
         row = db.execute(text("SELECT id, fixture_id, report_status, report_content FROM favorite_matches WHERE id=:id AND user_id=:uid"), {'id':saved.favoriteId,'uid':user_id}).mappings().one()
     from .persistent_pre_reports import compatible
-    if not compatible(row.get('report_content') or {},language):
+    from .saved_report_refresh import readable_snapshot, archived_snapshot
+    from .persistent_pre_reports import FOUNDATION_SECTIONS
+    saved_content = row.get('report_content') or {}
+    readable = row['report_status'] == 'ready' and readable_snapshot(saved_content, language, 'mobile_pre_match', FOUNDATION_SECTIONS)
+    if not compatible(saved_content, language) and readable and archived_snapshot(saved_content):
+        db.commit()
+        return public_report(row, language)
+    if not compatible(saved_content,language) and not readable:
         current = get_fixture(fixture_id)
         if not _is_not_started_enterprise_fixture(current or {}):
             raise HTTPException(409, "A new pre-match report must be created before kickoff")
@@ -600,7 +602,14 @@ def poll_saved_pre_match_report(fixture_id: int, language: str = "tr", lazy: boo
     row = db.execute(text("SELECT id, fixture_id, report_status, report_content FROM favorite_matches WHERE user_id=:uid AND fixture_id=:fid AND report_type='pre_match'"), {'uid':user_id,'fid':fixture_id}).mappings().first()
     if not row:
         raise HTTPException(404, "Saved report not found")
-    if not compatible(row.get("report_content") or {},language):
+    from .saved_report_refresh import readable_snapshot, archived_snapshot
+    from .persistent_pre_reports import FOUNDATION_SECTIONS
+    saved_content = row.get('report_content') or {}
+    readable = row['report_status'] == 'ready' and readable_snapshot(saved_content, language, 'mobile_pre_match', FOUNDATION_SECTIONS)
+    if not compatible(saved_content, language) and readable and archived_snapshot(saved_content):
+        db.commit()
+        return public_report(row, language)
+    if not compatible(saved_content,language) and not readable:
         if not _is_not_started_enterprise_fixture(get_fixture(fixture_id) or {}):
             raise HTTPException(409, "A new pre-match report must be created before kickoff")
     result = public_report(row,language)

@@ -1,3 +1,4 @@
+from .saved_report_refresh import readable_snapshot, archived_snapshot, refresh_deferred, checkpoint_writer
 from report_module.metric_aliases import normalize_report_metrics
 """Durable mobile pre-match reports; each completed section is checkpointed."""
 from report_module.narrative_numbers import format_narrative_fields
@@ -12,7 +13,7 @@ from .pre_match_card import build_pre_match_card
 from .pre_match_usage import _pre_match_player_perspectives, _pre_match_momentum_perspectives, _pre_match_team_analysis, sanitize_pre_match_standout_metrics
 from .pre_match_standings import get_league_standings
 
-VERSION = 6
+VERSION = 8
 _EXECUTOR = ThreadPoolExecutor(max_workers=3, thread_name_prefix="mobile-match-report")
 _PENDING = set()
 _LAZY_PENDING = set()
@@ -42,7 +43,9 @@ def read_report(favorite_id, user_id):
 
 def public_report(row, language):
     content = row.get('report_content') or {}
-    if not compatible(content, language):
+    if not compatible(content, language) and not (
+        row['report_status'] == 'ready' and readable_snapshot(content, language, 'mobile_pre_match', FOUNDATION_SECTIONS)
+    ):
         return {'favoriteId':str(row['id']), 'status':'processing', 'content':None}
     if content.get('squad') and content.get('data'):
         from standings_module.comparison_ranks import enrich_comparison_ranks
@@ -127,10 +130,16 @@ def run(favorite_id, user_id, language, retry_failed):
                 return
             tier = user_report_tier(user_id)
             content = row.get('report_content') or {}
+            if refresh_deferred(content):
+                return
+            if not compatible(content, language) and row.get('report_status') == 'ready' and readable_snapshot(content, language, 'mobile_pre_match', FOUNDATION_SECTIONS) and archived_snapshot(content):
+                return
             if compatible(content,language) and row['report_status']=='ready' and complete(content,tier):
                 return
             if compatible(content,language) and row['report_status']=='failed' and not retry_failed:
                 return
+            checkpoint = checkpoint_writer(save, favorite_id, user_id, row, language, 'mobile_pre_match', FOUNDATION_SECTIONS,
+                                           lambda value: complete(value, tier))
             if not compatible(content,language):
                 content = {'format':'mobile_pre_match','version':VERSION,'language':language,'sections':{k:{'status':'pending'} for k in SECTIONS}}
             for section in SECTIONS:
@@ -138,7 +147,7 @@ def run(favorite_id, user_id, language, retry_failed):
                 if section_ready(content, section, tier):
                     continue
                 content['sections'][section] = {**content['sections'].get(section, {}), 'status':'processing','started_at':now()}
-                if not save(favorite_id,user_id,content,'processing'):
+                if not checkpoint(content,'processing'):
                     return
                 try:
                     value = build_section(section,content,int(row['fixture_id']),user_id,language,tier)
@@ -148,12 +157,12 @@ def run(favorite_id, user_id, language, retry_failed):
                     content['sections'][section] = {**content['sections'].get(section, {}), 'status':'failed','failed_at':now()}
                     # If match data failed there is no evidence for either analysis.
                     if section in {'data','squad'}:
-                        save(favorite_id,user_id,content,'failed')
+                        checkpoint(content,'failed')
                         return
-                if not save(favorite_id,user_id,content,'processing'):
+                if not checkpoint(content,'processing'):
                     return
             status='ready' if all(content['sections'][s]['status']=='ready' for s in SECTIONS) else 'failed'
-            save(favorite_id,user_id,content,status)
+            checkpoint(content,status)
     finally:
         with _MUTEX:
             _PENDING.discard(favorite_id)
@@ -182,26 +191,32 @@ def run_lazy(favorite_id, user_id, language, requested, pending_key):
                 return
             tier = user_report_tier(user_id)
             content = row.get('report_content') or {}
+            if refresh_deferred(content):
+                return
+            if not compatible(content, language) and row.get('report_status') == 'ready' and readable_snapshot(content, language, 'mobile_pre_match', FOUNDATION_SECTIONS) and archived_snapshot(content):
+                return
             if not compatible(content,language):
                 content = {'format':'mobile_pre_match','version':VERSION,'language':language,'generation_mode':'lazy_sections','sections':{k:{'status':'pending'} for k in SECTIONS}}
             targets = list(FOUNDATION_SECTIONS)
             if requested != 'foundation':
                 targets.append(requested)
+            checkpoint = checkpoint_writer(save, favorite_id, user_id, row, language, 'mobile_pre_match', FOUNDATION_SECTIONS,
+                                           lambda value: all(section_ready(value, section, tier) for section in targets))
             for section in targets:
                 if section_ready(content, section, tier):
                     continue
                 content['sections'][section] = {**content['sections'].get(section, {}), 'status':'processing','started_at':now()}
                 foundation_ready = all(content['sections'].get(key,{}).get('status') == 'ready' and key in content for key in FOUNDATION_SECTIONS)
-                if not save(favorite_id,user_id,content,'ready' if foundation_ready else 'processing'):
+                if not checkpoint(content,'ready' if foundation_ready else 'processing'):
                     return
                 try:
                     content[section] = build_section(section,content,int(row['fixture_id']),user_id,language,tier)
                     content['sections'][section] = {'status':'ready','ready_at':now(),'access_tier':tier}
                     foundation_ready = all(content['sections'].get(key,{}).get('status') == 'ready' and key in content for key in FOUNDATION_SECTIONS)
-                    save(favorite_id,user_id,content,'ready' if foundation_ready else 'processing')
+                    checkpoint(content,'ready' if foundation_ready else 'processing')
                 except Exception:
                     content['sections'][section] = {**content['sections'].get(section, {}), 'status':'failed','failed_at':now()}
-                    save(favorite_id,user_id,content,'failed' if section in FOUNDATION_SECTIONS else 'ready')
+                    checkpoint(content,'failed' if section in FOUNDATION_SECTIONS else 'ready')
                     return
     finally:
         with _MUTEX:

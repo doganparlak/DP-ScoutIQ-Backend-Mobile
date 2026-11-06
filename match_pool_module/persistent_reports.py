@@ -1,3 +1,4 @@
+from .saved_report_refresh import readable_snapshot, archived_snapshot, refresh_deferred, checkpoint_writer
 from report_module.metric_aliases import normalize_report_metrics
 """Durable mobile post-match reports; each completed section is checkpointed."""
 from report_module.crossing_metrics import normalize_crossing_metrics
@@ -14,7 +15,7 @@ from .team_analysis import build_team_analysis
 from .player_perspectives import build_player_perspectives
 
 VERSION = 4
-TEAM_ANALYSIS_VERSION = 3
+TEAM_ANALYSIS_VERSION = 4
 _EXECUTOR = ThreadPoolExecutor(max_workers=3, thread_name_prefix="mobile-match-report")
 _PENDING = set()
 _LAZY_PENDING = set()
@@ -45,7 +46,9 @@ def read_report(favorite_id, user_id):
 
 def public_report(row, language):
     content = row.get('report_content') or {}
-    if not compatible(content, language):
+    if not compatible(content, language) and not (
+        row['report_status'] == 'ready' and readable_snapshot(content, language, 'mobile_post_match', ('data',))
+    ):
         return {'favoriteId':str(row['id']), 'status':'processing', 'content':None}
     # Internal generation evidence is never needed by the client.
     with _MUTEX:
@@ -95,10 +98,14 @@ def run(favorite_id, user_id, language, retry_failed):
                 return
             tier = user_report_tier(user_id)
             content = row.get('report_content') or {}
+            if refresh_deferred(content):
+                return
             if compatible(content,language) and row['report_status']=='ready' and complete(content,tier):
                 return
             if compatible(content,language) and row['report_status']=='failed' and not retry_failed:
                 return
+            checkpoint = checkpoint_writer(save, favorite_id, user_id, row, language, 'mobile_post_match', ('data',),
+                                           lambda value: complete(value, tier))
             if not compatible(content,language):
                 content = {'format':'mobile_post_match','version':VERSION,'language':language,'sections':{k:{'status':'pending'} for k in SECTIONS}}
             for section in SECTIONS:
@@ -106,7 +113,7 @@ def run(favorite_id, user_id, language, retry_failed):
                 if section_ready(content, section, tier):
                     continue
                 content['sections'][section] = {**content['sections'].get(section, {}), 'status':'processing','started_at':now()}
-                if not save(favorite_id,user_id,content,'processing'):
+                if not checkpoint(content,'processing'):
                     return
                 try:
                     if section=='data':
@@ -126,12 +133,12 @@ def run(favorite_id, user_id, language, retry_failed):
                     content['sections'][section] = {**content['sections'].get(section, {}), 'status':'failed','failed_at':now()}
                     # If match data failed there is no evidence for either analysis.
                     if section=='data':
-                        save(favorite_id,user_id,content,'failed')
+                        checkpoint(content,'failed')
                         return
-                if not save(favorite_id,user_id,content,'processing'):
+                if not checkpoint(content,'processing'):
                     return
             status='ready' if all(content['sections'][s]['status']=='ready' for s in SECTIONS) else 'failed'
-            save(favorite_id,user_id,content,status)
+            checkpoint(content,status)
     finally:
         with _MUTEX:
             _PENDING.discard(favorite_id)
@@ -160,14 +167,18 @@ def run_lazy(favorite_id, user_id, language, requested, pending_key):
                 return
             tier = user_report_tier(user_id)
             content = row.get('report_content') or {}
+            if refresh_deferred(content):
+                return
             if not compatible(content,language):
                 content = {'format':'mobile_post_match','version':VERSION,'language':language,'generation_mode':'lazy_sections','sections':{k:{'status':'pending'} for k in SECTIONS}}
             targets = ['data'] if requested == 'data' else ['data',requested]
+            checkpoint = checkpoint_writer(save, favorite_id, user_id, row, language, 'mobile_post_match', ('data',),
+                                           lambda value: all(section_ready(value, section, tier) for section in targets))
             for section in targets:
                 if section_ready(content, section, tier):
                     continue
                 content['sections'][section] = {**content['sections'].get(section, {}), 'status':'processing','started_at':now()}
-                if not save(favorite_id,user_id,content,'processing' if section == 'data' else 'ready'):
+                if not checkpoint(content,'processing' if section == 'data' else 'ready'):
                     return
                 try:
                     if section == 'data':
@@ -182,10 +193,10 @@ def run_lazy(favorite_id, user_id, language, requested, pending_key):
                         data = content['data']
                         content[section] = {'teams':build_player_perspectives(data.get('teams') or [],data.get('lineups') or [],data.get('events') or [],language,strict=True,include_locked=tier == 'paid')}
                     content['sections'][section] = {'status':'ready','ready_at':now(),'access_tier':tier}
-                    save(favorite_id,user_id,content,'ready')
+                    checkpoint(content,'ready')
                 except Exception:
                     content['sections'][section] = {**content['sections'].get(section, {}), 'status':'failed','failed_at':now()}
-                    save(favorite_id,user_id,content,'failed' if section == 'data' else 'ready')
+                    checkpoint(content,'failed' if section == 'data' else 'ready')
                     return
     finally:
         with _MUTEX:

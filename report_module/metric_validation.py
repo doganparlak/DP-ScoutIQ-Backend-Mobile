@@ -1,5 +1,6 @@
 """Validation shared by report calculations and selected player evidence."""
 from math import isfinite
+from report_module.rate_evidence import empty, add_sample, key as rate_key, rate_value, missing_attempt_names, CUSTOM
 from typing import Any
 
 
@@ -31,13 +32,25 @@ def percentage(numerator: Any, denominator: Any) -> float | None:
 
 def rate_counts(name: str, counts: dict[str, Any], numerator: str,
                 denominator: str) -> tuple[float, float] | None:
-    a, b = numeric(counts.get(numerator)), numeric(counts.get(denominator))
-    if name in {'Aerials Won (%)', 'Aerials Won Percentage'} and a is not None and 'Aerials Lost' in counts:
-        lost = numeric(counts['Aerials Lost'])
-        if lost is None or lost < 0:
-            return None
-        b = a + lost
-    return (a, b) if percentage(a, b) is not None else None
+    pooled = pooled_rate_counts(name, [(counts, 1)], numerator, denominator)
+    return pooled[:2] if pooled else None
+
+
+def pooled_rate_counts(name: str, samples: list[tuple[dict[str, Any], float]],
+                       numerator: str, denominator: str) -> tuple[float, float, float] | None:
+    """Pool eligible fixture inputs and invalidate incomplete ordinary rates."""
+    evidence = empty()
+    for values, weight in samples:
+        add_sample(evidence, values, weight)
+    state = evidence['rates'].get(rate_key(name))
+    value = rate_value(name, state)
+    if value is None:
+        return None
+    # Existing consumers use percentage(); custom metrics are capped here.
+    a, b = state['numerator'], state['denominator']
+    if rate_key(name) in CUSTOM:
+        a = min(a, b)
+    return a, b, state['coverage']
 
 
 def nonzero_evidence(groups: dict[str, Any]) -> dict[str, Any]:
@@ -80,3 +93,46 @@ def sanitize_player_highlights(content: Any) -> Any:
                            and valid_metric(str(metric.get('name') or ''), metric.get('value'), nonzero=True)
                            and (not metric.get('is_percentage') or percentage(metric.get('value'), 100) is not None)]
     return result
+
+
+def is_standard_count(name: str, group: str = "") -> bool:
+    """Missing event counts are zero; advanced indices/rates remain unknown."""
+    lower = name.casefold()
+    return bool(name) and group != "expected" and not is_percentage(name) and not any(
+        word in lower for word in ("expected", "performance", "rating", "captain", "minutes played")
+    ) and not lower.startswith(("xg", "xa", "npxg"))
+
+
+def has_team_statistics(categories: dict[str, list[dict[str, Any]]]) -> bool:
+    """Require a recorded standard statistic before interpreting omissions as zero.
+
+    Advanced-only feeds and previously inferred zeros do not establish coverage.
+    An explicitly recorded zero is a valid statistic.
+    """
+    return any(
+        not row.get("_inferred_zero")
+        and valid_metric(str(row.get("name") or ""), row.get("value"))
+        and (is_standard_count(str(row.get("name") or ""), group)
+             or (group != "expected" and is_percentage(str(row.get("name") or ""))))
+        for group, rows in categories.items() for row in rows
+    )
+
+
+def zero_fill_counts(categories: dict[str, list[dict[str, Any]]],
+                     names: set[tuple[str, str]]) -> None:
+    """Fill omitted counts only when usable standard team statistics exist."""
+    if not has_team_statistics(categories):
+        return
+    recorded = {str(row.get("name")): row.get("value")
+                for rows in categories.values() for row in rows if not row.get("_inferred_zero")}
+    protected = missing_attempt_names(recorded)
+    for group, name in sorted(names):
+        if rate_key(name) in protected:
+            continue
+        if not is_standard_count(name, group):
+            continue
+        rows = categories.setdefault(group, [])
+        existing = next((row for row in rows if row.get("name") == name), None)
+        if existing is None:
+            rows.append({"name": name, "value": 0.0, "_inferred_zero": True})
+        # An explicit null remains unknown.

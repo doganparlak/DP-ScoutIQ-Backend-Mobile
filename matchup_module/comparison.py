@@ -1,4 +1,5 @@
 from __future__ import annotations
+from report_module.rate_evidence import apply_merged_rates
 
 import json
 from typing import Any, Dict, List
@@ -299,4 +300,10 @@ def _selected_comp_metadata(
             if metric_weights.get(metric)
         }
     )
+    for row in rows:
+        for metric, value in (row.get("stats") or {}).items():
+            if value is None:
+                result.setdefault(metric, None)
+    apply_merged_rates(result, [row.get("stats") or {} for row in rows],
+                       [_number(row.get("match_count")) or 1 for row in rows])
     return result

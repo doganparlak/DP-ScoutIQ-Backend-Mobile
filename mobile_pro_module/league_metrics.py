@@ -3,6 +3,7 @@
 Names/categories follow enterprise-spider-ranges.ts; counts use average minutes,
 percentages/ratings retain their scale, and available derived ratios take priority.
 """
+from report_module.rate_evidence import apply_merged_rates, key as rate_key, RATES
 import math
 import re
 
@@ -37,15 +38,22 @@ def finite(value):
 
 
 def enterprise_per90(stats):
+    stats = dict(stats)
+    if "_rate_inputs" in stats:
+        corrected = dict(stats)
+        apply_merged_rates(corrected, [stats.copy()], [1])
+        for name, value in corrected.items():
+            if rate_key(name) in RATES or value is None:
+                stats[name] = value
     index={CANONICAL.get(metric_key(name),str(name).strip()):finite(value) for name,value in stats.items()}
     minutes=index.get('Minutes Played')
     values={}
     for label in LABELS:
         value=index.get(label)
-        if label in DERIVED:
+        if label in DERIVED and "_rate_inputs" not in stats:
             numerator,denominator=(index.get(name) for name in DERIVED[label])
             if numerator is not None and denominator is not None and denominator>0:
-                value=numerator/denominator*100
+                value=min(100.0,numerator/denominator*100) if label in {"Shot Quality (%)", "On-Target Shot Quality (%)", "Assist Efficiency (%)"} else (numerator/denominator*100 if numerator<=denominator else None)
         if value is None: continue
         fixed=label in ('Rating','Match Count') or '(%)' in label
         if not fixed and label!='Minutes Played' and minutes and minutes>0:
