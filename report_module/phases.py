@@ -4,6 +4,7 @@ Keep the taxonomy, metric ranges and scoring helpers aligned with enterprise
 report_module/report.py. Distributions are computed without model interpretation.
 """
 from __future__ import annotations
+from report_module.scouting_evidence import sanitize_scouting_documents
 from report_module.metric_validation import percentage, sanitize_percentages, valid_metric
 
 import math
@@ -556,11 +557,11 @@ def _phase_taxonomy_roles(player_card: Dict[str, Any]) -> List[Tuple[str, float]
 
 def _metric_context_value(metric_docs: List[Dict[str, Any]], metric_name: str) -> Optional[Any]:
     selected: Optional[Any] = _derived_metric_value(metric_name, metric_docs)
-    if selected not in (None, "") and valid_metric(metric_name, selected):
+    if selected not in (None, "") and valid_metric(metric_name, selected, nonzero=True):
         return selected
     for doc in metric_docs or []:
         selected = _metric_value_from_metadata(doc.get("metadata") or {}, metric_name)
-        if selected not in (None, "") and valid_metric(metric_name, selected):
+        if selected not in (None, "") and valid_metric(metric_name, selected, nonzero=True):
             return selected
     return None
 
@@ -756,7 +757,7 @@ def with_phase_distributions(content_json):
     if not isinstance(content_json, dict):
         return content_json
     content_json = dict(content_json)
-    content_json["metrics_docs"] = sanitize_percentages(content_json.get("metrics_docs") or [])
+    content_json["metrics_docs"] = sanitize_scouting_documents(sanitize_percentages(content_json.get("metrics_docs") or []))
     card = dict(content_json.get("player_card") or {})
     docs = sanitize_percentages(content_json.get("metrics_docs") or [])
     # Older mobile report cards omitted role counts; recover them from the same

@@ -137,3 +137,5 @@ Now produce the report.
 """
 
 report_system_prompt += FOOTBALL_TERMINOLOGY_GUIDANCE
+
+report_system_prompt += "\nNever display or cite zero-valued statistics in PLAYER STATS, charts, summaries, strengths, weaknesses, or role interpretations. Omitted statistics must not be inferred as zero. Use only the supplied nonzero metric evidence.\n"

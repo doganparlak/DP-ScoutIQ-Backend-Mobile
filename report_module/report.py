@@ -5,6 +5,8 @@ from report_module.terminology import FOOTBALL_TERMINOLOGY_GUIDANCE
 from player_pool_module.utilities import player_name_pattern
 from report_module.narrative_numbers import format_narrative_numbers
 
+from report_module.scouting_evidence import sanitize_scouting_documents
+
 from report_module.metric_validation import sanitize_percentages
 
 import os
@@ -23,8 +25,8 @@ from report_module.percentiles import build_domestic_percentiles
 from report_module.prompts import report_system_prompt
 from report_module.utilities import _first_non_empty, _normalize_roles, _score_candidate, norm_name
 
-SCOUT_REPORT_VERSION = 10
-LAZY_SCOUT_REPORT_VERSION = 11
+SCOUT_REPORT_VERSION = 12
+LAZY_SCOUT_REPORT_VERSION = 13
 
 load_dotenv()
 
@@ -552,7 +554,7 @@ def build_player_card_from_docs(metric_docs: List[Dict[str, Any]]) -> Dict[str, 
 
 
 def _build_llm_input(player_card: Dict[str, Any], metric_docs: List[Dict[str, Any]]) -> str:
-    metric_docs = sanitize_percentages(metric_docs)
+    metric_docs = sanitize_scouting_documents(sanitize_percentages(metric_docs))
     parts: List[str] = ["PLAYER_CARD_JSON:", str(player_card or {}), "\nMETRIC_DOCUMENTS (newest first):"]
     parts.insert(0, _role_constraint_block(player_card))
     parts.insert(1, _build_metric_significance_block(metric_docs))
@@ -601,7 +603,7 @@ def build_report_foundation(
         "version": version,
         "player_identity": identity,
         "player_card": player_card,
-        "metrics_docs": sanitize_percentages(docs),
+        "metrics_docs": sanitize_scouting_documents(sanitize_percentages(docs)),
         "report_text": "",
         "sections": {
             "data": {"status": "ready"},

@@ -2,6 +2,7 @@
 from math import isfinite
 from report_module.rate_evidence import empty, add_sample, key as rate_key, rate_value, missing_attempt_names, CUSTOM
 from typing import Any
+from report_module.scouting_evidence import sanitize_scouting_documents
 
 
 def numeric(value: Any) -> float | None:
@@ -75,6 +76,8 @@ def sanitize_percentages(content: Any) -> Any:
             kept.append(sanitize_percentages(item))
         return kept
     if isinstance(content, dict):
+        if isinstance(content.get("metrics_docs"), list):
+            content = {**content, "metrics_docs": sanitize_scouting_documents(content["metrics_docs"])}
         return {key: sanitize_percentages(value) for key, value in content.items()
                 if not is_percentage(str(key)) or valid_metric(str(key), value)}
     return content
