@@ -11,6 +11,7 @@ import os
 
 import requests
 from sqlalchemy import text
+from api_module import shared_match_cache as shared_cache
 from sqlalchemy.exc import SQLAlchemyError
 
 from .fixtures import SPORTMONKS_BASE_URL, SportMonksError, _fixture_out
@@ -25,8 +26,9 @@ _WARM_STOP = Event()
 _WARM_THREAD = None
 _WARM_ZONES = OrderedDict()
 _LOG = logging.getLogger(__name__)
+_PROVIDER_RETRY_AT = 0
 _INCLUDES = 'participants;league.country;season;state;scores;periods'
-LIVE_REFRESH_SECONDS = 8
+LIVE_REFRESH_SECONDS = 20
 
 LIVE_STATES = {'INPLAY_1ST_HALF', 'INPLAY_2ND_HALF', 'HT', 'INPLAY_ET', 'ET', 'BREAK', 'PEN_LIVE', 'LIVE', '1ST', '2ND', 'INT', 'SUSP'}
 
@@ -42,7 +44,14 @@ def _singleflight(key):
         entry[1] += 1
     try:
         with entry[0]:
-            yield
+            if shared_cache.supported(key):
+                try:
+                    with shared_cache.refresh_lock(key):
+                        yield
+                except TimeoutError:
+                    raise SportMonksError('Match refresh is temporarily busy') from None
+            else:
+                yield
     finally:
         with _LOCK:
             entry[1] -= 1
@@ -51,6 +60,8 @@ def _singleflight(key):
 
 
 def _remember(key, value, seconds):
+    if shared_cache.supported(key):
+        shared_cache.write(key, value, seconds)
     with _LOCK:
         _CACHE[key] = (monotonic() + seconds, value)
         _CACHE.move_to_end(key)
@@ -65,10 +76,24 @@ def _cached(key):
         if item and item[0] > monotonic():
             _CACHE.move_to_end(key)
             return item[1]
+    if shared_cache.supported(key):
+        saved = shared_cache.read(key)
+        if saved is not None and saved[1] > 0:
+            value, remaining = saved
+            with _LOCK:
+                _CACHE[key] = (monotonic() + remaining, value)
+                _CACHE.move_to_end(key)
+                while len(_CACHE) > 128:
+                    _CACHE.popitem(last=False)
+            return value
     return None
 
 
 def _previous(key):
+    if shared_cache.supported(key):
+        saved = shared_cache.read(key)
+        if saved is not None:
+            return saved[0]
     with _LOCK:
         entry = _CACHE.get(key)
         return entry[1] if entry else None
@@ -76,7 +101,7 @@ def _previous(key):
 
 def _queue_refresh(key, refresh):
     with _LOCK:
-        if key in _REFRESHES or _RETRY_AT.get(key, 0) > monotonic() or len(_REFRESHES) >= 32:
+        if key in _REFRESHES or max(_RETRY_AT.get(key, 0), _PROVIDER_RETRY_AT) > monotonic() or len(_REFRESHES) >= 32:
             return False
         _REFRESHES.add(key)
 
@@ -89,7 +114,7 @@ def _queue_refresh(key, refresh):
             # Never log provider URLs or credentials on connection errors.
             _LOG.warning('Daily fixture background refresh failed; retaining cached data')
             with _LOCK:
-                _RETRY_AT[key] = monotonic() + 30
+                _RETRY_AT[key] = max(monotonic() + 30, _PROVIDER_RETRY_AT)
                 while len(_RETRY_AT) > 128:
                     _RETRY_AT.popitem(last=False)
         finally:
@@ -110,25 +135,66 @@ def _covered_leagues(db):
         return cached
 
 
+def _request_json(path, params):
+    global _PROVIDER_RETRY_AT
+    with _LOCK:
+        remaining = _PROVIDER_RETRY_AT - monotonic()
+    if remaining > 0:
+        raise SportMonksError('Fixture data provider rate limit reached; waiting before retrying')
+    remaining = shared_cache.provider_cooldown()
+    if remaining > 0:
+        with _LOCK:
+            _PROVIDER_RETRY_AT = max(_PROVIDER_RETRY_AT, monotonic() + remaining)
+        raise SportMonksError('Fixture data provider rate limit reached; waiting before retrying')
+    try:
+        response = requests.get(f'{SPORTMONKS_BASE_URL}/{path}', params=params, timeout=25)
+        if response.status_code == 429:
+            try:
+                delay = max(1, float(response.headers.get('Retry-After', '60')))
+            except (TypeError, ValueError):
+                delay = 60
+            with _LOCK:
+                _PROVIDER_RETRY_AT = max(_PROVIDER_RETRY_AT, monotonic() + delay)
+            shared_cache.defer_provider(delay)
+            raise SportMonksError('Fixture data provider rate limit reached; waiting before retrying')
+        if response.status_code != 200:
+            raise SportMonksError(f'Fixture data request failed (HTTP {response.status_code})')
+        return response.json()
+    except (requests.RequestException, ValueError):
+        raise SportMonksError('Fixture data service is temporarily unavailable') from None
+
+
 def _pages(path, leagues, timezone_name=None):
+    # Never download the unrestricted feed when coverage is empty.
+    if not leagues:
+        return []
     token = os.getenv('SPORTMONKS_API_KEY')
     if not token:
         raise SportMonksError('Fixture data service is not configured')
 
+    covered = set(leagues)
+
     def fetch(ids=None):
         rows = []
         for page in range(1, 101):
-            response = requests.get(f'{SPORTMONKS_BASE_URL}/{path}', params={
+            payload = _request_json(path, {
                 'api_token': token, 'include': _INCLUDES,
                 'per_page': 100, 'page': page,
                 **({'filters': 'fixtureLeagues:' + ','.join(map(str, ids))} if ids else {}),
                 **({'timezone': timezone_name} if timezone_name else {}),
-            }, timeout=25)
-            if response.status_code != 200:
-                raise SportMonksError(f'Fixture data request failed (HTTP {response.status_code})')
-            payload = response.json()
-            rows.extend(payload.get('data') or [])
-            if not (payload.get('pagination') or {}).get('has_more'):
+            })
+            # Keep only compact covered fixtures between pages. Raw provider
+            # payloads include nested teams, scores and periods and otherwise
+            # accumulate across every page and concurrent league batch.
+            for raw in payload.get('data') or []:
+                if (raw.get('league') or {}).get('id') not in covered:
+                    continue
+                item = _compact(raw, timezone_name or 'UTC')
+                if item is not None:
+                    rows.append(item)
+            has_more = (payload.get('pagination') or {}).get('has_more')
+            del payload
+            if not has_more:
                 return rows
         raise SportMonksError('Fixture pagination exceeded the supported range')
 
@@ -139,7 +205,7 @@ def _pages(path, leagues, timezone_name=None):
         chunks = [leagues[index:index + 50] for index in range(0, len(leagues), 50)]
         with ThreadPoolExecutor(max_workers=3) as pool:
             rows = [row for batch in pool.map(fetch, chunks) for row in batch]
-        return list({row['id']: row for row in rows}.values())
+        return list({row['fixtureId']: row for row in rows}.values())
     return fetch()
 
 
@@ -190,13 +256,10 @@ def _refresh_calendar(timezone_name, leagues):
             ids, order = job
             # Sorting is by actual kickoff, not fixture ID or season dates.
             for page in range(1, 101):
-                response = requests.get(f'{SPORTMONKS_BASE_URL}/fixtures', params={
+                payload = _request_json('fixtures', {
                     'api_token': token, 'filters': 'fixtureLeagues:' + ','.join(map(str, ids)),
                     'sortBy': 'starting_at', 'order': order, 'per_page': 25, 'page': page,
-                }, timeout=25)
-                if response.status_code != 200:
-                    raise SportMonksError(f'Calendar data request failed (HTTP {response.status_code})')
-                payload = response.json()
+                })
                 for fixture in payload.get('data') or []:
                     if fixture.get('starting_at') and fixture.get('league_id') in ids:
                         return _kickoff({'startingAt': fixture['starting_at']})
@@ -265,8 +328,8 @@ def _refresh_day(selected: date, timezone_name: str, leagues):
             first = datetime.combine(selected, daytime.min, zone).astimezone(timezone.utc)
             last = datetime.combine(selected + timedelta(days=1), daytime.min, zone).astimezone(timezone.utc)
             rows = _pages(f'fixtures/date/{selected.isoformat()}', leagues, timezone_name)
-            fixtures = {item['fixtureId']: item for raw in rows if (item := _compact(raw, timezone_name))
-                        and item['league']['id'] in leagues and first <= _kickoff(item) < last}
+            fixtures = {item['fixtureId']: item for item in rows
+                        if item['league']['id'] in leagues and first <= _kickoff(item) < last}
             _remember(base_key, fixtures, 300 if abs((selected - today).days) <= 1 else 1800)
         fixtures = dict(fixtures)
         if selected == today or any(is_live(item) for item in fixtures.values()):
@@ -274,7 +337,7 @@ def _refresh_day(selected: date, timezone_name: str, leagues):
             with _singleflight(live_key):
                 live = _cached(live_key)
                 if live is None:
-                    live = [item for raw in _pages('livescores', leagues) if (item := _compact(raw))]
+                    live = _pages('livescores', leagues)
                     _remember(live_key, live, LIVE_REFRESH_SECONDS)
             # This feed also includes games finished in the last 15 minutes,
             # so final scores replace in-play rows rather than disappearing.
@@ -300,9 +363,6 @@ def daily_fixtures(db, selected: date, timezone_name: str):
         while len(_WARM_ZONES) > 8:
             _WARM_ZONES.popitem(last=False)
     leagues = _covered_leagues(db)
-    bounds = calendar_bounds(db, timezone_name, leagues)
-    if not bounds['minDate'] <= selected.isoformat() <= bounds['maxDate']:
-        raise ValueError('Choose a date within the available fixture calendar')
     if not leagues:
         return {'date': selected.isoformat(), 'fixtures': [], 'refreshAfter': 300 if selected == today else None, 'stale': False}
     key = ('day', selected.isoformat(), timezone_name, leagues)
@@ -312,10 +372,12 @@ def daily_fixtures(db, selected: date, timezone_name: str):
     previous = _previous(key)
     if previous is not None:
         _queue_refresh(key, lambda: _refresh_day(selected, timezone_name, leagues))
-        with _LOCK:
-            failed = _RETRY_AT.get(key, 0) > monotonic()
-        # A short silent follow-up fetch picks up the completed refresh.
-        return _forecast_capabilities({**previous, 'refreshAfter': 30 if failed else LIVE_REFRESH_SECONDS, 'stale': failed})
+        # Serve the persisted snapshot even if the calendar/provider is down.
+        # Provider failures stay internal; clients keep polling silently.
+        return _forecast_capabilities({**previous, 'refreshAfter': LIVE_REFRESH_SECONDS, 'stale': False})
+    bounds = calendar_bounds(db, timezone_name, leagues)
+    if not bounds['minDate'] <= selected.isoformat() <= bounds['maxDate']:
+        raise ValueError('Choose a date within the available fixture calendar')
     return _refresh_day(selected, timezone_name, leagues)
 
 
