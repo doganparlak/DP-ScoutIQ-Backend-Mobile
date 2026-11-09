@@ -11,6 +11,7 @@ from sqlalchemy.exc import SQLAlchemyError
 from api_module.database import engine
 from .metrics import Aggregate, LOWER_BETTER, COMPLETED_STATES, TEAM_METRIC_CATEGORY, kickoff, normalize_fixture, numeric
 from .stages import EUROPEAN_LEAGUES, stage_scope
+from .pre_match_player_ranks import strip_player_ranks
 
 _ALIASES = {name.casefold(): canonical for name, (_, canonical) in TEAM_METRIC_CATEGORY.items()}
 _ALIASES.update({
@@ -121,7 +122,8 @@ def competition_ranks(league, season, cutoff, scope='overall'):
 
 
 def enrich_comparison_ranks(usage, fixture, now=None):
-    """Add optional metric ranks to a copy of a current pre-match sample."""
+    """Add optional team ranks; player ranks belong only in player comparison."""
+    usage = strip_player_ranks(usage)
     league = fixture.get('league') or {}
     season = fixture.get('season') or {}
     if not league.get('id') or not season.get('id'):

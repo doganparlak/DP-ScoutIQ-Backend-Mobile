@@ -1101,7 +1101,7 @@ def _pre_match_player_perspectives(usages: list[dict[str, Any]], lang: str, stri
             "player_id": player.get("player_id"), "player_name": name,
             "selection_type": selection, "position": player.get("position_name"),
             "average_rating": player.get("average_rating"),
-            "per90_metrics": metrics,
+            "per90_metrics": [{k: v for k, v in metric.items() if k != "competition_rank"} for metric in metrics],
         })
     if not compact or not os.getenv("OPENAI_API_KEY"):
         if strict and compact and not os.getenv("OPENAI_API_KEY"):
@@ -1113,7 +1113,7 @@ def _pre_match_player_perspectives(usages: list[dict[str, Any]], lang: str, stri
             model=os.getenv("OPENAI_MATCH_REPORT_MODEL", os.getenv("OPENAI_REPORT_MODEL", "gpt-5.6-luna")),
             api_key=os.environ["OPENAI_API_KEY"], temperature=0.2, timeout=180, max_retries=1,
         ).invoke([
-            ("system", "You are ScoutWise's senior football analyst. Return only valid JSON keyed by player_id. Each value must be one concise 20-30 word ScoutWise perspective in the requested language. Explain why the player was selected; interpret the role and combined effect rather than reciting values. Featured players: use only positive evidence. Development players: use only the supplied weaker per-90 outputs, never praise or select a strength. Never cite zero-valued metrics. Never use the Turkish word 'örneklem'. Never invent facts, tactics, benchmarks, causation, or recommendations. No markdown/headings." + FOOTBALL_TERMINOLOGY_GUIDANCE),
+            ("system", "You are ScoutWise's senior football analyst. Return only valid JSON keyed by player_id. Each value must be one concise 20-30 word ScoutWise perspective in the requested language. Explain why the player was selected; interpret the role and combined effect rather than reciting values. Featured players: use only positive evidence. Development players: use only the supplied weaker per-90 outputs, never praise or select a strength. Never cite zero-valued metrics. Never use the Turkish word 'örneklem'. Do not mention league rankings. Lower values are better for discipline and error metrics. Never invent facts, tactics, benchmarks, causation, or recommendations. No markdown/headings." + FOOTBALL_TERMINOLOGY_GUIDANCE),
             ("human", f"Language: {'Turkish' if lang == 'tr' else 'English'}\nPlayers: {json.dumps(compact, ensure_ascii=False, default=str)}"),
         ])
         parsed = json.loads(re.sub(r"^```(?:json)?\s*|\s*```$", "", str(response.content or "").strip(), flags=re.I))

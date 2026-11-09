@@ -1,6 +1,12 @@
 from __future__ import annotations
 
 import os
+import logging
+from concurrent.futures import ThreadPoolExecutor
+from threading import Lock
+
+from sqlalchemy.exc import SQLAlchemyError
+from api_module import shared_match_cache
 from datetime import date, datetime, timezone
 from typing import Any
 
@@ -46,7 +52,7 @@ def _select_current_season(league: dict[str, Any], today: date | None = None) ->
     return max(active, key=lambda item: item[0])[1] if active else current
 
 
-def get_league_standings(league_id: int) -> dict[str, Any]:
+def _fetch_league_standings(league_id: int) -> dict[str, Any]:
     """Return grouped current-season standings and official position rules."""
     token = os.getenv("SPORTMONKS_API_KEY")
     if not token:
@@ -111,3 +117,49 @@ def get_league_standings(league_id: int) -> dict[str, Any]:
         stages = provider_get(f'schedules/seasons/{season_id}', api_token=token).get('data') or []
         extra = {"stageScoped": True, "qualifyingRounds": knockout_rounds(stages, 'qualifying'), "knockoutRounds": knockout_rounds(stages)}
     return {**extra, "leagueId": int(league_id), "seasonId": season_id, "seasonName": season.get("name"), "tables": result_tables}
+
+
+_STANDINGS_TTL = 300
+_REFRESH_POOL = ThreadPoolExecutor(max_workers=2, thread_name_prefix='league-standings')
+_REFRESHING = set()
+_REFRESH_LOCK = Lock()
+_LOG = logging.getLogger(__name__)
+
+
+def _refresh_standings(league_id):
+    key = ('standings', int(league_id))
+    with shared_match_cache.refresh_lock(key):
+        cached = shared_match_cache.read(key)
+        if cached is not None and cached[1] > 0:
+            return cached[0]
+        result = _fetch_league_standings(league_id)
+        shared_match_cache.write(key, result, _STANDINGS_TTL)
+        return result
+
+
+def _background_standings(league_id):
+    try:
+        _refresh_standings(league_id)
+    except Exception as exc:
+        _LOG.warning('Standings background refresh failed (%s)', type(exc).__name__)
+    finally:
+        with _REFRESH_LOCK:
+            _REFRESHING.discard(league_id)
+
+
+def get_league_standings(league_id: int) -> dict[str, Any]:
+    """Serve saved official tables immediately; refresh expired tables in background."""
+    league_id = int(league_id)
+    try:
+        cached = shared_match_cache.read(('standings', league_id))
+        if cached is not None:
+            if cached[1] <= 0:
+                with _REFRESH_LOCK:
+                    if league_id not in _REFRESHING:
+                        _REFRESHING.add(league_id)
+                        _REFRESH_POOL.submit(_background_standings, league_id)
+            return cached[0]
+        return _refresh_standings(league_id)
+    except (SQLAlchemyError, TimeoutError):
+        # Provider access remains available when the shared cache cannot be read.
+        return _fetch_league_standings(league_id)

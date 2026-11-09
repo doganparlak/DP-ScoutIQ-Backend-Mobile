@@ -9,6 +9,14 @@ def restrict_insights(summary, plan):
     tier = 'pro' if plan in {'Pro Monthly', 'Pro Yearly'} else 'plus' if plan == 'No Ads Monthly' else 'free'
     allowed = None if tier == 'pro' else PLUS_METRICS if tier == 'plus' else frozenset()
     result['access'] = {'tier': tier, 'biweekly': tier != 'free'}
+    # Enterprise-only award/leaderboard payloads are never exposed by mobile.
+    result.pop('playerAwardMetrics', None)
+    for summary in (result['season'], result.get('biweekly')):
+        if summary:
+            summary.pop('metric_player_awards', None)
+            summary.pop('player_rating_totals', None)
+            for team in summary.get('team_metrics', {}).values():
+                team.pop('_rate_inputs', None)
     season = result['season']
     season['metric_catalog'] = [{**metric, 'locked': allowed is not None and metric['key'] not in allowed}
                                 for metric in season.get('metric_catalog', [])]

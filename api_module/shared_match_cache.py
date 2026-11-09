@@ -19,7 +19,7 @@ from api_module.database import engine
 
 _READY = False
 _SCHEMA_LOCK = Lock()
-_KINDS = {'calendar', 'day', 'base', 'live'}
+_KINDS = {'calendar', 'day', 'base', 'live', 'standings'}
 _LOG = logging.getLogger(__name__)
 
 

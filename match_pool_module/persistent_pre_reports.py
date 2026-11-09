@@ -47,15 +47,19 @@ def public_report(row, language):
         row['report_status'] == 'ready' and readable_snapshot(content, language, 'mobile_pre_match', FOUNDATION_SECTIONS)
     ):
         return {'favoriteId':str(row['id']), 'status':'processing', 'content':None}
+    content = normalize_report_metrics(sanitize_pre_match_standout_metrics(content))
     if content.get('squad') and content.get('data'):
         from standings_module.comparison_ranks import enrich_comparison_ranks
         card = content['data']
         rank_fixture = {**card, 'startingAt': (card.get('fixture') or {}).get('starting_at') or (card.get('fixture') or {}).get('startingAt')}
         content = {**content, 'squad': enrich_comparison_ranks(content['squad'], rank_fixture)}
+        if content.get('players'):
+            from standings_module.pre_match_player_ranks import strip_player_ranks
+            content = {**content, 'players': strip_player_ranks(content['players'])}
     with _MUTEX:
         pending = str(row['id']) in _PENDING
     status = 'processing' if pending and row['report_status'] != 'ready' else row['report_status']
-    return {'favoriteId':str(row['id']), 'status':status, 'content':normalize_report_metrics(sanitize_pre_match_standout_metrics(content))}
+    return {'favoriteId':str(row['id']), 'status':status, 'content':content}
 
 def save(favorite_id, user_id, content, status):
     content = format_narrative_fields(content, content.get("language", "en"))
