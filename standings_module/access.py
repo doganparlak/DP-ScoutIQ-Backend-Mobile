@@ -1,11 +1,16 @@
 """Mobile league-performance entitlements; shared caches remain unmodified."""
 from copy import deepcopy
 
-FREE_METRICS = frozenset({'Goals', 'Shots Total', 'Shots On Target', 'Ball Possession %', 'Corners'})
+FREE_METRICS = frozenset({
+    'Goals', 'Shots Total', 'Shots On Target', 'Ball Possession %', 'Corners',
+    'Fouls', 'Opponent Shots Total', 'Opponent Passes', 'Expected Goals',
+})
 PLUS_METRICS = FREE_METRICS | frozenset({
-    'Passes', 'Accurate Passes (%)', 'Fouls', 'Attacks', 'Dangerous Attacks',
+    'Passes', 'Accurate Passes (%)', 'Attacks', 'Dangerous Attacks',
     'Big Chances Created', 'Shots Insidebox', 'Shots Outsidebox', 'Accurate Passes',
     'Key Passes', 'Total Crosses', 'Saves', 'Interceptions', 'Yellow Cards', 'Red Cards',
+    'Penalties Scored', 'Opponent Shots Outsidebox', 'Opponent Shots Insidebox',
+    'Opponent Accurate Passes', 'Opponent Accurate Passes (%)', 'Expected Points (xPTS)',
 })
 
 
