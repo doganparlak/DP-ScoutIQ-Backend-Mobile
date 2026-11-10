@@ -14,8 +14,9 @@ import requests
 from sqlalchemy import text
 
 from api_module.database import SessionLocal
+from .periods import select_completed_periods
 from .stages import EUROPEAN_LEAGUES, SCOPES, scoped_schedule
-from .metrics import Aggregate, COMPLETED_STATES, PERIOD_ZONE, VERSION, kickoff, normalize_fixture, period_for
+from .metrics import Aggregate, COMPLETED_STATES, PERIOD_ZONE, VERSION, TEAM_ADVANCED_VERSION, advanced_team_metrics, kickoff, normalize_fixture, period_for
 
 log = logging.getLogger(__name__)
 BASE = os.getenv('SPORTMONKS_BASE_URL', 'https://api.sportmonks.com/v3/football').rstrip('/')
@@ -97,24 +98,11 @@ def request_summary(db, league_id, season_id, period_start=None, scope=None):
         raise ValueError('Open the league standings before requesting its statistics')
     if requested_cached_rebuild(db, row):
         return request_summary(db, league_id, season_id, period_start, scope)
-    periods = db.execute(text('''SELECT period_start, period_end, fixture_count, computed_at
+    periods = db.execute(text('''SELECT period_start, period_end, fixture_count, computed_at, status
         FROM league_biweekly_summaries WHERE league_id=:league AND season_id=:season
         ORDER BY period_start DESC'''), params).mappings().all()
-    chosen = period_start or period_for(datetime.now(PERIOD_ZONE).date())[0]
-    if period_start and period_for(period_start)[0] != period_start:
-        raise ValueError('Invalid two-week period')
-    biweek = db.execute(text('''SELECT period_start, period_end, status, computed_at,
-        team_best_players, league_best_player, fixture_count, coverage
-        FROM league_biweekly_summaries WHERE league_id=:league AND season_id=:season
-        AND period_start=:period'''), {**params, 'period': chosen}).mappings().first()
-    # On a new period boundary, queue a refresh once so an empty or newly played
-    # period is materialized instead of showing the preceding period as current.
-    if biweek is None and not period_start and row['computed_at'] and row['status'] == 'ready':
-        db.execute(text('''UPDATE league_season_summaries SET next_refresh_at=NOW()
-            WHERE league_id=:league AND season_id=:season AND status='ready' ''') , params)
-        db.commit()
     season_result = dict(row)
-    biweekly_result = dict(biweek) if biweek else None
+    biweekly_result = None
     coverage = dict(season_result.get('coverage') or {})
     scoped = coverage.pop('stageSummaries', {})
     season_result['coverage'] = coverage
@@ -130,12 +118,21 @@ def request_summary(db, league_id, season_id, period_start=None, scope=None):
             selected = scoped[scope]
             season_result.update(selected['season'])
             periods = selected['periods']
-            biweekly_result = next((dict(p) for p in periods if str(p['period_start']) == str(chosen)), None)
         else:
             season_result.update(Aggregate().finish())
             season_result.update(status='pending' if row['status'] != 'failed' else 'failed', computed_at=None)
             periods, biweekly_result = [], None
         season_result.pop('player_rating_totals', None)
+    periods, chosen = select_completed_periods(periods, period_start)
+    if chosen is not None:
+        if league_id in EUROPEAN_LEAGUES:
+            biweekly_result = next((dict(p) for p in periods if str(p['period_start']) == chosen.isoformat()), None)
+        else:
+            biweek = db.execute(text("""SELECT period_start, period_end, status, computed_at,
+                team_best_players, league_best_player, fixture_count, coverage
+                FROM league_biweekly_summaries WHERE league_id=:league AND season_id=:season
+                AND period_start=:period"""), {**params, 'period': chosen}).mappings().first()
+            biweekly_result = dict(biweek) if biweek else None
     if biweekly_result:
         biweekly_result['coverage'] = {k: v for k, v in (biweekly_result.get('coverage') or {}).items() if k != 'stageSummaries'}
     if league_id in EUROPEAN_LEAGUES and scope == 'overall':
@@ -224,7 +221,8 @@ def cached_summary_rebuild(job):
             FROM league_match_contributions WHERE league_id=:league AND season_id=:season"""), job).mappings().all()
     included = [r for r in rows if r['included_in_aggregation']]
     if (not included or len(included) < job['fixture_count']
-            or any(r['calculation_version'] != VERSION for r in included)
+            or any(r['calculation_version'] != VERSION or
+                   (r['coverage'] or {}).get('teamAdvancedVersion', 0) < TEAM_ADVANCED_VERSION for r in included)
             or (job['league'] in EUROPEAN_LEAGUES and
                 any((r['coverage'] or {}).get('scope') not in {'qualifying', 'league', 'knockout'} for r in included))):
         return False
@@ -235,7 +233,7 @@ def cached_summary_rebuild(job):
     return True
 
 
-def fixture_details(fixtures, token):
+def fixture_details(fixtures, token, include=None):
     """Fetch with bounded concurrency and one reusable HTTP session per thread.
 
     At most one batch is in flight; database writes stay on the owning thread.
@@ -254,7 +252,7 @@ def fixture_details(fixtures, token):
             with lock:
                 sessions.append(local.session)
         fid, fixture = item
-        detail = provider(local.session, f'fixtures/{fid}', include='participants;state;statistics.type;lineups.player;lineups.details.type;lineups.xGLineup.type;xGFixture.type')
+        detail = provider(local.session, f'fixtures/{fid}', include=include or 'participants;state;statistics.type;lineups.player;lineups.details.type;lineups.xGLineup.type;xGFixture.type')
         return fid, fixture, detail
     try:
         with ThreadPoolExecutor(max_workers=workers, thread_name_prefix='league-fixture') as pool:
@@ -304,6 +302,7 @@ def refresh(job):
         if any(row['calculation_version'] > VERSION for row in previous.values()):
             raise RuntimeError('A newer shared match-data format is in use; update this worker')
         missing = []
+        advanced_missing = []
         for fid, fixture in sorted(fixtures.items()):
             if _stop.is_set():
                 raise RuntimeError('League summary refresh interrupted; it will resume')
@@ -328,6 +327,8 @@ def refresh(job):
             # Recheck recent corrections; settled contributions do not expire by age.
             # Interrupted initial backfills reuse already fetched contributions.
             if reusable_contribution(old, played, now):
+                if (old.get('coverage') or {}).get('teamAdvancedVersion', 0) < TEAM_ADVANCED_VERSION:
+                    advanced_missing.append((fid, fixture))
                 if not old['included_in_aggregation']:
                     # Restore a recently fetched qualifier excluded by the previous scope rules.
                     with SessionLocal.begin() as db:
@@ -335,6 +336,22 @@ def refresh(job):
                         db.execute(text('UPDATE league_match_contributions SET included_in_aggregation=TRUE,updated_at=NOW() WHERE fixture_id=:id'), {'id': fid})
                 continue
             missing.append((fid, fixture))
+        # Additive upgrade: keep saved lineups and ordinary statistics intact.
+        for fid, fixture, detail in fixture_details(advanced_missing, token, include='statistics.type;xGFixture.type'):
+            if int(detail.get('league_id') or 0) != job['league'] or int(detail.get('season_id') or 0) != job['season']:
+                raise RuntimeError('Fixture competition changed during advanced upgrade')
+            patch = json.dumps(advanced_team_metrics(detail))
+            with SessionLocal.begin() as db:
+                renew(db, job)
+                db.execute(text("""UPDATE league_match_contributions AS saved
+                    SET team_contributions=(SELECT jsonb_object_agg(team.key,
+                        jsonb_set(team.value,'{metrics}',COALESCE(team.value->'metrics','{}'::jsonb)
+                        || COALESCE(CAST(:patch AS jsonb)->team.key,'{}'::jsonb)))
+                        FROM jsonb_each(saved.team_contributions) team),
+                        coverage=coverage || CAST(:coverage AS jsonb),updated_at=NOW()
+                    WHERE fixture_id=:fixture AND league_id=:league AND season_id=:season"""),
+                    {**job, 'fixture': fid, 'patch': patch,
+                     'coverage': json.dumps({'teamAdvancedVersion': TEAM_ADVANCED_VERSION})})
         for fid, fixture, detail in fixture_details(missing, token):
             old = previous.get(fid)
             contribution = normalize_fixture(detail)
@@ -420,6 +437,7 @@ def publish(job, season):
         for empty in {*previous_periods, period_for(datetime.now(PERIOD_ZONE).date())[0]} - periods_written:
             save_period(db, job, empty, Aggregate(include_team_metrics=False).finish())
         result = aggregate.finish(season_awards=True)
+        result['coverage']['teamAdvancedVersion'] = TEAM_ADVANCED_VERSION
         if scoped:
             stage_summaries = {}
             current_period = period_for(datetime.now(PERIOD_ZONE).date())[0]
@@ -586,9 +604,11 @@ def enqueue_season(db, standings):
                 WHERE league_id=:league AND season_id=:season'''),
                 {'league': standings['leagueId'], 'season': standings['seasonId'], 'metadata': json.dumps({'mainTeamCount': team_count})})
     stale = db.execute(text('''UPDATE league_season_summaries SET status='pending'
-        WHERE league_id=:league AND season_id=:season AND calculation_version<:version
+        WHERE league_id=:league AND season_id=:season AND calculation_version<=:version
+        AND (calculation_version<:version OR COALESCE((coverage->>'teamAdvancedVersion')::integer,0)<:advanced_version)
         AND status NOT IN ('pending','processing')'''),
-        {'league': standings['leagueId'], 'season': standings['seasonId'], 'version': SCOPED_VERSION if standings['leagueId'] in EUROPEAN_LEAGUES else SEASON_SUMMARY_VERSION}).rowcount
+        {'league': standings['leagueId'], 'season': standings['seasonId'], 'version': SCOPED_VERSION if standings['leagueId'] in EUROPEAN_LEAGUES else SEASON_SUMMARY_VERSION,
+         'advanced_version': TEAM_ADVANCED_VERSION}).rowcount
     queued = db.execute(text('SELECT status FROM league_season_summaries WHERE league_id=:league AND season_id=:season'),
         {'league': standings['leagueId'], 'season': standings['seasonId']}).scalar() == 'pending'
     db.commit()
