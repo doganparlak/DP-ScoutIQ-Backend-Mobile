@@ -15,8 +15,9 @@ from sqlalchemy import text
 
 from api_module.database import SessionLocal
 from .periods import select_completed_periods
+from .team_derived import enrich_team_derived
 from .stages import EUROPEAN_LEAGUES, SCOPES, scoped_schedule
-from .metrics import Aggregate, COMPLETED_STATES, PERIOD_ZONE, VERSION, TEAM_ADVANCED_VERSION, advanced_team_metrics, kickoff, normalize_fixture, period_for
+from .metrics import Aggregate, COMPLETED_STATES, PERIOD_ZONE, VERSION, TEAM_ADVANCED_VERSION, advanced_team_metrics, team_opponent_inputs, kickoff, normalize_fixture, period_for
 
 log = logging.getLogger(__name__)
 BASE = os.getenv('SPORTMONKS_BASE_URL', 'https://api.sportmonks.com/v3/football').rstrip('/')
@@ -158,6 +159,7 @@ def request_summary(db, league_id, season_id, period_start=None, scope=None):
             item = results.get(team_id)
             team['results'] = ({**item, 'goalDifference': item['goalsFor'] - item['goalsAgainst']}
                                if item and item['covered'] == team['matches'] else None)
+    derived_pending = enrich_team_derived(db, league_id, season_id, scope, season_result, row['computed_at'], row['status'])
     # Images can be refreshed independently of the statistics cache.
     hydrate_winner_images(db, season_result)
     if biweekly_result:
@@ -168,7 +170,7 @@ def request_summary(db, league_id, season_id, period_start=None, scope=None):
             'periodTimezone': 'Europe/Istanbul',
             # A missing period can wait for the next scheduled check; do not
             # make browsers poll for hours while no refresh is running.
-            'scope': scope, 'refreshing': season_result['status'] in {'pending', 'processing'} or (league_id in EUROPEAN_LEAGUES and not ready and row['status'] != 'failed')}
+            'scope': scope, 'refreshing': derived_pending or season_result['status'] in {'pending', 'processing'} or (league_id in EUROPEAN_LEAGUES and not ready and row['status'] != 'failed')}
 
 
 def claim_job():
@@ -346,11 +348,14 @@ def refresh(job):
                 db.execute(text("""UPDATE league_match_contributions AS saved
                     SET team_contributions=(SELECT jsonb_object_agg(team.key,
                         jsonb_set(team.value,'{metrics}',COALESCE(team.value->'metrics','{}'::jsonb)
-                        || COALESCE(CAST(:patch AS jsonb)->team.key,'{}'::jsonb)))
+                        || COALESCE(CAST(:patch AS jsonb)->team.key,'{}'::jsonb))
+                        || jsonb_build_object('opponent_inputs',COALESCE(team.value->'opponent_inputs','{}'::jsonb)
+                        || COALESCE(CAST(:opponent_inputs AS jsonb)->team.key,'{}'::jsonb)))
                         FROM jsonb_each(saved.team_contributions) team),
                         coverage=coverage || CAST(:coverage AS jsonb),updated_at=NOW()
                     WHERE fixture_id=:fixture AND league_id=:league AND season_id=:season"""),
                     {**job, 'fixture': fid, 'patch': patch,
+                     'opponent_inputs': json.dumps(team_opponent_inputs(detail)),
                      'coverage': json.dumps({'teamAdvancedVersion': TEAM_ADVANCED_VERSION})})
         for fid, fixture, detail in fixture_details(missing, token):
             old = previous.get(fid)

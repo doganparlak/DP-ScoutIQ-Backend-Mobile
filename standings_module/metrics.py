@@ -11,7 +11,7 @@ from zoneinfo import ZoneInfo
 from .metric_definitions import DERIVED_PERCENTAGE_METRICS, TEAM_METRIC_CATEGORY, PLAYER_METRIC_CATEGORY
 
 VERSION = 2
-TEAM_ADVANCED_VERSION = 2
+TEAM_ADVANCED_VERSION = 3
 # Keep provider identifiers: xGD is supplied, never reconstructed as xG - xGA.
 TEAM_ADVANCED_METRICS = frozenset({
     'Expected Goals Against (xGA)', 'Expected Goals Corners (xGC)',
@@ -114,6 +114,18 @@ def advanced_team_metrics(fixture):
     return teams
 
 
+def team_opponent_inputs(fixture):
+    """Internal source for opponent-only metrics; never expose own counterattacks."""
+    teams = {}
+    for row in fixture.get('statistics') or []:
+        if (row.get('type') or {}).get('name') != 'Counter Attacks':
+            continue
+        value = numeric((row.get('data') or {}).get('value'))
+        if value is not None and value >= 0 and row.get('participant_id'):
+            teams.setdefault(str(row['participant_id']), {})['Counter Attacks'] = value
+    return teams
+
+
 def normalize_fixture(fixture):
     teams = {}
     participants = fixture.get('participants') or []
@@ -135,6 +147,9 @@ def normalize_fixture(fixture):
             for name in TEAM_ADVANCED_METRICS:
                 teams[team_id]['metrics'].pop(name, None)
             teams[team_id]['metrics'].update(metrics)
+    for team_id, inputs in team_opponent_inputs(fixture).items():
+        if team_id in teams:
+            teams[team_id]['opponent_inputs'] = inputs
     players = []
     seen = set()
     for row in fixture.get('lineups') or []:
