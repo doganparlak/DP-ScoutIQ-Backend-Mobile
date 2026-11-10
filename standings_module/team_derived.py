@@ -165,7 +165,7 @@ def _overlay(summary, payload):
                      for metric in payload['metric_catalog']})
     categories = {canonical: category for category, canonical in TEAM_METRIC_CATEGORY.values()}
     categories.update({
-        'Assists': 'contribution_impact', 'Substitutions': 'contribution_impact',
+        'Assists': 'passing', 'Substitutions': 'contribution_impact',
         'Hit Woodwork': 'shooting', 'Shots On Target (%)': 'shooting',
         'Goal Conversion (%)': 'shooting', 'On Target Goal Conversion (%)': 'shooting',
         'Shot Quality (%)': 'shooting', 'On Target Shot Quality (%)': 'shooting',
