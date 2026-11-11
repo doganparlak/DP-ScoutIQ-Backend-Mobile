@@ -16,7 +16,7 @@ from similar_players_module.features import eligible_roles
 
 MIN_MINUTES = 300
 MIN_PEERS = 5
-BENCHMARK_VERSION = 7
+BENCHMARK_VERSION = 9
 POSITION_GROUPS = {
     'central_midfield': ('CDM', 'CM', 'CAM'),
     'full_back': ('LB', 'RB'),
@@ -79,9 +79,10 @@ NEGATIVE = {
     'Dribbled Past', 'Turn Over', 'Possession Lost', 'Offsides', 'Own Goals',
     'Error Lead To Goal', 'Error Lead To Shot', 'Yellow Cards', 'Yellow & Red Cards', 'Red Cards',
 }
-# Verified against DataModule.aggregate_stream.AVAILABLE_AVERAGE_COLUMNS.
-# player_comp_data has no stat_counts: these cannot be reconstructed as totals.
-COVERED_AVERAGES = {'expected_goals', 'expected_goals_on_target', 'shooting_performance'}
+# Stored xG/xGoT per-match averages follow the same per-90 normalization
+# as other volume metrics. Shooting performance remains a source average.
+XG_AVERAGES = {'expected_goals', 'expected_goals_on_target'}
+COVERED_AVERAGES = {'shooting_performance'}
 # Numerator, denominator(s), minimum reconstructed attempts. Aerial attempts
 # use won + lost, matching the existing report validation rule.
 RATIOS = {
@@ -154,7 +155,8 @@ def aggregate(rows):
                           'lowerIsBetter': False}
     # Incomplete volume totals must not appear as complete per-90 counts.
     for label in list(metrics):
-        if merged_values.get(COUNTS.get(label), 'available') is None:
+        source_key = COUNTS.get(label)
+        if source_key not in XG_AVERAGES and merged_values.get(source_key, 'available') is None:
             metrics.pop(label)
     metrics['Match Count'] = {'value': total_matches, 'basis': 'context', 'rankable': False, 'lowerIsBetter': False}
     metrics['Minutes Played'] = {'value': total_minutes, 'basis': 'context', 'rankable': False, 'lowerIsBetter': False}
@@ -165,22 +167,23 @@ def aggregate(rows):
         rating = totals['rating'] / total_matches
         if 0 <= rating <= 10:
             metrics['Rating'] = {'value': rating, 'basis': 'rating', 'rankable': len(rows) == 1, 'lowerIsBetter': False}
-    # Retain source advanced averages for a single stint, without pretending
-    # their unknown per-stat denominator equals match_count. Never merge these
-    # averages or derive shot-quality percentages from mismatched denominators.
-    if len(rows) == 1:
-        for label, key in [('Expected Goals', 'expected_goals'),
-                           ('Expected Goals On Target', 'expected_goals_on_target'),
-                           ('Shooting Performance', 'shooting_performance')]:
-            raw = (rows[0].get('stats') or {}).get(key)
-            try:
-                value = float(raw)
-            except (ValueError, TypeError):
-                continue
-            if isfinite(value) and (key == 'shooting_performance' or value >= 0):
-                metrics[label] = {'value': value,
-                    'basis': 'coveredAverage',
-                    'rankable': False, 'lowerIsBetter': False, 'unrankedReason': 'coverage_unknown'}
+    # Shooting performance is a signed average: retain negative observations
+    # and rank higher values as better, without converting it into a volume.
+    shooting_values = []
+    for row in rows:
+        raw = (row.get('stats') or {}).get('shooting_performance')
+        try:
+            value = float(raw) if not isinstance(raw, bool) else float('nan')
+        except (ValueError, TypeError):
+            break
+        if not isfinite(value):
+            break
+        shooting_values.append(value)
+    if len(shooting_values) == len(rows):
+        metrics['Shooting Performance'] = {
+            'value': sum(value * count for value, count in zip(shooting_values, matches)) / total_matches,
+            'basis': 'coveredAverage', 'rankable': True, 'lowerIsBetter': False,
+        }
     roles = eligible_roles({'position_counts': dict(counts)})
     return {'playerId': int(rows[0]['player_id']), 'gender': rows[0].get('gender'),
             'roles': roles, 'comparisonGroups': comparison_groups(roles), 'minutes': total_minutes,
