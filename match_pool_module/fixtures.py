@@ -172,6 +172,11 @@ def search_team_pool(
 def _get_team_details(team_id: int) -> dict[str, Any]:
     now = time.monotonic()
     with _TEAM_DETAILS_CACHE_LOCK:
+        # Purge all expired teams, including ones that are never requested again.
+        expired = [key for key, (stored_at, _) in _TEAM_DETAILS_CACHE.items()
+                   if now - stored_at >= TEAM_DETAILS_CACHE_TTL_SECONDS]
+        for key in expired:
+            del _TEAM_DETAILS_CACHE[key]
         cached = _TEAM_DETAILS_CACHE.get(team_id)
         if cached and now - cached[0] < TEAM_DETAILS_CACHE_TTL_SECONDS:
             return cached[1]
