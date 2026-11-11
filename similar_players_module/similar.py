@@ -52,10 +52,20 @@ def identity(row):
     return str(row['content'].get('player_id') or f"row:{row['id']}")
 
 
+PAIRED_ROLES = {'LM': 'LW', 'LW': 'LM', 'RM': 'RW', 'RW': 'RM'}
+
+
+def similarity_search_roles(eligible):
+    """Expand same-flank role pairs only after primary/secondary eligibility."""
+    roles = set(eligible)
+    return roles | {PAIRED_ROLES[role] for role in roles if role in PAIRED_ROLES}
+
+
 def rank_similar(source_row, rows, limit=15):
     source = player_metrics(source_row['content'], include_context=True)
     role_shares = discovery_roles(source_row['content'])
-    roles = set(role_shares)
+    # Retain actual source-role shares for all similarity feature weights.
+    roles = similarity_search_roles(role_shares)
     if not roles or not sufficient_metrics(feature_weights(source, source, role_shares), 'GK' in roles):
         raise HTTPException(status_code=422, detail='similarity_source_insufficient')
     eligible = {}
@@ -138,7 +148,7 @@ def similar_players(db, payload, limit=15):
     # Full database coverage; no discovery shortlist limit and no AI selection.
     filters = payload.filters.model_dump(mode='json', exclude_none=True)
     choices = {key: filters.pop(key, []) for key in ('nationality', 'team', 'league')}
-    rows = search_players(db, filters, all_matches=True, candidate_roles=list(discovery_roles(source['content'])), candidate_choices=choices, metadata_fields=SIMILARITY_METADATA_FIELDS)
+    rows = search_players(db, filters, all_matches=True, candidate_roles=sorted(similarity_search_roles(discovery_roles(source['content']))), candidate_choices=choices, metadata_fields=SIMILARITY_METADATA_FIELDS)
     ranked = rank_similar(source, rows, limit)
     del rows  # Non-winning candidate metadata is no longer needed.
     profiles = {str(row['id']): row for row in fetch_player_rows_by_ids(db, [int(match['player']['id']) for match in ranked])}
