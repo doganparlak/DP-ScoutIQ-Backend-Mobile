@@ -5,6 +5,7 @@ are derived. Percentiles use equal player weights, tied midranks, and the same
 300-minute and top-two/20-percentage-point position rules on both sides.
 """
 from report_module.rate_evidence import apply_merged_rates, key as rate_key, rate_value
+import json
 from bisect import bisect_left, bisect_right
 from collections import defaultdict
 from datetime import datetime, timezone
@@ -12,11 +13,12 @@ from math import isfinite
 from time import perf_counter
 
 from sqlalchemy import text
+from api_module.database import benchmark_engine
 from similar_players_module.features import eligible_roles
 
 MIN_MINUTES = 300
 MIN_PEERS = 5
-BENCHMARK_VERSION = 9
+BENCHMARK_VERSION = 10
 POSITION_GROUPS = {
     'central_midfield': ('CDM', 'CM', 'CAM'),
     'full_back': ('LB', 'RB'),
@@ -227,14 +229,22 @@ def build_domestic_percentiles(db, metadata):
     league_ids = list({row['league_id'] for row in rows})
     if not league_ids:
         return {'version': BENCHMARK_VERSION, 'competitions': [], 'computationMs': round((perf_counter()-start)*1000, 2)}
-    peers = db.execute(text("""SELECT player_id, team_id, league_id, gender,
-        match_count, position_counts, stats FROM player_comp_data
-        WHERE league_type = 'league' AND league_sub_type = 'domestic'
-          AND league_id = ANY(:league_ids)"""), {'league_ids': league_ids}).mappings().all()
+    # Only the selected player's stints are materialized in backend RAM.
     grouped = defaultdict(list)
-    for row in peers:
+    for row in rows:
         grouped[(row['league_id'], row['player_id'], row['gender'])].append(row)
     profiles = {key: aggregate(stints) for key, stints in grouped.items()}
+    sources, benchmark_targets = [], {}
+
+    def collect_benchmarks(source, league_id, groups=None):
+        key = str(len(sources))
+        profile = dict(source)
+        if groups is not None:
+            profile['comparisonGroups'] = {group: source['comparisonGroups'][group] for group in groups}
+        sources.append({'key': key, 'leagueId': league_id, 'profile': profile})
+        benchmark_targets[key] = {}
+        return benchmark_targets[key]
+
     competitions = []
     for league_id in sorted(league_ids):
         own_rows = [r for r in rows if r['league_id'] == league_id]
@@ -245,9 +255,7 @@ def build_domestic_percentiles(db, metadata):
         source = profiles.get((league_id, int(player_id), gender))
         if not source:
             continue
-        league_peers = [p for (lid, _, g), p in profiles.items()
-                        if p and lid == league_id and g == gender and bool(g)]
-        role_metrics = profile_benchmarks(source, league_peers)
+        role_metrics = collect_benchmarks(source, league_id)
         competitions.append({'leagueId': league_id, 'leagueName': own_rows[0]['league_name'],
             'leagueLogoUrl': next((r.get('league_image_path') for r in own_rows if r.get('league_image_path')), None),
             'teams': list(dict.fromkeys(r['team_name'] for r in own_rows)),
@@ -267,14 +275,11 @@ def build_domestic_percentiles(db, metadata):
             continue
         primary_role = next(iter(pdf_source['roles']))
         primary_group = ROLE_GROUP.get(primary_role, primary_role)
-        league_peers = [p for (lid, pid, g), p in profiles.items()
-                        if p and lid == competition['leagueId'] and g == pdf_source['gender']
-                        and bool(g) and pid != int(player_id)] + [pdf_source]
         pdf_candidates.append({**competition, 'teamId': int(current_team_id),
             'teams': list(dict.fromkeys(r['team_name'] for r in own_rows)),
             'minutes': pdf_source['minutes'], 'matches': pdf_source['matches'],
             'roles': pdf_source['roles'], 'primaryRole': primary_role,
-            'benchmarks': profile_benchmarks(pdf_source, league_peers, [primary_group])})
+            'benchmarks': collect_benchmarks(pdf_source, competition['leagueId'], [primary_group])})
     pdf_competition = pdf_candidates[0] if len(pdf_candidates) == 1 else None
     if len(pdf_candidates) > 1:
         # Promotion/relegation can leave two leagues for the same latest club.
@@ -283,6 +288,17 @@ def build_domestic_percentiles(db, metadata):
         matches = [c for c in pdf_candidates if c['leagueName'].strip().casefold() == league_name]
         if len(matches) == 1:
             pdf_competition = matches[0]
+    if sources:
+        # Commit only the derived benchmark cache in its own short transaction.
+        # Never commit or roll back the caller's report/user-data transaction.
+        with benchmark_engine.begin() as benchmark_db:
+            benchmark_db.execute(text("SELECT public.scoutwise_refresh_report_peers_v1(CAST(:ids AS bigint[]))"),
+                                 {'ids': sorted(league_ids)})
+            benchmarks = benchmark_db.execute(text("""SELECT public.scoutwise_report_benchmarks_v1(
+                :player_id, CAST(:sources AS jsonb))"""),
+                {'player_id': int(player_id), 'sources': json.dumps(sources, allow_nan=False)}).scalar_one()
+        for key, target in benchmark_targets.items():
+            target.update(benchmarks.get(key, {}))
     competitions.sort(key=lambda c: (not c['currentTeam'], -c['minutes'], c['leagueId']))
     return {'version': BENCHMARK_VERSION, 'minimumMinutes': MIN_MINUTES, 'minimumPeers': MIN_PEERS,
             'period': 'annual', 'generatedAt': datetime.now(timezone.utc).isoformat(),
