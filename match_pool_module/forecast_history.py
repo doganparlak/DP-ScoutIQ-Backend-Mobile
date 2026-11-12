@@ -4,7 +4,7 @@ Immutable dated snapshots preserve pre-kickoff review cutoffs. Provider work is
 background-only; report requests read cached snapshots and never fetch histories.
 """
 from collections import OrderedDict, defaultdict
-from concurrent.futures import ThreadPoolExecutor
+from concurrent.futures import Future, ThreadPoolExecutor
 from datetime import datetime, timedelta, timezone
 import json
 import copy
@@ -18,6 +18,7 @@ LOG = logging.getLogger(__name__)
 _LOCK = Lock()
 _READY = False
 _CACHE = OrderedDict()
+_PENDING_SNAPSHOTS = {}
 _STOP = Event()
 _THREAD = None
 
@@ -91,6 +92,38 @@ def apply_matches(model, matches, as_of):
             'historyAsOf': as_of.isoformat(), 'historyMatchesAdded': added}
 
 
+def _cached_snapshot(db, model_id, stamp):
+    """Share one cold load per immutable history; other histories load independently."""
+    key = (model_id, stamp)
+    with _LOCK:
+        payload = _CACHE.get(key)
+        if payload is not None:
+            return payload
+        pending = _PENDING_SNAPSHOTS.get(key)
+        owner = pending is None
+        if owner:
+            pending = _PENDING_SNAPSHOTS[key] = Future()
+    if not owner:
+        return pending.result()
+    try:
+        payload = db.execute(text('''SELECT payload FROM mobile_match_forecast_histories
+            WHERE model_id=:id AND as_of=:stamp'''), {'id': model_id, 'stamp': stamp}).scalar_one()
+        with _LOCK:
+            _CACHE[key] = payload
+            _CACHE.move_to_end(key)
+            while len(_CACHE) > 4:
+                _CACHE.popitem(last=False)
+        pending.set_result(payload)
+        return payload
+    except BaseException as exc:
+        # Release waiting requests on failure; later requests may retry.
+        pending.set_exception(exc)
+        raise
+    finally:
+        with _LOCK:
+            _PENDING_SNAPSHOTS.pop(key, None)
+
+
 def attach_snapshot(model, cutoff):
     from .forecast import engine
     if not model or not model.get('modelId'):
@@ -102,17 +135,7 @@ def attach_snapshot(model, cutoff):
                 {'id': model['modelId'], 'cutoff': cutoff}).scalar()
             if stamp is None:
                 return model
-            key = (model['modelId'], stamp)
-            with _LOCK:
-                payload = _CACHE.get(key)
-            if payload is None:
-                payload = db.execute(text('''SELECT payload FROM mobile_match_forecast_histories
-                    WHERE model_id=:id AND as_of=:stamp'''), {'id': model['modelId'], 'stamp': stamp}).scalar_one()
-                with _LOCK:
-                    _CACHE[key] = payload
-                    _CACHE.move_to_end(key)
-                    while len(_CACHE) > 4:
-                        _CACHE.popitem(last=False)
+            payload = _cached_snapshot(db, model['modelId'], stamp)
             return {**model, **payload}
     except SQLAlchemyError:
         # Initial startup or unavailable snapshot storage keeps the trained
