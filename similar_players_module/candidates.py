@@ -118,7 +118,7 @@ def role_short_sql() -> str:
     """
 
 
-def search_players(db: Session, filters: Dict[str, Any], *, all_matches: bool = False, candidate_roles: List[str] | None = None, candidate_choices: Dict[str, List[str]] | None = None, metadata_fields: List[str] | None = None) -> List[Dict[str, Any]]:
+def search_players(db: Session, filters: Dict[str, Any], *, all_matches: bool = False, candidate_roles: List[str] | None = None, candidate_choices: Dict[str, List[str]] | None = None, metadata_fields: List[str] | None = None, batch_size: int | None = None):
     world_cup_mode = bool(filters.get("worldCupMode"))
     table_name = player_pool_table(world_cup_mode)
     name = clean_str(filters.get("name"))
@@ -374,9 +374,18 @@ def search_players(db: Session, filters: Dict[str, Any], *, all_matches: bool = 
             "contract_end_date": contract_end_date,
             "limit": None if all_matches else int(filters.get("limit") or SEARCH_LIMIT),
         },
-    ).mappings().all()
+        execution_options={"stream_results": True, "yield_per": batch_size} if batch_size else {},
+    ).mappings()
 
-    return _player_rows(rows)
+    if batch_size:
+        def batches():
+            try:
+                for partition in rows.partitions(batch_size):
+                    yield from _player_rows(partition)
+            finally:
+                rows.close()
+        return batches()
+    return _player_rows(rows.all())
 
 
 def _player_rows(rows) -> List[Dict[str, Any]]:

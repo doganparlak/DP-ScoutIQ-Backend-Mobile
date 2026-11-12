@@ -145,10 +145,11 @@ def similar_players(db, payload, limit=15):
     # Revalidate at search time even when the client has passed the precheck.
     if not source_is_eligible(source):
         raise HTTPException(status_code=422, detail='similarity_source_insufficient')
-    # Full database coverage; no discovery shortlist limit and no AI selection.
+    # Stream the complete eligible pool in bounded batches; scoring still uses
+    # every candidate and preserves the existing result/subscription limits.
     filters = payload.filters.model_dump(mode='json', exclude_none=True)
     choices = {key: filters.pop(key, []) for key in ('nationality', 'team', 'league')}
-    rows = search_players(db, filters, all_matches=True, candidate_roles=sorted(similarity_search_roles(discovery_roles(source['content']))), candidate_choices=choices, metadata_fields=SIMILARITY_METADATA_FIELDS)
+    rows = search_players(db, filters, all_matches=True, candidate_roles=sorted(similarity_search_roles(discovery_roles(source['content']))), candidate_choices=choices, metadata_fields=SIMILARITY_METADATA_FIELDS, batch_size=1000)
     ranked = rank_similar(source, rows, limit)
     del rows  # Non-winning candidate metadata is no longer needed.
     profiles = {str(row['id']): row for row in fetch_player_rows_by_ids(db, [int(match['player']['id']) for match in ranked])}
