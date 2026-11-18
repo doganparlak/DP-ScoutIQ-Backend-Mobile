@@ -1,11 +1,13 @@
 from __future__ import annotations
 
+from .tactical_styles import bind_selected_styles, select_team_styles
+
 from report_module.penalty_xg import PENALTY_XG, penalty_xg_sample, penalty_xg_average
 
 from report_module.metric_aliases import normalize_report_metrics
 from report_module.terminology import FOOTBALL_TERMINOLOGY_GUIDANCE
 from report_module.profile_generation import generate_profile_json
-from report_module.profile_evidence import PROFILE_EVIDENCE_GUIDANCE, build_evidence_profile, free_profile_snapshot
+from report_module.profile_evidence import build_evidence_profile, free_profile_snapshot
 
 import logging
 
@@ -31,7 +33,7 @@ SPORTMONKS_BASE_URL = os.getenv(
     "SPORTMONKS_BASE_URL", "https://api.sportmonks.com/v3/football"
 ).rstrip("/")
 MATCH_REPORT_VERSION = 49
-ASSESSMENT_VERSION = 4
+ASSESSMENT_VERSION = 8
 
 MATCH_REPORT_INCLUDE = ";".join(
     [
@@ -1809,83 +1811,33 @@ def build_team_report_regional_perspective(
     return prefix + perspective[:1].lower() + perspective[1:]
 
 
-def _mobile_profile_analysis(value):
-    """Accept a paragraph or bullet array without iterating a string as characters."""
-    if isinstance(value, str):
-        value = [value]
-    if not isinstance(value, list):
-        return []
-    cleaned = []
-    for item in value:
-        if not isinstance(item, str):
-            continue
-        item = re.sub(r"^\s*(?:[-•–—]+|\d+[.)])\s*", "", item).strip()
-        if not item:
-            continue
-        cleaned.append(item)
-    return cleaned[:1]
-
-
-def _profile_prompt(prompt: str, build_narratives: bool) -> str:
-    """Keep AI selection for every plan; only the explanation fields are paid."""
-    prompt += (" Every theme title must be a concise football heading of 2-4 words, "
-               "never a sentence, explanation, team-specific conclusion or paragraph. "
-               "Keep all interpretation exclusively in the analysis field when requested.")
-    if build_narratives:
-        return prompt + PROFILE_EVIDENCE_GUIDANCE + " Each theme or player has exactly ONE 20-30 word paragraph; team counts and player counts are both per 90."
-    prompt = prompt.replace('title, metrics and analysis', 'title and metrics')
-    prompt = prompt.replace('playerId, metrics and analysis', 'playerId and metrics')
-    prompt = prompt.replace('title, exactly FOUR single-metric cells, and an analysis array of exactly ONE professional bullet of 20-30 words',
-                            'title and exactly FOUR single-metric cells')
-    # Remove prose-output requirements, preserving shared selection/evidence rules.
-    sentences = re.split(r'(?<=[.!?])\s+', prompt)
-    prompt = ' '.join(sentence for sentence in sentences
-                      if not re.search(r'\banalysis\b|\bbullet(?:s)?\b', sentence, re.I))
-    return prompt + (' Return the same evidence-led selections, dynamic titles, and diagnostic metrics '
-                     'you would choose for a full report. Do not generate explanations or commentary. '
-                     'All supplied volume metrics are already normalized per 90; show numeric values only, never /90. '
-                     'Rate metrics retain percentages. Consider all supplied relevant evidence, including metrics not displayed. '
-                     'Omit every analysis field. Theme objects contain exactly title and metrics; '
-                     'player objects, when requested, contain exactly playerId and metrics.')
-
-
-def _profile_title(value, fallback):
-    """Reject explanation paragraphs in the universally visible heading field."""
-    title = str(value or '').strip()
-    if not title or len(title.split()) > 8 or len(title) > 80 or any(mark in title for mark in ('.', ';', '!', '?')):
-        return fallback
-    return title
-
-
-def _profile_output(value: dict[str, Any], build_narratives: bool, lang: str) -> dict[str, Any]:
-    if build_narratives:
-        return format_narrative_fields(value, lang)
-    for row in [*value.get("themes", []), *value.get("players", [])]:
-        if "title" in row:
-            row["title"] = _profile_title(row["title"], "")
-        for key in ("evidence_metrics", "evidence_values", "evidence_validation", "_source_metrics", "_metric_limit"):
-            row.pop(key, None)
-    return free_profile_snapshot(value)
+def _generate_tactical_profile(team_name, selected_styles, player_sources, side):
+    draft = {"themes": [], "players": []}
+    if player_sources:
+        draft = generate_profile_json([
+            ("system", f"Return valid JSON with an empty themes array and a players array. "
+             f"Select up to two outfield players based on role-specific {side} contribution and copy each playerId. "
+             "For each player return up to four distinct metrics from that player's source_metrics. "
+             "Each metric cell contains exactly one supplied label and its value. Player volumes are per 90. "
+             "Return only metric selections. Omit all analysis and commentary."),
+            ("human", f"Team: {team_name}\n"
+             f"Eligible players: {json.dumps(player_sources, ensure_ascii=False, default=str)}"),
+        ], require_players=True)
+    profile = build_evidence_profile({"players": draft.get("players")}, {}, player_sources)
+    profile["themes"] = bind_selected_styles({"themes": []}, selected_styles)
+    return free_profile_snapshot(profile)
 
 
 def build_team_report_attack_profile(
     reports: list[dict[str, Any]],
     team_id: int,
-    team_metrics: dict[str, list[dict[str, Any]]],
     lang: str = "en",
-    build_narratives: bool = True,
+    *,
+    single_match: bool = False,
 ) -> dict[str, Any]:
     attacking_groups = ("contribution_impact", "shooting", "passing", "expected")
     team_name = next((str(team.get("name") or "") for report in reports for team in report.get("teams") or [] if int(team.get("id") or 0) == int(team_id)), "Takım" if lang == "tr" else "The team")
-    team_evidence = {
-        group: [{
-            "name": row.get("name"),
-            "valuePer90": row.get("perMatch"),
-            "isRate": "%" in str(row.get("name") or "") or "percentage" in str(row.get("name") or "").casefold(),
-        } for row in rows]
-        for group, rows in team_metrics.items()
-        if group in attacking_groups and rows
-    }
+    selected_styles = select_team_styles(reports, team_id, lang, side="attack", single_match=single_match)
     reports = _team_player_metric_reports(reports)
     players: dict[str, dict[str, Any]] = {}
     for report in reports:
@@ -1954,9 +1906,9 @@ def build_team_report_attack_profile(
                     attack_score += max(0, raw_value) * weight
         rating = player["ratingWeighted"] / player["ratingMinutes"] if player["ratingMinutes"] else 0
         role_bonus = 2.0 if any(role in position_name for role in ("attacker", "forward", "winger", "hücum")) else 1.0 if any(role in position_name for role in ("midfielder", "orta saha")) else 0.0
-        player.update({"minutes": round(player["minutes"]), "averageRating": round(rating, 2), "metrics": compact, "attackScore": round(attack_score + rating + role_bonus, 2)})
+        player.update({"minutes": round(player["minutes"]), "averageRating": round(rating, 2) if player["ratingMinutes"] else None, "metrics": compact, "attackScore": round(attack_score + rating + role_bonus, 2)})
         candidates.append(player)
-    candidates.sort(key=lambda row: (-row["attackScore"], -row["averageRating"], -row["minutes"]))
+    candidates.sort(key=lambda row: (-row["attackScore"], -(row["averageRating"] or 0), -row["minutes"]))
     shortlist = candidates[:8]
     def metric_cell(name: str, value: Any, basis: str = "per90") -> dict[str, str]:
         try:
@@ -1966,38 +1918,25 @@ def build_team_report_attack_profile(
             shown = str(value or "—")
         return {"label": name, "value": f"%{shown}" if basis == "rate" else shown}
 
-    flat_team = [
-        (group, str(row.get("name") or ""), row.get("valuePer90"), "rate" if row.get("isRate") else "per90")
-        for group, rows in team_evidence.items() for row in rows
-        if row.get("name") and row.get("valuePer90") is not None
+    player_sources = [
+        {
+            **{key: player[key] for key in ("playerId", "name", "imageUrl", "position", "minutes", "averageRating") if key in player},
+            "source_metrics": {
+                name: metric_cell(name, detail["value"], detail["basis"])
+                for metrics in player["metrics"].values() for name, detail in metrics.items()
+            },
+        }
+        for player in shortlist
     ]
-    if not team_evidence:
-        return _profile_output({"themes":[],"players":[]}, build_narratives, lang)
-    if not os.getenv("OPENAI_API_KEY"):
-        raise RuntimeError("Report generation is not configured")
-    try:
-        language = "Turkish" if lang == "tr" else "English"
-        compact_players = [{key: value for key, value in player.items() if key not in ("ratingWeighted", "ratingMinutes")} for player in shortlist]
-        parsed = generate_profile_json([
-            ("system", _profile_prompt("You are ScoutWise Enterprise's senior professional attacking analyst. Return only valid JSON with exactly themes and players. All supplied volume metrics are already normalized per 90 minutes, but NEVER write '/90' or repeatedly mention normalization in any metric cell or analysis; show only the numeric value. Rate metrics retain percentages. Ignore set-piece data entirely. themes must contain exactly two dynamically named, non-overlapping attacking identities inferred from the complete team dataset. Across them synthesize every available relevant metric from shooting, passing, advanced metrics and contribution-impact. Each theme must have title, metrics and analysis. Theme metrics must contain exactly four objects with label and value, and EVERY theme metric cell must contain exactly one metric label and one numeric value—never combine multiple metrics in a cell. Theme analysis must contain exactly ONE professional bullet string of 20-30 words. Start with a direct team-specific conclusion about how the team creates, progresses or finishes; never define a metric and never write generic statements. Use the entire supplied dataset internally, but do not recite it: each analysis bullet may contain at most ONE short numerical fact and at least 80% of its wording must be football inference. Never write sequences such as '37 passes, 30 accurate passes, 81%, 2 final-third passes'. Explain what the relationships reveal about recurring attacking routes, dependencies, efficiency, risk, chance quality, conversion and threat variety. players must contain exactly two players selected strictly through attacking contribution. For every player copy playerId exactly from the supplied shortlist and return playerId, metrics and analysis. Each player must have exactly four role-specific metric cells, each containing exactly one metric label and one numeric value. Choose different cells when player roles differ. Player analysis must consider all supplied relevant metrics—including those not displayed—but contain exactly ONE bullet of 20-30 words, with at most ONE short numerical fact per bullet. Lead with what the player does in this team's attack, the decisions or spaces the role affects, and the dependency or advantage created; do not narrate a statistical line. Do not mention match count, opponents, unavailable tactics, external benchmarks, coverage counts, raw category names or recommendations. In Turkish translate Touches exactly as 'Topla Buluşma' and use 'başarı oranı', never 'doğruluk'; write advanced metrics with their full Turkish name followed by the correct abbreviation in parentheses, for example 'Akan Oyun Gol Beklentisi (xGOP)'. Preserve distinct xG, xA, xGoT, npxG, xGOP and other supplied advanced metrics. Never output markdown.", build_narratives) + FOOTBALL_TERMINOLOGY_GUIDANCE),
-            ("human", f"Language: {language}\nTeam: {team_name}\nAggregated team attacking metrics: {json.dumps(team_evidence, ensure_ascii=False)}\nEligible attacking-player shortlist: {json.dumps(compact_players, ensure_ascii=False, default=str)}"),
-        ], require_players=True)
-        team_source = {name: metric_cell(name,value,basis) for _,name,value,basis in flat_team}
-        player_sources = [{**{key:player[key] for key in ("playerId","name","imageUrl","position","minutes","averageRating") if key in player}, "source_metrics": {name:metric_cell(name,detail["value"],detail["basis"]) for rows in player["metrics"].values() for name,detail in rows.items()}} for player in shortlist]
-        profile = build_evidence_profile(parsed,team_source,player_sources,theme_limit=4)
-        profile["themes"] = profile["themes"][:2]
-        return _profile_output(profile,build_narratives,lang)
-    except Exception as exc:
-        logger.warning("Profile generation failed: section=build_team_report_attack_profile type=%s",type(exc).__name__)
-        raise
+    return _generate_tactical_profile(team_name, selected_styles, player_sources, "attacking")
 
 
 def build_team_report_defense_profile(
     reports: list[dict[str, Any]],
     team_id: int,
-    team_metrics: dict[str, list[dict[str, Any]]],
     lang: str = "en",
-    build_narratives: bool = True,
+    *,
+    single_match: bool = False,
 ) -> dict[str, Any]:
     """Build a selected-match defensive identity without goalkeeper-save evidence."""
     groups = ("defending", "errors_discipline")
@@ -2011,11 +1950,7 @@ def build_team_report_defense_profile(
     def allowed(name: Any) -> bool:
         return bool(name) and not any(word in str(name).casefold() for word in excluded)
 
-    team_evidence = {
-        group: [{"name": row.get("name"), "valuePer90": row.get("perMatch"), "isRate": "%" in str(row.get("name") or "") or "percentage" in str(row.get("name") or "").casefold()} for row in rows if allowed(row.get("name"))]
-        for group, rows in team_metrics.items() if group in groups
-    }
-    team_evidence = {group: rows for group, rows in team_evidence.items() if rows}
+    selected_styles = select_team_styles(reports, team_id, lang, side="defence", single_match=single_match)
     reports = _team_player_metric_reports(reports)
     players: dict[str, dict[str, Any]] = {}
     for report in reports:
@@ -2076,25 +2011,17 @@ def build_team_report_defense_profile(
         shown = str(int(numeric)) if numeric.is_integer() else f"{numeric:.2f}".rstrip("0").rstrip(".")
         return {"label": name, "value": f"%{shown}" if basis == "rate" else shown}
 
-    flat_team = [(str(row["name"]), row["valuePer90"], "rate" if row["isRate"] else "per90") for rows in team_evidence.values() for row in rows]
-    if not team_evidence:
-        return _profile_output({"themes":[],"players":[]}, build_narratives, lang)
-    if not os.getenv("OPENAI_API_KEY"):
-        raise RuntimeError("Report generation is not configured")
-    try:
-        parsed = generate_profile_json([
-            ("system", _profile_prompt("You are ScoutWise Enterprise's senior defensive football analyst. Return only valid JSON with exactly themes and players. Every analysis field MUST be a JSON array of complete strings, never one string. Never select a goalkeeper and never use saves or goalkeeper save data. All volume values supplied are per 90; never write /90. Create exactly two dynamic, non-overlapping defensive dimensions. Every theme must have title, exactly FOUR single-metric cells, and an analysis array of exactly ONE professional bullet of 20-30 words. Interpret the team's defensive identity with the same depth used in a professional attacking profile: connect the complete evidence across ball winning, interventions, duels, aerial control, recoveries, blocks, clearances, errors and discipline; lead with what the team repeatedly does, then explain security, exposure, efficiency or dependency. Discuss only the supplied defensive evidence positively and directly. Never explain that an excluded, unavailable or attacking metric is not a defensive measure; omit it silently and analyse what is present. Return exactly two key defensive outfield players copied from the shortlist, including exact playerId. Every player must have exactly FOUR single-metric cells selected independently for that player's own position and distinctive evidence. Avoid filling a card with variants of one family such as aerial total, aerial won and aerial lost; cover four different defensive facets whenever data permits. The two players must not automatically receive the same four metrics. Every player analysis must be a JSON array of exactly ONE player-specific bullet of 20-30 words. Consider all supplied metrics internally, including metrics not displayed. Each bullet must lead with a football conclusion, contain at most one short numeric fact, and interpret relationships rather than define or list metrics. Do not invent pressing schemes, tactical intent, benchmarks or causation. Turkish output must use natural professional terminology and translate all metric names. No markdown.", build_narratives) + FOOTBALL_TERMINOLOGY_GUIDANCE),
-            ("human", f"Language: {'Turkish' if lang == 'tr' else 'English'}\nTeam: {team_name}\nTeam defensive metrics: {json.dumps(team_evidence, ensure_ascii=False)}\nDefensive player shortlist: {json.dumps(shortlist, ensure_ascii=False, default=str)}"),
-        ], require_players=True)
-        team_source = {name: cell(name,value,basis) for name,value,basis in flat_team}
-        player_sources = [{**{key:player[key] for key in ("playerId","name","imageUrl","position","minutes","averageRating") if key in player}, "source_metrics": {name:cell(name,detail["value"],detail["basis"]) for rows in player["metrics"].values() for name,detail in rows.items() if allowed(name)}} for player in shortlist]
-        profile = build_evidence_profile(parsed,team_source,player_sources,theme_limit=4)
-        profile["themes"] = profile["themes"][:2]
-        return _profile_output(profile,build_narratives,lang)
-    except Exception as exc:
-        logger.warning("Profile generation failed: section=build_team_report_defense_profile type=%s",type(exc).__name__)
-        raise
-
+    player_sources = [
+        {
+            **{key: player[key] for key in ("playerId", "name", "imageUrl", "position", "minutes", "averageRating") if key in player},
+            "source_metrics": {
+                name: cell(name, detail["value"], detail["basis"])
+                for metrics in player["metrics"].values() for name, detail in metrics.items()
+            },
+        }
+        for player in shortlist
+    ]
+    return _generate_tactical_profile(team_name, selected_styles, player_sources, "defensive")
 
 
 def build_team_report_score_flow_profile(
@@ -2103,7 +2030,7 @@ def build_team_report_score_flow_profile(
     """Aggregate time and outcome-changing events by level/ahead/behind game state."""
     state_order = ("ahead", "level", "behind")
     totals = {
-        key: {"minutes": 0.0, "segments": 0, "matchesEntered": 0, "goalsFor": 0, "goalsAgainst": 0, "exitsPositive": 0, "exitsNegative": 0, "toAhead": 0, "toLevel": 0, "toBehind": 0, "finalWins": 0, "finalDraws": 0, "finalLosses": 0}
+        key: {"minutes": 0.0, "segments": 0, "matchesEntered": 0, "matchesToLevel": 0, "goalsFor": 0, "goalsAgainst": 0, "exitsPositive": 0, "exitsNegative": 0, "toAhead": 0, "toLevel": 0, "toBehind": 0, "finalWins": 0, "finalDraws": 0, "finalLosses": 0}
         for key in state_order
     }
     team_name = next((str(team.get("name") or "") for report in reports for team in report.get("teams") or [] if int(team.get("id") or 0) == int(team_id)), "Takım" if lang == "tr" else "The team")
@@ -2141,6 +2068,7 @@ def build_team_report_score_flow_profile(
         team_score = opponent_score = 0
         cursor = 0.0
         entered = {"level"}
+        returned_to_level = set()
         current = "level"
         totals[current]["segments"] += 1
         for goal in goals:
@@ -2164,6 +2092,8 @@ def build_team_report_score_flow_profile(
                 positive = (current == "level" and next_state == "ahead") or (current == "behind" and next_state == "level")
                 totals[current]["exitsPositive" if positive else "exitsNegative"] += 1
                 totals[current][f"to{next_state.title()}"] += 1
+                if next_state == "level":
+                    returned_to_level.add(current)
                 totals[next_state]["segments"] += 1
                 entered.add(next_state)
                 current = next_state
@@ -2171,6 +2101,7 @@ def build_team_report_score_flow_profile(
         totals[current]["minutes"] += max(0.0, duration - cursor)
         for key in entered:
             totals[key]["matchesEntered"] += 1
+            totals[key]["matchesToLevel"] += key in returned_to_level
             outcome_key = "finalWins" if team_score > opponent_score else "finalLosses" if team_score < opponent_score else "finalDraws"
             totals[key][outcome_key] += 1
 
@@ -2187,7 +2118,7 @@ def build_team_report_score_flow_profile(
             "key": key, "label": labels[key], "minutes": round(row["minutes"], 1),
             "share": round(row["minutes"] / total_minutes * 100, 1),
             "averageSpell": round(row["minutes"] / row["segments"], 1) if row["segments"] else 0,
-            "segments": row["segments"], "matchesEntered": row["matchesEntered"],
+            "segments": row["segments"], "matchesEntered": row["matchesEntered"], "matchesToLevel": row["matchesToLevel"],
             "goalsFor": row["goalsFor"], "goalsAgainst": row["goalsAgainst"],
             "exitsPositive": row["exitsPositive"], "exitsNegative": row["exitsNegative"],
             "toAhead": row["toAhead"], "toLevel": row["toLevel"], "toBehind": row["toBehind"],
@@ -2226,105 +2157,6 @@ def build_team_report_score_flow_profile(
     except Exception as exc:
         logger.warning("%s", f"[enterprise_team_report] event=score_flow_profile_fallback error={exc}")
         return {"states": states, "perspectives": fallback}
-
-
-def build_team_report_strengths(
-    reports: list[dict[str, Any]],
-    team_id: int,
-    team_metrics: dict[str, list[dict[str, Any]]],
-    lang: str = "en",
-    build_narratives: bool = True,
-) -> dict[str, Any]:
-    """Identify three evidence-supported team strengths from all metric categories."""
-    team_name = next((str(team.get("name") or "") for report in reports for team in report.get("teams") or [] if int(team.get("id") or 0) == int(team_id)), "Takım" if lang == "tr" else "The team")
-    evidence = {
-        group: [{"name": row.get("name"), "valuePer90": row.get("perMatch"), "isRate": is_percentage(str(row.get("name") or ""))} for row in rows if row.get("name") and row.get("perMatch") is not None]
-        for group, rows in team_metrics.items() if rows
-    }
-    flat = [(group, str(row["name"]), row["valuePer90"], "rate" if row["isRate"] else "per90") for group, rows in evidence.items() for row in rows]
-
-    def metric_cell(name: str, value: Any, basis: str) -> dict[str, str]:
-        numeric = float(value)
-        shown = str(int(numeric)) if numeric.is_integer() else f"{numeric:.2f}".rstrip("0").rstrip(".")
-        return {"label": name, "value": f"%{shown}" if basis == "rate" else shown}
-
-    source_cells = {name: metric_cell(name, value, basis) for _, name, value, basis in flat}
-
-    if not flat:
-        return _profile_output({"themes":[]}, build_narratives, lang)
-    if not os.getenv("OPENAI_API_KEY"):
-        raise RuntimeError("Report generation is not configured")
-    try:
-        parsed = generate_profile_json([
-            ("system", _profile_prompt("You are ScoutWise Enterprise's senior team-performance analyst. Return only valid JSON with exactly themes. themes must be an array of exactly TWO dynamically named, non-overlapping team strengths inferred from ALL supplied metric categories. Do not use fixed generic headings. Every theme must contain exactly title, metrics and analysis. metrics must contain exactly FOUR objects with exactly label and value; each cell contains one metric and one numeric value only. Select the four most diagnostic visible metrics for that strength, but use every related supplied metric internally when interpreting it. analysis MUST be a JSON array of exactly ONE complete professional string of 20-30 words. Lead with a direct team-specific conclusion about what the team repeatedly does well, connect volume, efficiency and outcome where supported, and explain the practical football advantage. At least 80% of each bullet must be inference; use at most one short numerical fact per bullet and never enumerate a statistical line. Strengths must be positively framed but evidence-led. Do not claim superiority to external teams or leagues because no benchmark is supplied. Never invent tactics, roles, causation, recommendations or unavailable context. All volume metrics are already normalized per 90; never write /90. Only metrics marked isRate=true are percentages. Averaging a metric does not make it a percentage; Shooting Performance is a unitless index. Copy metric labels EXACTLY from the supplied evidence; the app translates them. In Turkish use natural professional football terminology for analysis. No markdown.", build_narratives) + FOOTBALL_TERMINOLOGY_GUIDANCE),
-            ("human", f"Language: {'Turkish' if lang == 'tr' else 'English'}\nTeam: {team_name}\nAll aggregated team metrics: {json.dumps(evidence, ensure_ascii=False)}"),
-        ], require_players=False)
-        team_source = source_cells
-        player_sources = None
-        profile = build_evidence_profile(parsed,team_source,player_sources,theme_limit=4)
-        profile["themes"] = profile["themes"][:2]
-        return _profile_output(profile,build_narratives,lang)
-    except Exception as exc:
-        logger.warning("Profile generation failed: section=build_team_report_strengths type=%s",type(exc).__name__)
-        raise
-
-
-def build_team_report_weaknesses(
-    reports: list[dict[str, Any]],
-    team_id: int,
-    team_metrics: dict[str, list[dict[str, Any]]],
-    strengths: dict[str, Any] | None = None,
-    lang: str = "en",
-    build_narratives: bool = True,
-) -> dict[str, Any]:
-    """Identify three evidence-supported team vulnerabilities from all metric categories."""
-    team_name = next((str(team.get("name") or "") for report in reports for team in report.get("teams") or [] if int(team.get("id") or 0) == int(team_id)), "Takım" if lang == "tr" else "The team")
-    evidence = {
-        group: [{"name": row.get("name"), "valuePer90": row.get("perMatch"), "isRate": is_percentage(str(row.get("name") or "")), "evidenceDirection": (
-            "adverse" if any(word in str(row.get("name") or "").casefold() for word in ("missed", "lost", "error", "foul", "card", "off target", "conceded")) else
-            "positive_output" if any(word in str(row.get("name") or "").casefold() for word in ("expected goal", "expected assist", "goals", "assists", "accurate", "won", "on target", "chances created")) else
-            "contextual"
-        )} for row in rows if row.get("name") and row.get("perMatch") is not None]
-        for group, rows in team_metrics.items() if rows
-    }
-    flat = [(group, str(row["name"]), row["valuePer90"], "rate" if row["isRate"] else "per90") for group, rows in evidence.items() for row in rows]
-    confirmed_strengths = strengths or {}
-    strength_metric_names = {
-        str(metric.get("label") or "").strip()
-        for theme in confirmed_strengths.get("themes") or [] if isinstance(theme, dict)
-        for metric in theme.get("metrics") or [] if isinstance(metric, dict)
-        if str(metric.get("label") or "").strip()
-    }
-    weakness_visible_flat = [
-        row for row in flat
-        if row[1] not in strength_metric_names
-        and not any(word in row[1].casefold() for word in ("expected goal", "expected assist", "xg", "xa"))
-    ]
-
-    def metric_cell(name: str, value: Any, basis: str) -> dict[str, str]:
-        numeric = float(value)
-        shown = str(int(numeric)) if numeric.is_integer() else f"{numeric:.2f}".rstrip("0").rstrip(".")
-        return {"label": name, "value": f"%{shown}" if basis == "rate" else shown}
-
-    source_cells = {name: metric_cell(name, value, basis) for _, name, value, basis in flat}
-
-    if not flat:
-        return _profile_output({"themes":[]}, build_narratives, lang)
-    if not os.getenv("OPENAI_API_KEY"):
-        raise RuntimeError("Report generation is not configured")
-    try:
-        parsed = generate_profile_json([
-            ("system", _profile_prompt("You are ScoutWise Enterprise's senior team-performance analyst. Return only valid JSON with exactly themes. themes must be an array of exactly TWO dynamically named, non-overlapping team weaknesses inferred from ALL supplied metric categories. CONFIRMED_STRENGTHS is binding editorial context: never describe a confirmed strength, its visible metrics, or the same causal relationship as a weakness. A genuine trade-off may be discussed only when distinct adverse evidence explicitly proves its separate cost. Do not use fixed generic headings. Every theme must contain exactly title, metrics and analysis. metrics must contain exactly FOUR objects with exactly label and value; copy each metric label EXACTLY from the supplied evidence and use one numeric value only. Select the four most diagnostic visible metrics for that weakness, but use every related supplied metric internally when interpreting it. evidenceDirection is binding: adverse metrics may directly support a weakness; contextual metrics require a demonstrated relationship; positive_output metrics must NEVER be treated as weak merely because their value seems low or high without an external benchmark. Expected-goal production—including set-play expected goals—is positive chance-production evidence and must not appear as weakness evidence unless a directly supplied matching outcome proves under-conversion. Do not combine low crossing accuracy with strong set-play expected-goal production and call both evidence of the same weakness. analysis MUST be a JSON array of exactly ONE complete professional string of 20-30 words. Lead with a direct team-specific conclusion about the recurring vulnerability, connect volume, efficiency, errors and outcome where supported, and explain its practical football cost. At least 80% of each bullet must be inference; use at most one short numerical fact per bullet and never enumerate a statistical line. Diagnose weaknesses directly without praise, recommendations or softening language. Do not claim inferiority to external teams or leagues because no benchmark is supplied; identify internal inefficiency, imbalance, dependency or repeated exposure from relationships within the supplied evidence. Never invent tactics, roles, causation or unavailable context. All volume metrics are already normalized per 90; never write /90. Only metrics marked isRate=true are percentages. Averaging a metric does not make it a percentage; Shooting Performance is a unitless index. Copy metric labels EXACTLY from the supplied evidence; the app translates them. In Turkish use established professional football terminology. Never use 'teslimat' for a cross or set-piece service; use 'servis', 'orta' or 'topun doğru bölgeye gönderilmesi'. Never use 'sürtünme'; use 'verim kaybı', 'üretim kopukluğu' or 'tehdide dönüşüm sorunu'. Never explain missing or irrelevant metrics. No markdown.", build_narratives) + FOOTBALL_TERMINOLOGY_GUIDANCE),
-            ("human", f"Language: {'Turkish' if lang == 'tr' else 'English'}\nTeam: {team_name}\nCONFIRMED_STRENGTHS: {json.dumps(confirmed_strengths, ensure_ascii=False)}\nAll aggregated team metrics: {json.dumps(evidence, ensure_ascii=False)}"),
-        ], require_players=False)
-        team_source = source_cells
-        player_sources = None
-        profile = build_evidence_profile(parsed,team_source,player_sources,theme_limit=4)
-        profile["themes"] = profile["themes"][:2]
-        return _profile_output(profile,build_narratives,lang)
-    except Exception as exc:
-        logger.warning("Profile generation failed: section=build_team_report_weaknesses type=%s",type(exc).__name__)
-        raise
 
 
 def build_team_report_overview(

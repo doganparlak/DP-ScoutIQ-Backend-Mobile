@@ -34,7 +34,7 @@ def review_team_profiles(profiles: dict, lang: str, *, editable_sections=None, t
             for index, row in enumerate(profile.get(kind) or []):
                 if not isinstance(row, dict):
                     continue
-                entries = [("title", None, row.get("title"))]
+                entries = [] if row.get("styleId") or row.get("findingId") else [("title", None, row.get("title"))]
                 entries += [("analysis", i, text) for i, text in enumerate(row.get("analysis") or [])]
                 for field, bullet, text in entries:
                     if not isinstance(text, str) or not text.strip():
@@ -134,6 +134,8 @@ def review_team_profiles(profiles: dict, lang: str, *, editable_sections=None, t
                     bound = bind_row_evidence(candidate, row.get("_source_metrics") or {}, row.get("_metric_limit", 4))
                     if len(bound["evidence_values"]) > row.get("_metric_limit", 4):
                         continue
+                    if row.get("styleId") or row.get("findingId"):
+                        bound["metrics"] = row["metrics"]
                     row.update(bound)
                     accepted.update(keys)
             except Exception as exc:

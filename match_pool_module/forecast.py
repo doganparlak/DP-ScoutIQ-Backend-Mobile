@@ -787,6 +787,6 @@ def forecast_for_tier(result, tier):
     forecast = result.get('forecast')
     if tier == 'free' and isinstance(forecast, dict):
         fields = ('fixtureId', 'modelVersion', 'startingAt', 'regulationMinutes',
-                  'home', 'away', 'outcomes', 'topScores', 'grid', 'gridRemainder', 'scoreMargins')
+                  'home', 'away', 'outcomes', 'topScores', 'grid', 'gridRemainder')
         scoped['forecast'] = {key: forecast[key] for key in fields if key in forecast}
     return scoped

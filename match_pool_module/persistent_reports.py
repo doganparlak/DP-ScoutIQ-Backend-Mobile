@@ -15,7 +15,7 @@ from .team_analysis import build_team_analysis
 from .player_perspectives import build_player_perspectives
 
 VERSION = 4
-TEAM_ANALYSIS_VERSION = 4
+TEAM_ANALYSIS_VERSION = 5
 _EXECUTOR = ThreadPoolExecutor(max_workers=3, thread_name_prefix="mobile-match-report")
 _PENDING = set()
 _LAZY_PENDING = set()
@@ -126,7 +126,7 @@ def run(favorite_id, user_id, language, retry_failed):
                         value = {'teams':build_team_analysis(content['data'],language,include_locked=tier == 'paid'),'analysis_version':TEAM_ANALYSIS_VERSION}
                     else:
                         data=content['data']
-                        value = {'teams':build_player_perspectives(data.get('teams') or [],data.get('lineups') or [],data.get('events') or [],language, strict=True, include_locked=tier == 'paid')}
+                        value = {'teams':build_player_perspectives(data.get('teams') or [],data.get('lineups') or [],data.get('events') or [], include_locked=tier == 'paid')}
                     content[section] = value
                     content['sections'][section] = {'status':'ready','ready_at':now(),'access_tier':tier}
                 except Exception:
@@ -191,7 +191,7 @@ def run_lazy(favorite_id, user_id, language, requested, pending_key, rewarded=Fa
                         content[section] = {'teams':build_team_analysis(content['data'],language,include_locked=tier == 'paid'),'analysis_version':TEAM_ANALYSIS_VERSION}
                     else:
                         data = content['data']
-                        content[section] = {'teams':build_player_perspectives(data.get('teams') or [],data.get('lineups') or [],data.get('events') or [],language,strict=True,include_locked=tier == 'paid')}
+                        content[section] = {'teams':build_player_perspectives(data.get('teams') or [],data.get('lineups') or [],data.get('events') or [], include_locked=tier == 'paid')}
                     content['sections'][section] = {'status':'ready','ready_at':now(),'access_tier':tier}
                     checkpoint(content,'ready')
                 except Exception:

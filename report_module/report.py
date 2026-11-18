@@ -26,7 +26,7 @@ from report_module.prompts import report_system_prompt
 from report_module.utilities import _first_non_empty, _normalize_roles, _score_candidate, norm_name
 
 SCOUT_REPORT_VERSION = 12
-LAZY_SCOUT_REPORT_VERSION = 13
+LAZY_SCOUT_REPORT_VERSION = 18
 
 load_dotenv()
 
@@ -54,12 +54,12 @@ Write the header in English exactly as requested. Write every bullet title and e
 Keep titles under 42 characters. Use professional tactical interpretation tied to the player's actual role.
 When lang is tr, use natural Turkish football terminology and comma decimal separators; do not leave English
 metric or tactical terms in the prose.
-For strengths, every bullet must combine metric evidence, the match phase or game situation where the quality
-matters, and its tactical benefit or usage implication. Give strengths the same depth and approximate length
-as weakness bullets; target roughly 30-45 words per explanation.
+For strengths, lead with the football observation and its tactical value. Ground each point in the supplied
+evidence, using the metrics to inform the interpretation without quoting their numeric values.
 For weaknesses, prioritize CONCERN_CANDIDATES from the metric guide. If there are fewer than the requested number, use
 role-relevant positive/output metrics as conditional development limits or tactical trade-offs. Ground every
-point in an actual supplied value, describe the game situation where it matters, and add a practical mitigation.
+point in the supplied evidence without quoting numeric values. Treat match situations as contexts where
+the concern could matter. Attribute a metric to a specific situation only if the supplied data measures it there.
 Do not relabel LOW_RISK_NEGATIVES as poor performance. Never fill a weakness bullet by saying that a concern,
 weakness, metric, or evidence is absent, unverified, unavailable, or not a problem.
 For role usage, never recommend a role family outside ROLE_CONSTRAINTS.""" + FOOTBALL_TERMINOLOGY_GUIDANCE),
@@ -75,11 +75,11 @@ section_report_chain = _section_prompt | CHAT_LLM | StrOutputParser()
 LAZY_NARRATIVE_SECTIONS: Dict[str, Tuple[str, str]] = {
     "strengths": (
         "STRENGTHS",
-        "Provide exactly 5 distinct strengths. Each explanation must be roughly 30-45 words and include at least one supplied metric value, a relevant match phase or game situation, and the resulting tactical benefit or usage implication.",
+        "Provide exactly 5 distinct strengths. Write about 30 words per explanation, excluding the title, in exactly two complete sentences. State the strength first, then explain why it matters tactically in a relevant match situation.",
     ),
     "weaknesses": (
         "POTENTIAL WEAKNESSES / CONCERNS",
-        "Provide exactly 5 distinct, evidence-led concerns or development limits. Every bullet must cite at least one supplied metric value, explain a relevant match situation, and give a mitigation or coaching cue. Never output a no-concern or no-evidence placeholder.",
+        "Provide exactly 5 distinct, evidence-led concerns or development limits. Write about 30 words per explanation, excluding the title, in exactly two complete sentences. State the concern and the match situation where it matters first, then give a practical mitigation or coaching cue. Never output a no-concern or no-evidence placeholder.",
     ),
     "role_usage": (
         "CONCLUSION",
@@ -152,7 +152,7 @@ def normalize_mobile_report_format(report_text: str, lang: str) -> str:
                     if next_line.strip().startswith('- '):
                         remaining.append(next_line)
                 original = _MOBILE_CONCLUSION_TITLES.get(lang, ())
-                indices = (0, 3, 4) if len(remaining) == 3 else (0, 1, 3, 4) if len(remaining) == 4 else tuple(range(len(original)))
+                indices = {2: (0, 3), 3: (0, 3, 4), 4: (0, 1, 3, 4)}.get(len(remaining), range(len(original)))
                 conclusion_titles = tuple(original[i] for i in indices if i < len(original))
             output.append(line)
             continue
@@ -649,18 +649,34 @@ def complete_report_section(foundation: Dict[str, Any], section: str, lang: str,
     player_card = dict(content_json.get("player_card") or {})
     docs = list(content_json.get("metrics_docs") or [])
     heading, rules = LAZY_NARRATIVE_SECTIONS[section]
+    texts = dict(content_json.get("narrative_sections") or {})
+    retained_bullets = []
     if section == 'role_usage':
-        titles = ['Role & System', 'In Possession', 'Out of Possession']
+        titles = ['Role & System', 'In Possession']
         if access_tier == 'paid':
             titles.insert(1, 'Development Focus')
+            titles.append('Out of Possession')
         expected_bullets = len(titles)
         rules = (f"Provide exactly {expected_bullets} bullets in this order: " + ', '.join(titles)
                  + '. Use the corresponding Turkish titles when lang is tr. '
+                 + 'Write about 30 words per explanation, excluding the title, in two complete sentences. '
+                 + 'Give a concrete tactical or coaching recommendation first, then explain how to apply it on the pitch. '
+                 + 'Use the supplied metrics to inform the advice. Omit numeric player statistics and metric lists from both sentences. Tactical notation such as formations and role numbers is allowed. '
+                 + 'Write football formations with digits and hyphens, for example 4-4-2 or 4-2-3-1. Apply this in both languages and never spell out formation numbers. '
+                 + 'For In Possession, describe use when the player’s team has the ball. '
+                 + 'For Out of Possession, describe defensive use when the opponent has the ball. '
                  + 'Do not generate Usage Recommendation or any other section.'
-                 + (' Do not generate Development Focus.' if access_tier == 'free' else ''))
+                 + (' Do not generate Development Focus or Out of Possession.' if access_tier == 'free' else ''))
     else:
-        expected_bullets = 2 if access_tier == 'free' else 3
+        if access_tier == 'paid':
+            retained_bullets = [
+                line.strip() for line in (texts.get(section) or "").splitlines()
+                if line.strip().startswith("- ")
+            ][:1]
+        expected_bullets = 1 if access_tier == 'free' else 3 - len(retained_bullets)
         rules = rules.replace('exactly 5', f'exactly {expected_bullets}')
+        if retained_bullets:
+            rules += f" Write only new topics distinct from this existing point: {retained_bullets[0]}"
     raw_section_text = (section_report_chain.invoke({
         "input_text": _build_llm_input(player_card, docs),
         "lang": lang,
@@ -684,9 +700,8 @@ def complete_report_section(foundation: Dict[str, Any], section: str, lang: str,
         )
         if any(phrase in normalized_output for phrase in placeholder_phrases):
             raise ValueError("Weakness section contains no-concern placeholder copy")
-    section_text = f"{heading}\n" + "\n".join(bullet_lines)
+    section_text = f"{heading}\n" + "\n".join(retained_bullets + bullet_lines)
     section_text = normalize_mobile_report_format(section_text, lang)
-    texts = dict(content_json.get("narrative_sections") or {})
     texts[section] = section_text
     content_json["narrative_sections"] = texts
     content_json["report_text"] = "\n\n".join(

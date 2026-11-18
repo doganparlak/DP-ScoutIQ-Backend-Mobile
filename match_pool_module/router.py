@@ -395,11 +395,47 @@ def post_match_player_perspectives(fixture_id: int, language: str = "tr", user_i
         report = generate_match_report(fixture_id, lang=language, build_narratives=False)
         if not _is_completed_enterprise_fixture({"state": report.get("state") or {}}):
             raise HTTPException(409, "Player analysis is available after the match finishes")
-        result = {"teams": build_player_perspectives(report.get("teams") or [], report.get("lineups") or [], report.get("events") or [], language, include_locked=tier == "paid")}
+        result = {"teams": build_player_perspectives(report.get("teams") or [], report.get("lineups") or [], report.get("events") or [], include_locked=tier == "paid")}
         cache_analysis(key, result)
         return result
     except (MatchReportError, requests.RequestException, ValueError):
         raise HTTPException(502, "Player analysis is temporarily unavailable") from None
+
+
+@router.get("/match-pool/fixtures/{fixture_id}/saved-report/tactical-profile/{kind}")
+def post_match_tactical_profile(fixture_id: int, kind: str, teamId: int, language: str = "tr",
+                                user_id=Depends(require_auth), db: Session=Depends(get_db), rewarded: bool = False):
+    from team_analysis_module.report import build_team_report_attack_profile, build_team_report_defense_profile
+    from team_analysis_module.tactical_styles import STYLE_VERSION
+    from .team_analysis import cached_analysis, cache_analysis
+
+    builders = {"attack": build_team_report_attack_profile, "defense": build_team_report_defense_profile}
+    if kind not in builders or language not in {"tr", "en"}:
+        raise HTTPException(400, "Invalid profile or language")
+    if rewarded and not rewarded_report_sections_enabled():
+        raise HTTPException(403, "Rewarded reports are disabled")
+    paid = rewarded or report_tier(db, user_id) == "paid"
+    row = db.execute(text("""
+        SELECT id, report_content->'data' AS data FROM favorite_matches
+        WHERE user_id=:uid AND fixture_id=:fid AND report_type='post_match'
+    """), {"uid":user_id, "fid":fixture_id}).mappings().first()
+    if not row or not row["data"]:
+        raise HTTPException(404, "Saved match data not found")
+    data = row["data"]
+    if not any(str(team.get("id")) == str(teamId) for team in data.get("teams") or []):
+        raise HTTPException(422, "Team is not part of this match")
+    key = ("post-match-style", str(row["id"]), teamId, kind, language, STYLE_VERSION)
+    profile = cached_analysis(key)
+    if profile is None:
+        try:
+            profile = builders[kind]([data], teamId, language, single_match=True)
+        except Exception:
+            raise HTTPException(502, "Tactical profile is temporarily unavailable") from None
+        cache_analysis(key, profile)
+    if paid:
+        return profile
+    return {**profile, "themes": profile["themes"][:1], "players": profile["players"][:1],
+            "hasMoreThemes": len(profile["themes"]) > 1, "hasMorePlayers": len(profile["players"]) > 1}
 
 
 @router.post("/match-pool/fixtures/{fixture_id}/saved-report")
@@ -523,11 +559,10 @@ def pre_match_form(fixture_id: int, user_id=Depends(require_auth)):
 
 @router.get("/match-pool/fixtures/{fixture_id}/pre-match-players")
 def pre_match_players(fixture_id: int, language: str = 'tr', user_id=Depends(require_auth)):
-    from .pre_match_usage import _pre_match_player_perspectives
     if language not in {'tr','en'}:
         raise HTTPException(400, 'Invalid language')
     result=pre_match_squad(fixture_id,user_id)
-    return {'teams':result['teams'], 'perspectives':(_pre_match_player_perspectives(result['teams'],language) if user_report_tier(user_id) == 'paid' else {})}
+    return {'teams':result['teams'], 'perspectives':{}}
 
 
 @router.get("/match-pool/fixtures/{fixture_id}/pre-match-momentum")
@@ -625,6 +660,27 @@ def poll_saved_pre_match_report(fixture_id: int, language: str = "tr", lazy: boo
         schedule(str(row['id']),user_id,language)
         result['status'] = 'processing'
     return result
+
+
+@router.get("/match-pool/fixtures/{fixture_id}/saved-pre-report/opponent-comparison")
+def saved_pre_match_opponent_comparison(fixture_id: int, user_id=Depends(require_auth),
+                                       db: Session=Depends(get_db), rewarded: bool = False):
+    if rewarded and not rewarded_report_sections_enabled():
+        raise HTTPException(403, "Rewarded reports are disabled")
+    if not rewarded and report_tier(db, user_id) != "paid":
+        raise HTTPException(403, "Unlock opponent data to view these sections")
+    from .pre_match_opponents import build_comparison
+    row = db.execute(text("""
+        SELECT report_content FROM favorite_matches
+        WHERE user_id=:uid AND fixture_id=:fid AND report_type='pre_match'
+    """), {"uid":user_id,"fid":fixture_id}).scalar()
+    squad = (row or {}).get("squad") or {}
+    if not squad.get("teams"):
+        raise HTTPException(404, "Saved pre-match squad not found")
+    try:
+        return build_comparison(db, squad["teams"])
+    except (SportMonksError, requests.RequestException, ValueError):
+        raise HTTPException(502, "Opponent comparison is temporarily unavailable") from None
 
 
 @router.post("/match-pool/fixtures/{fixture_id}/saved-pre-report/sections/{section}")

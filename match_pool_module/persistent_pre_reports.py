@@ -10,7 +10,7 @@ from datetime import datetime, timezone
 from sqlalchemy import text
 from api_module.database import engine
 from .pre_match_card import build_pre_match_card
-from .pre_match_usage import _pre_match_player_perspectives, _pre_match_momentum_perspectives, _pre_match_team_analysis, sanitize_pre_match_standout_metrics
+from .pre_match_usage import _pre_match_momentum_perspectives, _pre_match_team_analysis, sanitize_pre_match_standout_metrics
 from .pre_match_standings import get_league_standings
 
 VERSION = 8
@@ -102,11 +102,11 @@ def build_section(section, content, fixture_id, user_id, language, tier=None):
                     by_team[key] = {'position':row.get('position'),'points':row.get('points'),'table_label':table.get('label') or ''}
         return {'teams':usages,'standings':by_team}
     if section == 'players':
-        return {'teams':usages,'perspectives':(_pre_match_player_perspectives(usages,language,strict=True) if paid else {})}
+        return {'teams':usages,'perspectives':{}}
     if section == 'momentum':
         has_data = any(r.get('average_net_pressure') or r.get('goals_for') or r.get('goals_against') for u in usages for r in u.get('momentum') or [])
         return {'teams':usages,'perspective':_pre_match_momentum_perspectives(usages,teams,language,strict=True) if has_data and paid else None}
-    return {'teams':_pre_match_team_analysis(usages,teams,language,strict=True,include_locked=paid)}
+    return {'teams':_pre_match_team_analysis(usages,teams,language,strict=True,include_locked=paid), 'compact_strategy':True}
 
 def schedule(favorite_id, user_id, language, retry_failed=False):
     key = str(favorite_id)

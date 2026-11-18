@@ -1063,73 +1063,6 @@ def _head_to_head_results(
 
     return {"matches": [serialize(item) for item in sorted(fixtures, key=lambda value: value.get("starting_at") or "", reverse=True)]}
 
-def _pre_match_player_perspectives(usages: list[dict[str, Any]], lang: str, strict: bool = False) -> dict[str, dict[str, str]]:
-    selected: list[tuple[dict[str, Any], str]] = []
-    for usage in usages:
-        summary = usage.get("performance_summary") or {}
-        featured = summary.get("featured_players") or [
-            summary.get("top_rated"),
-            *(summary.get("top_scorers") or []),
-        ]
-        seen: set[int] = set()
-        for player in featured:
-            if isinstance(player, dict) and _as_int(player.get("player_id")) not in seen:
-                seen.add(_as_int(player.get("player_id")))
-                selected.append((player, "featured"))
-        if isinstance(summary.get("development"), dict):
-            selected.append((summary["development"], "development"))
-
-    fallback: dict[str, dict[str, str]] = {}
-    compact = []
-    for player, selection in selected:
-        key = str(player.get("player_id") or player.get("player_name"))
-        metrics = [metric for metric in player.get("development_metrics" if selection == "development" else "standout_metrics") or []
-                   if valid_metric(str(metric.get("name") or ""), metric.get("value"), nonzero=True)]
-        name = str(player.get("player_name") or "Oyuncu")
-        fallback[key] = {
-            "text": (
-                f"{name}, seçili maçlarda rolüne uygun tekrar eden bir katkı sundu; bu profil takımın ilgili oyun alanındaki üretimini destekliyor."
-                if selection == "featured" and lang == "tr" else
-                f"{name}'ın seçili maçlarda düşük kalan rol katkısı, daha istikrarlı üretim oluşturması gereken alanı öne çıkarıyor."
-                if lang == "tr" else
-                f"{name}'s output shows a recurring contribution within the role across the selected matches."
-                if selection == "featured" else
-                f"{name}'s lower role output identifies the area requiring more consistent contribution."
-            )
-        }
-        compact.append({
-            "player_id": player.get("player_id"), "player_name": name,
-            "selection_type": selection, "position": player.get("position_name"),
-            "average_rating": player.get("average_rating"),
-            "per90_metrics": [{k: v for k, v in metric.items() if k != "competition_rank"} for metric in metrics],
-        })
-    if not compact or not os.getenv("OPENAI_API_KEY"):
-        if strict and compact and not os.getenv("OPENAI_API_KEY"):
-            raise ValueError("Analysis service unavailable")
-        return fallback
-    try:
-        from langchain_openai import ChatOpenAI
-        response = ChatOpenAI(
-            model=os.getenv("OPENAI_MATCH_REPORT_MODEL", os.getenv("OPENAI_REPORT_MODEL", "gpt-5.6-luna")),
-            api_key=os.environ["OPENAI_API_KEY"], temperature=0.2, timeout=180, max_retries=1,
-        ).invoke([
-            ("system", "You are ScoutWise's senior football analyst. Return only valid JSON keyed by player_id. Each value must be one concise 20-30 word ScoutWise perspective in the requested language. Explain why the player was selected; interpret the role and combined effect rather than reciting values. Featured players: use only positive evidence. Development players: use only the supplied weaker per-90 outputs, never praise or select a strength. Never cite zero-valued metrics. Never use the Turkish word 'örneklem'. Do not mention league rankings. Lower values are better for discipline and error metrics. Never invent facts, tactics, benchmarks, causation, or recommendations. No markdown/headings." + FOOTBALL_TERMINOLOGY_GUIDANCE),
-            ("human", f"Language: {'Turkish' if lang == 'tr' else 'English'}\nPlayers: {json.dumps(compact, ensure_ascii=False, default=str)}"),
-        ])
-        parsed = json.loads(re.sub(r"^```(?:json)?\s*|\s*```$", "", str(response.content or "").strip(), flags=re.I))
-        if strict and (not isinstance(parsed, dict) or any(not str((parsed.get(k) or {}).get("text") if isinstance(parsed.get(k), dict) else parsed.get(k) or "").strip() for k in fallback)):
-            raise ValueError("Incomplete player analysis")
-        if isinstance(parsed, dict):
-            for key, value in parsed.items():
-                text = value.get("text") if isinstance(value, dict) else value
-                if str(text or "").strip():
-                    fallback[str(key)] = {"text": str(text).strip()}
-    except Exception as exc:
-        if strict:
-            raise ValueError("Analysis generation failed") from None
-        logger.warning("%s", f"[pre_match_report] event=player_perspective_fallback error={exc}")
-    return fallback
-
 def _pre_match_momentum_perspectives(
     usages: list[dict[str, Any]],
     teams: list[dict[str, Any]],
@@ -1221,7 +1154,7 @@ def _pre_match_team_analysis(usages: list[dict[str, Any]], teams: list[dict[str,
             model=os.getenv("OPENAI_MATCH_REPORT_MODEL", os.getenv("OPENAI_REPORT_MODEL", "gpt-5.6-luna")),
             api_key=os.environ["OPENAI_API_KEY"], temperature=0.2, timeout=180, max_retries=1,
         ).invoke([
-            ("system", _pre_team_prompt("You are ScoutWise's senior pre-match football analyst. Return only valid JSON keyed by team_id. Every team value MUST contain exactly positive, strategy, weakness. Each team's fixture_location specifies whether this upcoming match is home or away. Treat it as mandatory context: do not mention, rely on, or infer from that team's opposite-venue form. For example, an away team must never be described through home strength. positive and weakness must each be a 20-30 word, insight-led analysis; strategy must be an 30-40 word opponent-specific match plan. In positive and weakness, use at most two carefully chosen numbers only when they materially support the conclusion; prioritise tactical meaning, recurring behaviour, matchup implications and risk over metric recitation. strategy is STRICTLY plan and recommendations: do not mention any number, percentage, metric name, stat, or data value. For each team_id, strategy is advice for THAT team and must explicitly refer to the other supplied team by its name as the opponent. In Turkish, never use direct commands or second-person imperatives such as 'kurun', 'sıkıştırın', 'bırakın'; use formal analytical recommendations such as 'daraltılmalı', 'yönlendirilmelidir', 'korunmalıdır', 'uygulanmalı'. State how to defend, progress, press, create advantages and manage likely game states against this specific opponent. Never use the Turkish word 'örneklem'. Never invent unavailable tactics, players, facts, benchmarks or certainty. No markdown, headings, bullets, or leading dashes.", include_locked) + FOOTBALL_TERMINOLOGY_GUIDANCE),
+            ("system", _pre_team_prompt("You are ScoutWise's senior pre-match football analyst. Return only valid JSON keyed by team_id. Every team value MUST contain exactly positive, strategy, weakness. Each team's fixture_location specifies whether this upcoming match is home or away. Treat it as mandatory context: do not mention, rely on, or infer from that team's opposite-venue form. For example, an away team must never be described through home strength. positive and weakness must each be a 20-30 word, insight-led analysis; strategy must be a 23-30 word opponent-specific match plan. Prioritize the two most important tactical actions. In positive and weakness, use at most two carefully chosen numbers only when they materially support the conclusion; prioritise tactical meaning, recurring behaviour, matchup implications and risk over metric recitation. strategy is STRICTLY plan and recommendations: do not mention any number, percentage, metric name, stat, or data value. For each team_id, strategy is advice for THAT team and must explicitly refer to the other supplied team by its name as the opponent. In Turkish, never use direct commands or second-person imperatives such as 'kurun', 'sıkıştırın', 'bırakın'; use formal analytical recommendations such as 'daraltılmalı', 'yönlendirilmelidir', 'korunmalıdır', 'uygulanmalı'. Focus on the most relevant ways to defend, progress or create an advantage against this specific opponent. Never use the Turkish word 'örneklem'. Never invent unavailable tactics, players, facts, benchmarks or certainty. No markdown, headings, bullets, or leading dashes.", include_locked) + FOOTBALL_TERMINOLOGY_GUIDANCE),
             ("human", f"Language: {'Turkish' if lang == 'tr' else 'English'}\nTeam evidence: {json.dumps(compact, ensure_ascii=False, default=str)}"),
         ])
         parsed = json.loads(re.sub(r"^```(?:json)?\s*|\s*```$", "", str(response.content or "").strip(), flags=re.I))

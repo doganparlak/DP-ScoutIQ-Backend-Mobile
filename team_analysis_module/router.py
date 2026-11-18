@@ -25,9 +25,10 @@ from fastapi import Header
 from pydantic import BaseModel, Field, field_validator
 from concurrent.futures import ThreadPoolExecutor
 from . import report as engine
-from .report import generate_match_report, build_team_report_metrics, build_team_report_player_perspectives, build_team_report_momentum_perspectives, build_team_report_regional_perspective, build_team_report_attack_profile, build_team_report_defense_profile, build_team_report_score_flow_profile, build_team_report_strengths, build_team_report_weaknesses, build_team_report_overview
-from report_module.profile_editor import review_team_profiles
-from report_module.profile_evidence import free_profile_snapshot
+from .tactical_styles import STYLE_VERSION
+from .opponent_metrics import build_opponent_metrics
+from .team_findings import build_findings
+from .report import generate_match_report, build_team_report_metrics, build_team_report_player_perspectives, build_team_report_momentum_perspectives, build_team_report_regional_perspective, build_team_report_attack_profile, build_team_report_defense_profile, build_team_report_score_flow_profile, build_team_report_overview
 
 from collections import OrderedDict
 from copy import deepcopy
@@ -55,34 +56,8 @@ def _raw_report(fixture_id, language):
 
 def _profile_cache_key(kind, paid):
     key = f'{kind}:{"paid" if paid else "free"}:v{engine.MATCH_REPORT_VERSION}:headings-v3'
-    return key + (f':assessment-v{engine.ASSESSMENT_VERSION}' if kind == 'assessment' else '')
+    return key + (f':assessment-v{engine.ASSESSMENT_VERSION}' if kind == 'assessment' else f':styles-v{STYLE_VERSION}')
 
-
-def _review_profiles(profiles, payload, user_id, db, language, paid):
-    if not paid:
-        # Never run paid narrative generation/review for free accounts.
-        return {key: free_profile_snapshot(value) for key, value in profiles.items()}
-    context = dict(profiles)
-    if payload.reportId:
-        for kind, keys in [('attack', ['attackProfile']), ('defense', ['defenseProfile']),
-                           ('assessment', ['strengths', 'weaknesses'])]:
-            if all(key in context for key in keys):
-                continue
-            cached = cached_profile(db, user_id, payload.reportId, _profile_cache_key(kind, True))
-            if cached:
-                if kind == 'assessment':
-                    context.update({key: cached[key] for key in keys if key in cached and key not in context})
-                else:
-                    context.setdefault(keys[0], cached)
-    # Lazy sections are reviewed with available cached sections as read-only
-    # context. Creating another section never silently rewrites a saved one.
-    reviewed = review_team_profiles(context, language, editable_sections=set(profiles), task_contract=(
-        'Mobile report: every team and player analysis is ONE paragraph targeting 20-30 words. '
-        'Team counts and player counts are BOTH per 90, not per match. Rates retain percentages. '
-        'Use at most four cards and preserve plan visibility. Cached sections without editable '
-        'passage IDs are read-only context. Evidence_values in cached rows are source-verified values.'
-    ))
-    return {key: reviewed[key] for key in profiles}
 
 class TeamAnalysisIn(BaseModel):
     team: TeamPoolSearchRow | None = None
@@ -139,11 +114,13 @@ def report_data(payload: TeamAnalysisIn, user_id=Depends(require_auth), accept_l
 
 @router.post("/report-profile/{kind}")
 def report_profile(kind: str, payload: TeamAnalysisIn, user_id=Depends(require_auth), accept_language: str | None = Header(default=None), db: Session = Depends(get_db), rewarded: bool = False):
-    if kind not in {"attack", "defense", "assessment"}:
+    if kind not in {"attack", "defense", "assessment", "opponents"}:
         raise HTTPException(400, "Invalid profile")
     if rewarded and not rewarded_report_sections_enabled():
         raise HTTPException(403, "Rewarded reports are disabled")
     paid = rewarded or user_report_tier(user_id) == 'paid'
+    if kind == "opponents" and not paid:
+        raise HTTPException(403, "Unlock opponent data to view these sections")
     if payload.reportId:
         saved = get_report(payload.reportId, user_id, db)
         if saved['teamId'] != payload.teamId or set(saved['fixtureIds']) != set(payload.fixtureIds) or saved['team'].get('leagueId') != payload.leagueId:
@@ -152,33 +129,34 @@ def report_profile(kind: str, payload: TeamAnalysisIn, user_id=Depends(require_a
     else:
         base = report_data(payload, user_id, accept_language, True, db)
         language = "tr" if (accept_language or "").lower().startswith("tr") else "en"
+    if kind == "opponents":
+        return build_opponent_metrics(base["reports"], payload.teamId)
     profile_key = _profile_cache_key(kind, paid)
     if payload.reportId:
         cached = cached_profile(db, user_id, payload.reportId, profile_key)
         if cached is not None:
             return cached
     reports = base["reports"]
-    metrics, _ = build_team_report_metrics(reports, payload.teamId, language, build_narratives=False)
     if kind == "assessment":
-        strengths = build_team_report_strengths(reports, payload.teamId, metrics, language, build_narratives=paid)
-        # Preserve enterprise's dependency: weaknesses must respect confirmed strengths.
-        weaknesses = build_team_report_weaknesses(reports, payload.teamId, metrics, strengths, language, build_narratives=paid)
-        for profile in (strengths, weaknesses):
-            profile["themes"] = (profile.get("themes") or [])[:2]
-            for item in profile["themes"]:
-                item["analysis"] = engine._mobile_profile_analysis(item.get("analysis"))
-        result = _review_profiles({"strengths": strengths, "weaknesses": weaknesses}, payload, user_id, db, language, paid)
+        score_flow = build_team_report_score_flow_profile(reports, payload.teamId, language, build_narratives=False)
+        strengths = build_findings(reports, payload.teamId, "strength", language, score_flow)
+        weaknesses = build_findings(reports, payload.teamId, "weakness", language, score_flow,
+                                     confirmed=strengths)
+        result = {"strengths": strengths, "weaknesses": weaknesses}
+        if not paid:
+            for profile in result.values():
+                profile["hasMoreThemes"] = len(profile["themes"]) > 1
+                profile["themes"] = profile["themes"][:1]
         if payload.reportId:
             save_profile(db, user_id, payload.reportId, profile_key, result)
         return result
     builder = build_team_report_attack_profile if kind == "attack" else build_team_report_defense_profile
     try:
-        profile = builder(reports, payload.teamId, metrics, language, build_narratives=paid)
-        profile["themes"] = (profile.get("themes") or [])[:2]
-        for item in [*profile.get("themes", []), *profile.get("players", [])]:
-            item["analysis"] = engine._mobile_profile_analysis(item.get("analysis"))
-        key = "attackProfile" if kind == "attack" else "defenseProfile"
-        profile = _review_profiles({key: profile}, payload, user_id, db, language, paid)[key]
+        profile = builder(reports, payload.teamId, language)
+        if not paid:
+            for group, flag in (("themes", "hasMoreThemes"), ("players", "hasMorePlayers")):
+                profile[flag] = len(profile.get(group, [])) > 1
+                profile[group] = profile.get(group, [])[:1]
         if payload.reportId:
             save_profile(db, user_id, payload.reportId, profile_key, profile)
         return profile
