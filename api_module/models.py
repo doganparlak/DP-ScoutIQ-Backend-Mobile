@@ -2,6 +2,7 @@
 from typing import Optional, Dict, Any, List, Literal
 from pydantic import BaseModel, Field, EmailStr
 from api_module.utilities import PlanLiteral
+from api_module.report_access import rewarded_report_sections_enabled
 from datetime import datetime
 
 class ScoutingReportIn(BaseModel):
@@ -31,6 +32,7 @@ class ScoutingReportOut(BaseModel):
     content_json: Optional[Dict[str, Any]] = None
     language: Optional[str] = None
     version: int = 1
+    rewarded_sections_enabled: bool = Field(default_factory=rewarded_report_sections_enabled)
     # NEW: echo the identity used for retrieval (helps debugging)
     player: Optional[ScoutingReportIn] = None
 

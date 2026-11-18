@@ -7,6 +7,7 @@ from sqlalchemy import text
 from sqlalchemy.orm import Session
 
 from api_module.database import get_db
+from api_module.report_access import rewarded_report_sections_enabled
 from api_module.utilities import require_auth
 from league_pool_module.router import LeaguePoolFilters
 from .insights import enqueue_season, player_profile, request_summary, start_worker, stop_worker
@@ -29,6 +30,8 @@ class InsightsIn(StandingsIn):
     seasonId: int = Field(gt=0)
     periodStart: date | None = None
     scope: Literal['qualifying', 'league', 'knockout', 'overall'] | None = None
+    rewardedBiweekly: bool = False
+    rewardedMetrics: list[str] = Field(default_factory=list, max_length=200)
 
 
 @router.on_event('startup')
@@ -73,9 +76,19 @@ def standings(payload: StandingsIn, db: Session = Depends(get_db)):
 def insights(payload: InsightsIn, db: Session = Depends(get_db), user_id: int = Depends(require_auth)):
     try:
         plan = db.execute(text('SELECT plan FROM users WHERE id=:uid'), {'uid': user_id}).scalar()
-        if payload.periodStart and plan not in {'No Ads Monthly', 'Pro Monthly', 'Pro Yearly'}:
+        rewards_enabled = rewarded_report_sections_enabled()
+        rewarded_biweekly = rewards_enabled and payload.rewardedBiweekly
+        if payload.periodStart and not rewarded_biweekly and plan not in {'No Ads Monthly', 'Pro Monthly', 'Pro Yearly'}:
             raise HTTPException(status_code=403, detail='Plus or Pro is required for two-week performance')
-        return restrict_insights(request_summary(db, payload.leagueId, payload.seasonId, payload.periodStart, payload.scope), plan)
+        summary = request_summary(db, payload.leagueId, payload.seasonId, payload.periodStart, payload.scope)
+        result = restrict_insights(
+            summary, plan,
+            rewarded_biweekly=rewarded_biweekly,
+            rewarded_metrics=payload.rewardedMetrics if rewards_enabled else (),
+        )
+        if rewards_enabled:
+            result['access'].update(rewarded=True, biweeklyAvailable=bool(summary.get('periods')))
+        return result
     except ValueError as exc:
         raise HTTPException(status_code=400, detail=str(exc)) from exc
 

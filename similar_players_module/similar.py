@@ -150,7 +150,9 @@ def similar_players(db, payload, limit=15):
     filters = payload.filters.model_dump(mode='json', exclude_none=True)
     choices = {key: filters.pop(key, []) for key in ('nationality', 'team', 'league')}
     rows = search_players(db, filters, all_matches=True, candidate_roles=sorted(similarity_search_roles(discovery_roles(source['content']))), candidate_choices=choices, metadata_fields=SIMILARITY_METADATA_FIELDS, batch_size=1000)
-    ranked = rank_similar(source, rows, limit)
+    ranked = rank_similar(source, rows, limit + 1)
+    has_more = len(ranked) > limit
+    ranked = ranked[:limit]
     del rows  # Non-winning candidate metadata is no longer needed.
     profiles = {str(row['id']): row for row in fetch_player_rows_by_ids(db, [int(match['player']['id']) for match in ranked])}
     for match in ranked:
@@ -161,4 +163,4 @@ def similar_players(db, payload, limit=15):
         if full is None or {key: value for key, value in full['content'].items() if key in SIMILARITY_METADATA_FIELDS} != candidate['content']:
             raise HTTPException(status_code=409, detail='Player data changed during search. Please retry.')
         match['player'] = full
-    return {'players': ranked, 'minimumCoverage': 70, 'minimumCommonMetrics': MIN_COMMON_METRICS, 'minimumCategories': MIN_CATEGORIES, 'method': 'role-weighted-percentile-cosine70-closeness30-v3'}
+    return {'players': ranked, 'hasMore': has_more, 'minimumCoverage': 70, 'minimumCommonMetrics': MIN_COMMON_METRICS, 'minimumCategories': MIN_CATEGORIES, 'method': 'role-weighted-percentile-cosine70-closeness30-v3'}

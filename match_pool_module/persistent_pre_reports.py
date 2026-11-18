@@ -171,39 +171,47 @@ def run(favorite_id, user_id, language, retry_failed):
         with _MUTEX:
             _PENDING.discard(favorite_id)
 
-def schedule_lazy(favorite_id, user_id, language, section='foundation'):
+def schedule_lazy(favorite_id, user_id, language, section='foundation', *, rewarded=False):
     if section != 'foundation' and section not in AI_SECTIONS:
         raise ValueError('Unknown report section')
-    key = f'{favorite_id}:{section}'
+    key = (str(favorite_id), section, language, rewarded)
     with _MUTEX:
         if key in _LAZY_PENDING:
             return
         _LAZY_PENDING.add(key)
     try:
-        _EXECUTOR.submit(run_lazy,str(favorite_id),user_id,language,section,key)
+        _EXECUTOR.submit(run_lazy,str(favorite_id),user_id,language,section,key,rewarded)
     except Exception:
         with _MUTEX:
             _LAZY_PENDING.discard(key)
         raise
 
-def run_lazy(favorite_id, user_id, language, requested, pending_key):
+def run_lazy(favorite_id, user_id, language, requested, pending_key, rewarded=False):
     try:
         with engine.begin() as owner:
             owner.execute(text('SELECT pg_advisory_xact_lock(hashtextextended(:key, 0))'), {'key':'mobile-match-report:'+favorite_id})
             row = read_report(favorite_id,user_id)
             if not row:
                 return
-            tier = user_report_tier(user_id)
+            tier = 'paid' if rewarded else user_report_tier(user_id)
             content = row.get('report_content') or {}
             if refresh_deferred(content):
                 return
-            if not compatible(content, language) and row.get('report_status') == 'ready' and readable_snapshot(content, language, 'mobile_pre_match', FOUNDATION_SECTIONS) and archived_snapshot(content):
-                return
-            if not compatible(content,language):
-                content = {'format':'mobile_pre_match','version':VERSION,'language':language,'generation_mode':'lazy_sections','sections':{k:{'status':'pending'} for k in SECTIONS}}
-            targets = list(FOUNDATION_SECTIONS)
-            if requested != 'foundation':
-                targets.append(requested)
+            use_archived_foundation = (
+                not compatible(content, language) and row.get('report_status') == 'ready'
+                and readable_snapshot(content, language, 'mobile_pre_match', FOUNDATION_SECTIONS)
+                and archived_snapshot(content)
+            )
+            if use_archived_foundation:
+                if not rewarded or requested not in AI_SECTIONS:
+                    return
+                targets = [requested]
+            else:
+                if not compatible(content, language):
+                    content = {'format':'mobile_pre_match','version':VERSION,'language':language,'generation_mode':'lazy_sections','sections':{k:{'status':'pending'} for k in SECTIONS}}
+                targets = list(FOUNDATION_SECTIONS)
+                if requested != 'foundation':
+                    targets.append(requested)
             checkpoint = checkpoint_writer(save, favorite_id, user_id, row, language, 'mobile_pre_match', FOUNDATION_SECTIONS,
                                            lambda value: all(section_ready(value, section, tier) for section in targets))
             for section in targets:

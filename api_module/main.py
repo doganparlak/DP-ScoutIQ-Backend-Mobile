@@ -3,7 +3,7 @@ import logging
 
 logger = logging.getLogger(__name__)
 
-from api_module.report_access import report_tier, player_section_ready
+from api_module.report_access import report_tier, player_section_ready, rewarded_report_sections_enabled
 from report_module.phases import with_phase_distributions
 # api_module/main.py
 from typing import Optional, Dict, Any, List
@@ -180,6 +180,11 @@ def stop_forecast_history_refresh() -> None:
 @app.get("/health")
 async def health() -> Dict[str, Any]:
     return {"ok": True, "forecastRuntimeVersion": 6, "scorePredictionPolicy": "outcome_aligned_v1"}
+
+@app.get("/report-rewards")
+def report_rewards_capability(user_id: int = Depends(require_auth)):
+    return {"enabled": rewarded_report_sections_enabled()}
+
 
 @app.post("/auth/signup")
 def signup(payload: SignUpIn, db: Session = Depends(get_db)):
@@ -1557,7 +1562,7 @@ def _run_report_background(table_name: str, report_id: str, identity_key: str, u
         db.close()
 
 
-def _run_report_section_background(table_name: str, report_id: str, identity_key: str, user_id: int, lang: str, version: int, player_payload: dict, section: str) -> None:
+def _run_report_section_background(table_name: str, report_id: str, identity_key: str, user_id: int, lang: str, version: int, player_payload: dict, section: str, rewarded: bool = False) -> None:
     if table_name not in {"scouting_reports", "player_pool_scouting_reports"}:
         return
     db = SessionLocal()
@@ -1573,7 +1578,8 @@ def _run_report_section_background(table_name: str, report_id: str, identity_key
             if not foundation or not foundation.get("player_card") or not isinstance(foundation.get("metrics_docs"),list):
                 foundation = build_report_foundation(db,identity_key,lang,version,player_payload)["content_json"]
             sections = dict(foundation.get("sections") or {})
-            if player_section_ready(foundation, section, report_tier(db, user_id)):
+            access_tier = "paid" if rewarded else report_tier(db, user_id)
+            if player_section_ready(foundation, section, access_tier):
                 return
             foundation["generation_mode"] = "lazy_sections"
             sections[section] = {**sections.get(section, {}), "status":"processing"}
@@ -1582,7 +1588,7 @@ def _run_report_section_background(table_name: str, report_id: str, identity_key
                 "id":report_id,"uid":user_id,"content_json":json.dumps(foundation,ensure_ascii=False,default=str),
             })
             db.commit()
-            generated = complete_report_section(foundation,section,lang,report_tier(db,user_id))
+            generated = complete_report_section(foundation, section, lang, access_tier)
             db.execute(text(f"UPDATE {table_name} SET status='ready',content=:content,content_json=CAST(:content_json AS jsonb),error=NULL,ready_at=NOW(),updated_at=NOW() WHERE id=:id AND user_id=:uid"),{
                 "id":report_id,"uid":user_id,"content":generated["content"],"content_json":json.dumps(generated["content_json"],ensure_ascii=False,default=str),
             })
@@ -2040,9 +2046,12 @@ def create_player_pool_report_section(
     user_id: int = Depends(require_auth),
     accept_language: str | None = Header(default=None),
     db: Session = Depends(get_db),
+    rewarded: bool = FastAPIQuery(default=False),
 ):
     if section not in {"strengths","weaknesses","role_usage"}:
         raise HTTPException(status_code=404,detail="Unknown report section")
+    if rewarded and not rewarded_report_sections_enabled():
+        raise HTTPException(status_code=403, detail="Rewarded scouting reports are disabled")
     lang = normalize_lang(accept_language) or normalize_lang(get_user_language(db,user_id)) or "en"
     version = LAZY_SCOUT_REPORT_VERSION
     player_payload = payload.model_dump(exclude_none=True);player_payload.pop("tutorial_mode",None)
@@ -2057,10 +2066,10 @@ def create_player_pool_report_section(
     if not row:
         raise HTTPException(status_code=409,detail="Open the report before requesting a section")
     content_json = dict(row.get("content_json") or {})
-    state = (content_json.get("sections") or {}).get(section,{}).get("status")
-    if not player_section_ready(content_json, section, report_tier(db, user_id)):
+    access_tier = "paid" if rewarded else report_tier(db, user_id)
+    if not player_section_ready(content_json, section, access_tier):
         sections = dict(content_json.get("sections") or {});sections[section]={**sections.get(section, {}), "status":"processing"};content_json["sections"]=sections
-        background_tasks.add_task(_run_report_section_background,"player_pool_scouting_reports",str(row["id"]),cache_key,user_id,lang,version,player_payload,section)
+        background_tasks.add_task(_run_report_section_background,"player_pool_scouting_reports",str(row["id"]),cache_key,user_id,lang,version,player_payload,section,rewarded)
     return {"favorite_player_id":cache_key,"status":"ready","content":row.get("content") or "","content_json":with_phase_distributions(content_json),"language":row["language"],"version":row["version"],"player":payload}
 
 
@@ -2240,9 +2249,12 @@ def create_favorite_report_section(
     user_id: int = Depends(require_auth),
     accept_language: str | None = Header(default=None),
     db: Session = Depends(get_db),
+    rewarded: bool = FastAPIQuery(default=False),
 ):
     if section not in {"strengths","weaknesses","role_usage"}:
         raise HTTPException(status_code=404,detail="Unknown report section")
+    if rewarded and not rewarded_report_sections_enabled():
+        raise HTTPException(status_code=403, detail="Rewarded scouting reports are disabled")
     lang = normalize_lang(accept_language) or normalize_lang(get_user_language(db,user_id)) or "en"
     version = LAZY_SCOUT_REPORT_VERSION
     owned = db.execute(text("SELECT * FROM favorite_players WHERE id=:fid AND user_id=:uid"),{"fid":favorite_id,"uid":user_id}).mappings().first()
@@ -2259,7 +2271,8 @@ def create_favorite_report_section(
     if not row:
         raise HTTPException(status_code=409,detail="Open the report before requesting a section")
     content_json = dict(row.get("content_json") or {})
-    if not player_section_ready(content_json, section, report_tier(db, user_id)):
+    access_tier = "paid" if rewarded else report_tier(db, user_id)
+    if not player_section_ready(content_json, section, access_tier):
         sections = dict(content_json.get("sections") or {});sections[section]={**sections.get(section, {}), "status":"processing"};content_json["sections"]=sections
-        background_tasks.add_task(_run_report_section_background,"scouting_reports",str(row["id"]),favorite_id,user_id,lang,version,player_payload,section)
+        background_tasks.add_task(_run_report_section_background,"scouting_reports",str(row["id"]),favorite_id,user_id,lang,version,player_payload,section,rewarded)
     return {"favorite_player_id":favorite_id,"status":"ready","content":row.get("content") or "","content_json":with_phase_distributions(content_json),"language":row["language"],"version":row["version"],"player":payload}

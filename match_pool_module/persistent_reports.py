@@ -143,29 +143,29 @@ def run(favorite_id, user_id, language, retry_failed):
         with _MUTEX:
             _PENDING.discard(favorite_id)
 
-def schedule_lazy(favorite_id, user_id, language, section='data'):
+def schedule_lazy(favorite_id, user_id, language, section='data', *, rewarded=False):
     if section not in SECTIONS:
         raise ValueError('Unknown report section')
-    key = f'{favorite_id}:{section}'
+    key = (str(favorite_id), section, language, rewarded)
     with _MUTEX:
         if key in _LAZY_PENDING:
             return
         _LAZY_PENDING.add(key)
     try:
-        _EXECUTOR.submit(run_lazy, str(favorite_id), user_id, language, section, key)
+        _EXECUTOR.submit(run_lazy, str(favorite_id), user_id, language, section, key, rewarded)
     except Exception:
         with _MUTEX:
             _LAZY_PENDING.discard(key)
         raise
 
-def run_lazy(favorite_id, user_id, language, requested, pending_key):
+def run_lazy(favorite_id, user_id, language, requested, pending_key, rewarded=False):
     try:
         with engine.begin() as owner:
             owner.execute(text('SELECT pg_advisory_xact_lock(hashtextextended(:key, 0))'), {'key':'mobile-match-report:'+favorite_id})
             row = read_report(favorite_id,user_id)
             if not row:
                 return
-            tier = user_report_tier(user_id)
+            tier = 'paid' if rewarded else user_report_tier(user_id)
             content = row.get('report_content') or {}
             if refresh_deferred(content):
                 return

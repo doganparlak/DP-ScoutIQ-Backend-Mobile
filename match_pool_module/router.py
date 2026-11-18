@@ -1,4 +1,4 @@
-from api_module.report_access import user_report_tier, report_tier
+from api_module.report_access import rewarded_report_sections_enabled, user_report_tier, report_tier
 from pydantic import BaseModel, Field
 from datetime import date
 from fastapi import APIRouter, Depends, HTTPException, Query
@@ -446,7 +446,9 @@ def poll_saved_post_match_report(fixture_id: int, language: str = "tr", lazy: bo
 
 
 @router.post("/match-pool/fixtures/{fixture_id}/saved-report/sections/{section}")
-def ensure_saved_post_match_section(fixture_id: int, section: str, language: str = "tr", user_id=Depends(require_auth), db: Session=Depends(get_db)):
+def ensure_saved_post_match_section(fixture_id: int, section: str, language: str = "tr", user_id=Depends(require_auth), db: Session=Depends(get_db), rewarded: bool = False):
+    if rewarded and not rewarded_report_sections_enabled():
+        raise HTTPException(403, "Rewarded reports are disabled")
     from .persistent_reports import schedule_lazy, public_report, compatible, section_ready, AI_SECTIONS
     if fixture_id <= 0 or language not in {"tr","en"} or section not in AI_SECTIONS:
         raise HTTPException(400,"Invalid report section")
@@ -454,11 +456,12 @@ def ensure_saved_post_match_section(fixture_id: int, section: str, language: str
     if not row:
         raise HTTPException(404,"Saved report not found")
     content = dict(row.get('report_content') or {})
-    if compatible(content,language) and not section_ready(content,section,report_tier(db,user_id)):
+    tier = 'paid' if rewarded else report_tier(db, user_id)
+    if compatible(content,language) and not section_ready(content,section,tier):
         sections = dict(content.get('sections') or {});sections[section]={**sections.get(section, {}), 'status':'processing'};content['sections']=sections
         row = {**dict(row),'report_content':content,'report_status':'ready'}
-    if not section_ready(content,section,report_tier(db,user_id)):
-        schedule_lazy(str(row['id']),user_id,language,section)
+    if not section_ready(content,section,tier):
+        schedule_lazy(str(row['id']),user_id,language,section,rewarded=rewarded)
     return public_report(row,language)
 
 
@@ -625,7 +628,9 @@ def poll_saved_pre_match_report(fixture_id: int, language: str = "tr", lazy: boo
 
 
 @router.post("/match-pool/fixtures/{fixture_id}/saved-pre-report/sections/{section}")
-def ensure_saved_pre_match_section(fixture_id: int, section: str, language: str = "tr", user_id=Depends(require_auth), db: Session=Depends(get_db)):
+def ensure_saved_pre_match_section(fixture_id: int, section: str, language: str = "tr", user_id=Depends(require_auth), db: Session=Depends(get_db), rewarded: bool = False):
+    if rewarded and not rewarded_report_sections_enabled():
+        raise HTTPException(403, "Rewarded reports are disabled")
     from .persistent_pre_reports import schedule_lazy, public_report, compatible, AI_SECTIONS, section_ready
     if fixture_id <= 0 or language not in {"tr","en"} or section not in AI_SECTIONS:
         raise HTTPException(400,"Invalid report section")
@@ -633,11 +638,12 @@ def ensure_saved_pre_match_section(fixture_id: int, section: str, language: str 
     if not row:
         raise HTTPException(404,"Saved report not found")
     content = dict(row.get('report_content') or {})
-    if compatible(content,language) and not section_ready(content,section,report_tier(db,user_id)):
+    tier = 'paid' if rewarded else report_tier(db, user_id)
+    if compatible(content,language) and not section_ready(content,section,tier):
         sections = dict(content.get('sections') or {});sections[section]={**sections.get(section, {}), 'status':'processing'};content['sections']=sections
         row = {**dict(row),'report_content':content,'report_status':'ready'}
-    if not section_ready(content,section,report_tier(db,user_id)):
-        schedule_lazy(str(row['id']),user_id,language,section)
+    if not section_ready(content,section,tier):
+        schedule_lazy(str(row['id']),user_id,language,section,rewarded=rewarded)
     return public_report(row,language)
 
 
@@ -659,7 +665,9 @@ def team_search(payload: TeamFixtureSearchIn, user_id=Depends(require_auth), db:
 
 
 @router.get('/match-pool/fixtures/{fixture_id}/forecast')
-def match_forecast(fixture_id: int, retry: bool = False, review: bool = False, user_id=Depends(require_auth), db: Session=Depends(get_db)):
+def match_forecast(fixture_id: int, retry: bool = False, review: bool = False, user_id=Depends(require_auth), db: Session=Depends(get_db), rewarded: bool = False):
+    if rewarded and not rewarded_report_sections_enabled():
+        raise HTTPException(403, "Rewarded reports are disabled")
     from .forecast import forecast_for_tier, get_forecast, get_forecast_review
     from api_module.subscription_access import plan_priority
     if fixture_id <= 0:
@@ -668,6 +676,8 @@ def match_forecast(fixture_id: int, retry: bool = False, review: bool = False, u
         plan = db.execute(text('SELECT plan FROM users WHERE id=:uid'), {'uid': user_id}).scalar()
         tier = ('free', 'plus', 'pro')[plan_priority(plan)]
         result = get_forecast_review(fixture_id) if review else get_forecast(fixture_id, retry=retry)
+        if rewarded and tier == 'free':
+            tier = 'plus'
         if review:
             return {**result, 'accessTier': tier}
         return forecast_for_tier(result, tier)

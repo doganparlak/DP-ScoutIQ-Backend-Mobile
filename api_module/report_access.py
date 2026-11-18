@@ -1,7 +1,16 @@
 """Server-owned report generation scope, shared by endpoints and workers."""
+import os
+
 from sqlalchemy import text
 
 PAID_REPORT_PLANS = frozenset({'No Ads Monthly', 'Pro Monthly', 'Pro Yearly'})
+
+
+def rewarded_report_sections_enabled() -> bool:
+    override = os.getenv("ENABLE_CLIENT_VERIFIED_REPORT_REWARDS")
+    if override is not None:
+        return override == "1"
+    return os.getenv("RENDER_EXTERNAL_HOSTNAME") == "dp-scoutiq-backend-mobile.onrender.com"
 
 
 def report_tier(db, user_id):

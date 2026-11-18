@@ -1,4 +1,4 @@
-from api_module.report_access import user_report_tier
+from api_module.report_access import rewarded_report_sections_enabled, user_report_tier
 from fastapi import APIRouter, Depends, HTTPException, Query
 from api_module.utilities import require_auth
 from api_module.database import get_db
@@ -138,10 +138,12 @@ def report_data(payload: TeamAnalysisIn, user_id=Depends(require_auth), accept_l
         raise HTTPException(502,"The team analysis report could not be generated. Please retry.") from None
 
 @router.post("/report-profile/{kind}")
-def report_profile(kind: str, payload: TeamAnalysisIn, user_id=Depends(require_auth), accept_language: str | None = Header(default=None), db: Session = Depends(get_db)):
+def report_profile(kind: str, payload: TeamAnalysisIn, user_id=Depends(require_auth), accept_language: str | None = Header(default=None), db: Session = Depends(get_db), rewarded: bool = False):
     if kind not in {"attack", "defense", "assessment"}:
         raise HTTPException(400, "Invalid profile")
-    paid = user_report_tier(user_id) == 'paid'
+    if rewarded and not rewarded_report_sections_enabled():
+        raise HTTPException(403, "Rewarded reports are disabled")
+    paid = rewarded or user_report_tier(user_id) == 'paid'
     if payload.reportId:
         saved = get_report(payload.reportId, user_id, db)
         if saved['teamId'] != payload.teamId or set(saved['fixtureIds']) != set(payload.fixtureIds) or saved['team'].get('leagueId') != payload.leagueId:

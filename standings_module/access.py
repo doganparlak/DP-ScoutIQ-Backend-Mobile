@@ -14,11 +14,15 @@ PLUS_METRICS = FREE_METRICS | frozenset({
 })
 
 
-def restrict_insights(summary, plan):
+def restrict_insights(summary, plan, *, rewarded_biweekly=False, rewarded_metrics=()):
     result = deepcopy(summary)
     tier = 'pro' if plan in {'Pro Monthly', 'Pro Yearly'} else 'plus' if plan == 'No Ads Monthly' else 'free'
     allowed = None if tier == 'pro' else PLUS_METRICS if tier == 'plus' else FREE_METRICS
-    result['access'] = {'tier': tier, 'biweekly': tier != 'free'}
+    if allowed is not None and rewarded_metrics:
+        catalog_keys = {metric['key'] for metric in result['season'].get('metric_catalog', [])}
+        allowed = allowed | catalog_keys.intersection(rewarded_metrics)
+    can_view_biweekly = tier != 'free' or rewarded_biweekly
+    result['access'] = {'tier': tier, 'biweekly': can_view_biweekly}
     # Enterprise-only award/leaderboard payloads are never exposed by mobile.
     result.pop('playerAwardMetrics', None)
     for summary in (result['season'], result.get('biweekly')):
@@ -34,7 +38,7 @@ def restrict_insights(summary, plan):
     if allowed is not None:
         season['team_metrics'] = {key: {**team, 'metrics': {name: value for name, value in team.get('metrics', {}).items() if name in allowed}}
                                   for key, team in season.get('team_metrics', {}).items()}
-    if tier == 'free':
+    if not can_view_biweekly:
         result['biweekly'] = None
         result['periods'] = []
     return result
