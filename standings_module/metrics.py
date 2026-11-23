@@ -342,6 +342,8 @@ class Aggregate:
                     if result is None:
                         continue
                     value, total = result
+                    if round(value, 4) == 0:
+                        continue
                     candidates.append((value, player, total))
                 def rank(candidate):
                     value, player, total = candidate
