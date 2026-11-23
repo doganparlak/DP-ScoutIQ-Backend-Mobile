@@ -139,3 +139,11 @@ def zero_fill_counts(categories: dict[str, list[dict[str, Any]]],
         if existing is None:
             rows.append({"name": name, "value": 0.0, "_inferred_zero": True})
         # An explicit null remains unknown.
+
+
+def scoreless_team_ids(scores):
+    return {
+        str(row['participant_id']) for row in scores or []
+        if row.get('description') == 'CURRENT' and row.get('participant_id')
+        and numeric((row.get('score') or {}).get('goals')) == 0
+    }

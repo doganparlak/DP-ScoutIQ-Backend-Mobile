@@ -36,7 +36,7 @@ from .fixture_reports import load_fixture_report
 def _profile_cache_key(kind, paid):
     key = f'{kind}:{"paid" if paid else "free"}:v{engine.MATCH_REPORT_VERSION}:headings-v3'
     if kind in {"attack", "defense"}:
-        key += ":selection-v2"
+        key += ":selection-v3"
     return key + (f':assessment-v{engine.ASSESSMENT_VERSION}' if kind == 'assessment' else f':styles-v{STYLE_VERSION}')
 
 

@@ -1523,6 +1523,8 @@ def _team_player_metric_reports(reports: list[dict[str, Any]]) -> list[dict[str,
     from copy import deepcopy
     from math import isfinite
 
+    from report_module.metric_validation import scoreless_team_ids
+
     reports = deepcopy(reports)
     players = defaultdict(list)
 
@@ -1550,9 +1552,11 @@ def _team_player_metric_reports(reports: list[dict[str, Any]]) -> list[dict[str,
             covered.update(key for key, item in metrics.items()
                            if is_standard_count(key[1], key[0])
                            and numeric(item.get("value")) is not None)
+        scoreless = scoreless_team_ids(report.get("scores"))
         for row, metrics, minutes in participants:
             protected = missing_attempt_names({name: item.get("value") for (_, name), item in metrics.items() if not item.get("_inferred_zero")})
-            for group, name in covered - metrics.keys():
+            known = covered | ({("shooting", "Goals")} if str(row.get("team_id")) in scoreless else set())
+            for group, name in known - metrics.keys():
                 if rate_key(name) in protected:
                     continue
                 item = {"name": name, "value": 0.0, "_inferred_zero": True}

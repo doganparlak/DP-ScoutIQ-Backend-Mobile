@@ -648,6 +648,8 @@ def _team_recent_squad_usage(
             if (_metric_value(lineup, "Minutes Played") or 0) > 0
             for name in _lineup_numeric_metrics(lineup)
         }
+        if _current_score(fixture, _team_location(fixture, team_id)) == 0:
+            covered_count_names.add("Goals")
         team_rows = [
             row
             for row in fixture.get("lineups") or []
