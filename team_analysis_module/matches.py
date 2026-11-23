@@ -2,9 +2,18 @@ from typing import Any
 from datetime import date
 import os
 import requests
+from report_module.snapshot_cache import SnapshotCache
 from match_pool_module.fixtures import SPORTMONKS_BASE_URL, SportMonksError, _current_score
 
+_MATCH_LISTS = SnapshotCache(ttl=60, limit=64)
+
+
 def get_current_team_matches(team_id: int, domestic_league_id: int) -> list[dict[str, Any]]:
+    key = (team_id, domestic_league_id, date.today())
+    return _MATCH_LISTS.get_or_load(key, lambda: _fetch_current_team_matches(team_id, domestic_league_id))
+
+
+def _fetch_current_team_matches(team_id: int, domestic_league_id: int) -> list[dict[str, Any]]:
     token = os.getenv("SPORTMONKS_API_KEY")
     if not token:
         raise SportMonksError("ScoutWise data service is not configured")

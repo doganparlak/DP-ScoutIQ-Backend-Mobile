@@ -161,6 +161,19 @@ def dashboard_counts(user_id: int = Depends(require_auth), db=Depends(get_db)):
     return {'portfolioTeams': row['teams'], 'readyTeamReports': row['team_reports'], 'readyPreMatchReports': row['pre_match_reports']}
 
 
+def ready_report_for_selection(db, user_id, selected_team_id, league_id, fixture_ids, lang, version):
+    key = hashlib.sha256(','.join(map(str, sorted(fixture_ids))).encode()).hexdigest()
+    row = execute(db, """SELECT id, report_content FROM team_reports
+        WHERE user_id=:user_id AND team_id=:team_id AND selection_key=:key AND language=:lang
+          AND version=:version AND team_payload->>'leagueId'=:league_id
+          AND report_status='ready' AND report_content IS NOT NULL""",
+        {'user_id':user_id, 'team_id':selected_team_id, 'key':key, 'lang':lang, 'version':version,
+         'league_id':str(league_id)}).mappings().first()
+    if row:
+        return {**public_content(row['report_content']), 'reportId':str(row['id'])}
+    return None
+
+
 def begin_report(db, user_id, payload, lang, version):
     ids = sorted(set(payload.fixtureIds))
     if any(fid <= 0 for fid in ids) or team_id(payload.team) != payload.teamId:

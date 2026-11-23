@@ -313,11 +313,12 @@ def _save_match(
 @router.get("/match-pool/fixtures/{fixture_id}/post-match-card")
 def post_match_card(fixture_id: int, user_id=Depends(require_auth)):
     """Read-only report cover using the same match data engine as enterprise."""
-    from team_analysis_module.report import generate_match_report, MatchReportError
+    from team_analysis_module.report import MatchReportError
+    from team_analysis_module.fixture_reports import load_fixture_report
     if fixture_id <= 0:
         raise HTTPException(400, "Invalid fixture ID")
     try:
-        report = generate_match_report(fixture_id, build_narratives=False)
+        report = load_fixture_report(fixture_id)
     except (MatchReportError, requests.RequestException, ValueError):
         raise HTTPException(502, "Match report data is temporarily unavailable") from None
     if not _is_completed_enterprise_fixture({"state": report.get("state") or {}}):
@@ -331,7 +332,7 @@ def post_match_card(fixture_id: int, user_id=Depends(require_auth)):
         "state": report.get("state"),
         "scores": report.get("scores") or [],
         "teams": [{**{key: team.get(key) for key in (
-            "id", "name", "location", "image_url", "coach_name", "formation",
+            "id", "name", "location", "image_url", "coach_name", "coach_image_url", "formation",
             "categories", "expected_metrics"
         )}, "possession": next((metric.get("value") for metric in
             team.get("categories", {}).get("contribution_impact", [])
@@ -359,20 +360,20 @@ def post_match_card(fixture_id: int, user_id=Depends(require_auth)):
 
 @router.post("/match-pool/fixtures/{fixture_id}/team-analysis")
 def post_match_team_analysis(fixture_id: int, language: str = "tr", user_id=Depends(require_auth)):
-    from team_analysis_module.report import generate_match_report, MatchReportError
-    from .team_analysis import build_team_analysis, cached_analysis, cache_analysis
+    from team_analysis_module.report import MatchReportError
+    from team_analysis_module.fixture_reports import load_fixture_report
+    from .team_analysis import TEAM_ANALYSIS_VERSION, build_team_analysis, cached_analysis, cache_analysis
     if fixture_id <= 0 or language not in {"tr", "en"}:
         raise HTTPException(400, "Invalid fixture or language")
-    tier = user_report_tier(user_id)
-    key = (user_id, fixture_id, language, tier)
+    key = ("team-findings", fixture_id, language)
     cached = cached_analysis(key)
     if cached is not None:
         return cached
     try:
-        report = generate_match_report(fixture_id, lang=language, build_narratives=False)
+        report = load_fixture_report(fixture_id, language)
         if not _is_completed_enterprise_fixture({"state": report.get("state") or {}}):
             raise HTTPException(409, "Team analysis is available after the match finishes")
-        result = {"teams": build_team_analysis(report, language, include_locked=tier == 'paid')}
+        result = {"teams": build_team_analysis(report, language), "analysis_version": TEAM_ANALYSIS_VERSION}
         cache_analysis(key, result)
         return result
     except (MatchReportError, requests.RequestException, ValueError):
@@ -381,7 +382,8 @@ def post_match_team_analysis(fixture_id: int, language: str = "tr", user_id=Depe
 
 @router.post("/match-pool/fixtures/{fixture_id}/player-perspectives")
 def post_match_player_perspectives(fixture_id: int, language: str = "tr", user_id=Depends(require_auth)):
-    from team_analysis_module.report import generate_match_report, MatchReportError
+    from team_analysis_module.report import MatchReportError
+    from team_analysis_module.fixture_reports import load_fixture_report
     from .player_perspectives import build_player_perspectives
     from .team_analysis import cached_analysis, cache_analysis
     if fixture_id <= 0 or language not in {"tr", "en"}:
@@ -392,7 +394,7 @@ def post_match_player_perspectives(fixture_id: int, language: str = "tr", user_i
     if cached is not None:
         return cached
     try:
-        report = generate_match_report(fixture_id, lang=language, build_narratives=False)
+        report = load_fixture_report(fixture_id, language)
         if not _is_completed_enterprise_fixture({"state": report.get("state") or {}}):
             raise HTTPException(409, "Player analysis is available after the match finishes")
         result = {"teams": build_player_perspectives(report.get("teams") or [], report.get("lineups") or [], report.get("events") or [], include_locked=tier == "paid")}
@@ -595,7 +597,7 @@ def pre_match_team_analysis(fixture_id: int, language: str = 'tr', user_id=Depen
         raise HTTPException(400, 'Invalid language')
     usages=pre_match_squad(fixture_id,user_id)['teams']
     teams=[{'id':u['team_id'],'name':u.get('team_name'),'location':u.get('location')} for u in usages]
-    return {'teams':_pre_match_team_analysis(usages,teams,language,include_locked=user_report_tier(user_id) == 'paid')}
+    return _pre_match_team_analysis(usages,teams,language,include_locked=user_report_tier(user_id) == 'paid')
 
 @router.post("/match-pool/fixtures/{fixture_id}/saved-pre-report")
 def open_saved_pre_match_report(fixture_id: int, language: str = "tr", lazy: bool = False, user_id=Depends(require_auth), db: Session=Depends(get_db)):

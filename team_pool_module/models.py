@@ -27,6 +27,7 @@ class TeamPoolSearchRow(BaseModel):
     logoUrl: Optional[str] = None
     city: str
     coachName: str
+    coachImageUrl: Optional[str] = None
     playerCount: int
     stadiumName: str
     stadiumImageUrl: Optional[str] = None

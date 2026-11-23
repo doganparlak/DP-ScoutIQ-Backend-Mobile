@@ -4,7 +4,7 @@ from api_module.utilities import require_auth
 from api_module.database import get_db
 from sqlalchemy.orm import Session
 from team_pool_module.models import TeamPoolSearchRow
-from team_portfolio_module.portfolio import begin_report, finish_report, get_report, PlayedMatchSnapshot, cached_profile, save_profile
+from team_portfolio_module.portfolio import begin_report, finish_report, get_report, PlayedMatchSnapshot, cached_profile, save_profile, ready_report_for_selection, team_id
 from types import SimpleNamespace
 from uuid import UUID
 from .matches import get_current_team_matches
@@ -28,34 +28,15 @@ from . import report as engine
 from .tactical_styles import STYLE_VERSION
 from .opponent_metrics import build_opponent_metrics
 from .team_findings import build_findings
-from .report import generate_match_report, build_team_report_metrics, build_team_report_player_perspectives, build_team_report_momentum_perspectives, build_team_report_regional_perspective, build_team_report_attack_profile, build_team_report_defense_profile, build_team_report_score_flow_profile, build_team_report_overview
+from .report import build_team_report_metrics, build_team_report_player_perspectives, build_team_report_momentum_perspectives, build_team_report_regional_perspective, build_team_report_attack_profile, build_team_report_defense_profile, build_team_report_score_flow_profile, build_team_report_overview
 
-from collections import OrderedDict
-from copy import deepcopy
-from threading import Lock
-from time import monotonic
-
-# Reuse raw fixture evidence between the quick squad response and full analysis.
-_RAW_REPORTS = OrderedDict()
-_RAW_LOCK = Lock()
-def _raw_report(fixture_id, language):
-    key = (fixture_id, language)
-    with _RAW_LOCK:
-        cached = _RAW_REPORTS.get(key)
-        if cached and monotonic() - cached[0] < 300:
-            _RAW_REPORTS.move_to_end(key)
-            return deepcopy(cached[1])
-    report = generate_match_report(fixture_id, language, False)
-    with _RAW_LOCK:
-        _RAW_REPORTS[key] = (monotonic(), deepcopy(report))
-        _RAW_REPORTS.move_to_end(key)
-        while len(_RAW_REPORTS) > 32:
-            _RAW_REPORTS.popitem(last=False)
-    return report
+from .fixture_reports import load_fixture_report
 
 
 def _profile_cache_key(kind, paid):
     key = f'{kind}:{"paid" if paid else "free"}:v{engine.MATCH_REPORT_VERSION}:headings-v3'
+    if kind in {"attack", "defense"}:
+        key += ":selection-v2"
     return key + (f':assessment-v{engine.ASSESSMENT_VERSION}' if kind == 'assessment' else f':styles-v{STYLE_VERSION}')
 
 
@@ -75,6 +56,15 @@ class TeamAnalysisIn(BaseModel):
 
 @router.post("/report-data")
 def report_data(payload: TeamAnalysisIn, user_id=Depends(require_auth), accept_language: str | None = Header(default=None), base_only: bool = False, db: Session = Depends(get_db)):
+    fixture_ids=payload.fixtureIds
+    lang="tr" if (accept_language or "").lower().startswith("tr") else "en"
+    if payload.team is not None and not base_only:
+        if team_id(payload.team) != payload.teamId or payload.team.leagueId != payload.leagueId:
+            raise HTTPException(422, 'Team and league must match the selection')
+        cached = ready_report_for_selection(db, user_id, payload.teamId, payload.leagueId, fixture_ids, lang, engine.MATCH_REPORT_VERSION)
+        if cached is not None:
+            return cached
+        db.rollback()
     # Check membership and current season on the server, not only in the picker.
     try:
         matches = get_current_team_matches(payload.teamId,payload.leagueId)
@@ -83,12 +73,8 @@ def report_data(payload: TeamAnalysisIn, user_id=Depends(require_auth), accept_l
         raise HTTPException(502,"Team match data is temporarily unavailable") from None
     if not set(payload.fixtureIds).issubset(eligible):
         raise HTTPException(400,"Select up to five completed matches from this team's current season")
-    fixture_ids=payload.fixtureIds
-    lang="tr" if (accept_language or "").lower().startswith("tr") else "en"
     job = None
     if payload.team is not None and not base_only:
-        if payload.team.leagueId != payload.leagueId:
-            raise HTTPException(422, 'Team league does not match the selection')
         snapshot = SimpleNamespace(team=payload.team, teamId=payload.teamId, fixtureIds=fixture_ids,
                                    matches=[PlayedMatchSnapshot(**m) for m in matches if m['fixtureId'] in fixture_ids])
         job = begin_report(db, user_id, snapshot, lang, engine.MATCH_REPORT_VERSION)
@@ -96,7 +82,7 @@ def report_data(payload: TeamAnalysisIn, user_id=Depends(require_auth), accept_l
             return {**job['content'], 'reportId': job['id']}
     try:
         with ThreadPoolExecutor(max_workers=min(5, len(fixture_ids))) as executor:
-            reports = list(executor.map(lambda fixture_id: _raw_report(fixture_id, lang), fixture_ids))
+            reports = list(executor.map(lambda fixture_id: load_fixture_report(fixture_id, lang), fixture_ids))
         # All implemented sections now use numeric evidence only.
         players = build_team_report_player_perspectives(reports, payload.teamId, lang, build_narratives=False)
         score_flow = build_team_report_score_flow_profile(reports, payload.teamId, lang, build_narratives=False)
@@ -129,16 +115,22 @@ def report_profile(kind: str, payload: TeamAnalysisIn, user_id=Depends(require_a
     else:
         base = report_data(payload, user_id, accept_language, True, db)
         language = "tr" if (accept_language or "").lower().startswith("tr") else "en"
-    if kind == "opponents":
-        return build_opponent_metrics(base["reports"], payload.teamId)
     profile_key = _profile_cache_key(kind, paid)
     if payload.reportId:
         cached = cached_profile(db, user_id, payload.reportId, profile_key)
         if cached is not None:
             return cached
     reports = base["reports"]
+    if kind == "opponents":
+        result = build_opponent_metrics(reports, payload.teamId)
+        if payload.reportId:
+            save_profile(db, user_id, payload.reportId, profile_key, result)
+        return result
     if kind == "assessment":
-        score_flow = build_team_report_score_flow_profile(reports, payload.teamId, language, build_narratives=False)
+        score_flow = base.get("scoreFlowProfile")
+        states = (score_flow or {}).get("states") or []
+        if not states or any("matchesToLevel" not in state for state in states):
+            score_flow = build_team_report_score_flow_profile(reports, payload.teamId, language, build_narratives=False)
         strengths = build_findings(reports, payload.teamId, "strength", language, score_flow)
         weaknesses = build_findings(reports, payload.teamId, "weakness", language, score_flow,
                                      confirmed=strengths)

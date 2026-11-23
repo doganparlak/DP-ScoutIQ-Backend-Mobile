@@ -7,7 +7,10 @@ from __future__ import annotations
 from report_module.scouting_evidence import sanitize_scouting_documents
 from report_module.metric_validation import percentage, sanitize_percentages, valid_metric
 
+from hashlib import sha256
+import json
 import math
+from report_module.snapshot_cache import SnapshotCache
 from typing import Any, Dict, List, Optional, Tuple
 from constants_module.constants import ROLE_LONG_TO_SHORT, ROLE_SHORT_TO_LONG
 
@@ -752,14 +755,41 @@ def _derived_metric_value(metric_name: str, metric_docs: List[Dict[str, Any]]) -
             return round(value, 2)
     return None
 
+_PHASE_DISTRIBUTION_VERSION = 1
+_PHASE_SNAPSHOTS = SnapshotCache(ttl=300, limit=128)
+
+
+def _phase_fingerprint(card, docs):
+    inputs = [_PHASE_DISTRIBUTION_VERSION, card, docs]
+    try:
+        encoded = json.dumps(inputs, sort_keys=True, default=str)
+    except TypeError:
+        encoded = json.dumps(inputs, default=str)
+    return sha256(encoded.encode()).hexdigest()
+
+
 def with_phase_distributions(content_json):
     """Enrich new and cached reports using their original report metric snapshot."""
     if not isinstance(content_json, dict):
         return content_json
     content_json = dict(content_json)
-    content_json["metrics_docs"] = sanitize_scouting_documents(sanitize_percentages(content_json.get("metrics_docs") or []))
+    raw_docs = content_json.get("metrics_docs") or []
     card = dict(content_json.get("player_card") or {})
-    docs = sanitize_percentages(content_json.get("metrics_docs") or [])
+    fingerprint = _phase_fingerprint(card, raw_docs)
+    if content_json.get("_phase_distribution_key") == fingerprint and isinstance(content_json.get("phase_distributions"), list):
+        return content_json
+
+    def prepare():
+        docs = sanitize_scouting_documents(sanitize_percentages(raw_docs))
+        return docs, _phase_distributions(card, docs)
+
+    docs, phases = _PHASE_SNAPSHOTS.get_or_load(fingerprint, prepare)
+    cleaned_key = _phase_fingerprint(card, docs)
+    return {**content_json, "metrics_docs":docs, "phase_distributions":phases, "_phase_distribution_key":cleaned_key}
+
+
+def _phase_distributions(card, docs):
+    card = dict(card)
     # Older mobile report cards omitted role counts; recover them from the same
     # saved metric documents enterprise uses when constructing its player card.
     for doc in docs:
@@ -773,7 +803,7 @@ def with_phase_distributions(content_json):
                 primary = next(iter(counts))
             if primary:
                 card["primary_position_code"] = primary
-    return {**content_json, "phase_distributions": [
+    return [
         {"phase": phase, "role_views": _phase_taxonomy_distribution_sets(card, docs, phase)}
         for phase in _required_phase_names(card)
-    ]}
+    ]

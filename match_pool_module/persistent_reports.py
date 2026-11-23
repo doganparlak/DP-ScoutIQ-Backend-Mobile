@@ -10,12 +10,12 @@ from concurrent.futures import ThreadPoolExecutor
 from datetime import datetime, timezone
 from sqlalchemy import text
 from api_module.database import engine
-from team_analysis_module.report import generate_match_report
-from .team_analysis import build_team_analysis
+from team_analysis_module.fixture_reports import load_fixture_report
+from .fixtures import with_fixture_coaches
+from .team_analysis import TEAM_ANALYSIS_VERSION, build_team_analysis
 from .player_perspectives import build_player_perspectives
 
 VERSION = 4
-TEAM_ANALYSIS_VERSION = 5
 _EXECUTOR = ThreadPoolExecutor(max_workers=3, thread_name_prefix="mobile-match-report")
 _PENDING = set()
 _LAZY_PENDING = set()
@@ -31,7 +31,7 @@ def compatible(content, language):
 
 def section_ready(content, section, tier='paid'):
     state = (content.get('sections') or {}).get(section, {})
-    ready = state.get('status') == 'ready' and section in content and (section not in AI_SECTIONS or scope_satisfies(state, tier))
+    ready = state.get('status') == 'ready' and section in content and (section != 'player_perspectives' or scope_satisfies(state, tier))
     if section == 'team_analysis':
         return ready and (content.get(section) or {}).get('analysis_version') == TEAM_ANALYSIS_VERSION
     return ready
@@ -50,6 +50,13 @@ def public_report(row, language):
         row['report_status'] == 'ready' and readable_snapshot(content, language, 'mobile_post_match', ('data',))
     ):
         return {'favoriteId':str(row['id']), 'status':'processing', 'content':None}
+    if content.get('data'):
+        content = {**content, 'data': with_fixture_coaches(content['data'])}
+        if (content.get('team_analysis') or {}).get('analysis_version') != TEAM_ANALYSIS_VERSION:
+            content['team_analysis'] = {
+                'teams': build_team_analysis(content['data'], language),
+                'analysis_version': TEAM_ANALYSIS_VERSION,
+            }
     # Internal generation evidence is never needed by the client.
     with _MUTEX:
         pending = str(row['id']) in _PENDING
@@ -117,13 +124,13 @@ def run(favorite_id, user_id, language, retry_failed):
                     return
                 try:
                     if section=='data':
-                        report = generate_match_report(int(row['fixture_id']),lang=language,build_narratives=False)
+                        report = load_fixture_report(int(row['fixture_id']), language)
                         from .router import _is_completed_enterprise_fixture
                         if not _is_completed_enterprise_fixture({'state':report.get('state') or {}}):
                             raise ValueError('Match is not completed')
                         value = clean_data(report)
                     elif section=='team_analysis':
-                        value = {'teams':build_team_analysis(content['data'],language,include_locked=tier == 'paid'),'analysis_version':TEAM_ANALYSIS_VERSION}
+                        value = {'teams':build_team_analysis(content['data'],language),'analysis_version':TEAM_ANALYSIS_VERSION}
                     else:
                         data=content['data']
                         value = {'teams':build_player_perspectives(data.get('teams') or [],data.get('lineups') or [],data.get('events') or [], include_locked=tier == 'paid')}
@@ -182,13 +189,13 @@ def run_lazy(favorite_id, user_id, language, requested, pending_key, rewarded=Fa
                     return
                 try:
                     if section == 'data':
-                        report = generate_match_report(int(row['fixture_id']),lang=language,build_narratives=False)
+                        report = load_fixture_report(int(row['fixture_id']), language)
                         from .router import _is_completed_enterprise_fixture
                         if not _is_completed_enterprise_fixture({'state':report.get('state') or {}}):
                             raise ValueError('Match is not completed')
                         content[section] = clean_data(report)
                     elif section == 'team_analysis':
-                        content[section] = {'teams':build_team_analysis(content['data'],language,include_locked=tier == 'paid'),'analysis_version':TEAM_ANALYSIS_VERSION}
+                        content[section] = {'teams':build_team_analysis(content['data'],language),'analysis_version':TEAM_ANALYSIS_VERSION}
                     else:
                         data = content['data']
                         content[section] = {'teams':build_player_perspectives(data.get('teams') or [],data.get('lineups') or [],data.get('events') or [], include_locked=tier == 'paid')}

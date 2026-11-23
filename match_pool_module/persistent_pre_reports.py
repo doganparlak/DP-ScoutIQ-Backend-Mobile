@@ -4,6 +4,8 @@ from report_module.metric_aliases import normalize_report_metrics
 from report_module.narrative_numbers import format_narrative_fields
 from api_module.report_access import user_report_tier, scope_satisfies
 import json
+from hashlib import sha256
+from report_module.snapshot_cache import SnapshotCache
 import threading
 from concurrent.futures import ThreadPoolExecutor
 from datetime import datetime, timezone
@@ -18,6 +20,7 @@ _EXECUTOR = ThreadPoolExecutor(max_workers=3, thread_name_prefix="mobile-match-r
 _PENDING = set()
 _LAZY_PENDING = set()
 _MUTEX = threading.Lock()
+_PUBLIC_SNAPSHOTS = SnapshotCache(ttl=30, limit=24)
 SECTIONS = ('data', 'squad', 'form', 'players', 'momentum', 'team_analysis')
 FOUNDATION_SECTIONS = ('data','squad','form')
 AI_SECTIONS = ('players','momentum','team_analysis')
@@ -47,6 +50,17 @@ def public_report(row, language):
         row['report_status'] == 'ready' and readable_snapshot(content, language, 'mobile_pre_match', FOUNDATION_SECTIONS)
     ):
         return {'favoriteId':str(row['id']), 'status':'processing', 'content':None}
+    digest = sha256(json.dumps(content,ensure_ascii=False,default=str).encode()).digest()
+    content = _PUBLIC_SNAPSHOTS.get_or_load(
+        (str(row['id']), language, digest), lambda: _public_snapshot(content),
+        cache_if=lambda value: bool((value.get('squad') or {}).get('competition_ranking')),
+    )
+    with _MUTEX:
+        pending = str(row['id']) in _PENDING
+    status = 'processing' if pending and row['report_status'] != 'ready' else row['report_status']
+    return {'favoriteId':str(row['id']), 'status':status, 'content':content}
+
+def _public_snapshot(content):
     content = normalize_report_metrics(sanitize_pre_match_standout_metrics(content))
     if content.get('squad') and content.get('data'):
         from standings_module.comparison_ranks import enrich_comparison_ranks
@@ -56,10 +70,15 @@ def public_report(row, language):
         if content.get('players'):
             from standings_module.pre_match_player_ranks import strip_player_ranks
             content = {**content, 'players': strip_player_ranks(content['players'])}
-    with _MUTEX:
-        pending = str(row['id']) in _PENDING
-    status = 'processing' if pending and row['report_status'] != 'ready' else row['report_status']
-    return {'favoriteId':str(row['id']), 'status':status, 'content':content}
+    analysis = content.get('team_analysis')
+    if analysis and (usages := (content.get('squad') or {}).get('teams')):
+        from .pre_match_findings import with_team_findings
+        state = (content.get('sections') or {}).get('team_analysis') or {}
+        content = {**content, 'team_analysis': with_team_findings(
+            analysis, usages, content.get('language', 'en'), scope_satisfies(state, 'paid'),
+        )}
+    return content
+
 
 def save(favorite_id, user_id, content, status):
     content = format_narrative_fields(content, content.get("language", "en"))
@@ -106,7 +125,7 @@ def build_section(section, content, fixture_id, user_id, language, tier=None):
     if section == 'momentum':
         has_data = any(r.get('average_net_pressure') or r.get('goals_for') or r.get('goals_against') for u in usages for r in u.get('momentum') or [])
         return {'teams':usages,'perspective':_pre_match_momentum_perspectives(usages,teams,language,strict=True) if has_data and paid else None}
-    return {'teams':_pre_match_team_analysis(usages,teams,language,strict=True,include_locked=paid), 'compact_strategy':True}
+    return _pre_match_team_analysis(usages,teams,language,strict=True,include_locked=paid)
 
 def schedule(favorite_id, user_id, language, retry_failed=False):
     key = str(favorite_id)

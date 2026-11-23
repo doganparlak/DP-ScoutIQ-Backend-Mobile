@@ -80,11 +80,11 @@ PLAYER STATS
   neutral way. Do not say that stats, documents, physical data, or detailed information are missing.
 
 STRENGTHS
-- Provide exactly 5 bullet points.
+- Provide exactly 2 bullet points.
 - Each bullet must use a short small title before ":" that captures the specific strength.
 
 POTENTIAL WEAKNESSES / CONCERNS
-- Provide exactly 5 bullet points.
+- Provide exactly 2 bullet points.
 - Each bullet must include a risk scenario (e.g., under pressure, vs. compact block, in transition),
   plus a mitigation or coaching cue when possible.
 - Each bullet must use a short small title before ":" that captures the specific concern.

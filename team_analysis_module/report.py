@@ -6,7 +6,6 @@ from report_module.penalty_xg import PENALTY_XG, penalty_xg_sample, penalty_xg_a
 
 from report_module.metric_aliases import normalize_report_metrics
 from report_module.terminology import FOOTBALL_TERMINOLOGY_GUIDANCE
-from report_module.profile_generation import generate_profile_json
 from report_module.profile_evidence import build_evidence_profile, free_profile_snapshot
 
 import logging
@@ -1811,19 +1810,36 @@ def build_team_report_regional_perspective(
     return prefix + perspective[:1].lower() + perspective[1:]
 
 
-def _generate_tactical_profile(team_name, selected_styles, player_sources, side):
-    draft = {"themes": [], "players": []}
-    if player_sources:
-        draft = generate_profile_json([
-            ("system", f"Return valid JSON with an empty themes array and a players array. "
-             f"Select up to two outfield players based on role-specific {side} contribution and copy each playerId. "
-             "For each player return up to four distinct metrics from that player's source_metrics. "
-             "Each metric cell contains exactly one supplied label and its value. Player volumes are per 90. "
-             "Return only metric selections. Omit all analysis and commentary."),
-            ("human", f"Team: {team_name}\n"
-             f"Eligible players: {json.dumps(player_sources, ensure_ascii=False, default=str)}"),
-        ], require_players=True)
-    profile = build_evidence_profile({"players": draft.get("players")}, {}, player_sources)
+# Pick one observed metric per football action family. A rate and its count are
+# alternative evidence for that family, rather than two independent signals.
+_ATTACK_METRICS = (
+    ("Goals", "Expected Goals", "Expected Goals On Target", "Shots On Target", "Shots Total", "Goal Conversion (%)"),
+    ("Assists", "Expected Assists", "Big Chances Created", "Chances Created", "Key Passes"),
+    ("Passes In Final Third", "Through Balls Won", "Through Balls", "Accurate Crosses", "Long Balls Won", "Accurate Passes", "Passes"),
+    ("Successful Dribbles", "Dribble Accuracy (%)", "Dribble Attempts", "Fouls Drawn", "Touches"),
+)
+_DEFENSE_METRICS = (
+    ("Tackles Won", "Tackles", "Tackles Won (%)"),
+    ("Interceptions", "Ball Recovery", "Ball Recoveries"),
+    ("Aerials Won", "Duels Won", "Successful Headers", "Aerials Won (%)", "Duels Won (%)", "Total Duels", "Aerials"),
+    ("Clearances", "Blocked Shots", "Clearance Offline", "Last Man Tackle"),
+)
+
+
+def _build_tactical_profile(selected_styles, player_sources, side):
+    families = _ATTACK_METRICS if side == "attacking" else _DEFENSE_METRICS
+    players = []
+    for player in player_sources:
+        if str(player.get("position") or "").casefold() in {"goalkeeper", "kaleci", "gk"}:
+            continue
+        source = player["source_metrics"]
+        selected = [metric for family in families
+                    if (metric := next((source[name] for name in family if name in source), None))]
+        if selected:
+            players.append({"playerId": player["playerId"], "metrics": selected})
+        if len(players) == 2:
+            break
+    profile = build_evidence_profile({"players": players}, {}, player_sources)
     profile["themes"] = bind_selected_styles({"themes": []}, selected_styles)
     return free_profile_snapshot(profile)
 
@@ -1836,7 +1852,6 @@ def build_team_report_attack_profile(
     single_match: bool = False,
 ) -> dict[str, Any]:
     attacking_groups = ("contribution_impact", "shooting", "passing", "expected")
-    team_name = next((str(team.get("name") or "") for report in reports for team in report.get("teams") or [] if int(team.get("id") or 0) == int(team_id)), "Takım" if lang == "tr" else "The team")
     selected_styles = select_team_styles(reports, team_id, lang, side="attack", single_match=single_match)
     reports = _team_player_metric_reports(reports)
     players: dict[str, dict[str, Any]] = {}
@@ -1928,7 +1943,7 @@ def build_team_report_attack_profile(
         }
         for player in shortlist
     ]
-    return _generate_tactical_profile(team_name, selected_styles, player_sources, "attacking")
+    return _build_tactical_profile(selected_styles, player_sources, "attacking")
 
 
 def build_team_report_defense_profile(
@@ -1945,7 +1960,6 @@ def build_team_report_defense_profile(
         "shots off target", "big chances missed", "missed big chances",
         "inaccurate shot", "goal conversion", "chance created",
     )
-    team_name = next((str(team.get("name") or "") for report in reports for team in report.get("teams") or [] if int(team.get("id") or 0) == int(team_id)), "Takım" if lang == "tr" else "The team")
 
     def allowed(name: Any) -> bool:
         return bool(name) and not any(word in str(name).casefold() for word in excluded)
@@ -2021,7 +2035,7 @@ def build_team_report_defense_profile(
         }
         for player in shortlist
     ]
-    return _generate_tactical_profile(team_name, selected_styles, player_sources, "defensive")
+    return _build_tactical_profile(selected_styles, player_sources, "defensive")
 
 
 def build_team_report_score_flow_profile(

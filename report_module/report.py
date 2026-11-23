@@ -75,11 +75,11 @@ section_report_chain = _section_prompt | CHAT_LLM | StrOutputParser()
 LAZY_NARRATIVE_SECTIONS: Dict[str, Tuple[str, str]] = {
     "strengths": (
         "STRENGTHS",
-        "Provide exactly 5 distinct strengths. Write about 30 words per explanation, excluding the title, in exactly two complete sentences. State the strength first, then explain why it matters tactically in a relevant match situation.",
+        "Provide exactly {count} distinct strengths. Write about 30 words per explanation, excluding the title, in exactly two complete sentences. State the strength first, then explain why it matters tactically in a relevant match situation.",
     ),
     "weaknesses": (
         "POTENTIAL WEAKNESSES / CONCERNS",
-        "Provide exactly 5 distinct, evidence-led concerns or development limits. Write about 30 words per explanation, excluding the title, in exactly two complete sentences. State the concern and the match situation where it matters first, then give a practical mitigation or coaching cue. Never output a no-concern or no-evidence placeholder.",
+        "Provide exactly {count} distinct, evidence-led concerns or development limits. Write about 30 words per explanation, excluding the title, in exactly two complete sentences. State the concern and the match situation where it matters first, then give a practical mitigation or coaching cue. Never output a no-concern or no-evidence placeholder.",
     ),
     "role_usage": (
         "CONCLUSION",
@@ -641,6 +641,22 @@ def complete_report_foundation(foundation: Dict[str, Any], lang: str, access_tie
     return {"content": report_text, "content_json": with_phase_distributions(content_json)}
 
 
+def _free_role_bullets(text: str, titles: tuple[str, ...]) -> dict[int, str]:
+    result = {}
+    by_title = {titles[index].casefold(): index for index in (0, 3)}
+    for line in text.splitlines():
+        match = re.match(r"^\s*-\s+([^:：]+)[:：]\s*(.+)$", line)
+        if match and (index := by_title.get(match[1].strip().casefold())) is not None and match[2].strip():
+            result[index] = f"- {titles[index]}: {match[2].strip()}"
+    return result if len(result) == 2 else {}
+
+
+def _complete_full_role_section(content, section, lang, access_tier):
+    sections = dict(content.get("sections") or {})
+    sections[section] = {**sections[section], "access_tier": access_tier}
+    return complete_report_section({**content, "sections": sections}, section, lang, access_tier)
+
+
 def complete_report_section(foundation: Dict[str, Any], section: str, lang: str, access_tier: str = 'paid') -> Dict[str, Any]:
     """Generate one optional narrative section and merge it into a persisted report."""
     if section not in LAZY_NARRATIVE_SECTIONS:
@@ -651,30 +667,36 @@ def complete_report_section(foundation: Dict[str, Any], section: str, lang: str,
     heading, rules = LAZY_NARRATIVE_SECTIONS[section]
     texts = dict(content_json.get("narrative_sections") or {})
     retained_bullets = []
+    retained_role_bullets = {}
     if section == 'role_usage':
-        titles = ['Role & System', 'In Possession']
-        if access_tier == 'paid':
-            titles.insert(1, 'Development Focus')
-            titles.append('Out of Possession')
+        title_indices = (0, 1, 3, 4) if access_tier == 'paid' else (0, 3)
+        local_titles = _MOBILE_CONCLUSION_TITLES.get(lang, _MOBILE_CONCLUSION_TITLES['en'])
+        english_titles = _MOBILE_CONCLUSION_TITLES['en']
+        old_state = (content_json.get("sections") or {}).get(section) or {}
+        if access_tier == 'paid' and old_state.get("access_tier") == 'free':
+            retained_role_bullets = _free_role_bullets(texts.get(section, ""), local_titles)
+        requested = tuple(index for index in title_indices if index not in retained_role_bullets)
+        titles = [local_titles[index] for index in requested]
         expected_bullets = len(titles)
         rules = (f"Provide exactly {expected_bullets} bullets in this order: " + ', '.join(titles)
-                 + '. Use the corresponding Turkish titles when lang is tr. '
+                 + '. Copy the titles exactly, followed by a colon and the explanation. '
                  + 'Write about 30 words per explanation, excluding the title, in two complete sentences. '
                  + 'Give a concrete tactical or coaching recommendation first, then explain how to apply it on the pitch. '
                  + 'Use the supplied metrics to inform the advice. Omit numeric player statistics and metric lists from both sentences. Tactical notation such as formations and role numbers is allowed. '
                  + 'Write football formations with digits and hyphens, for example 4-4-2 or 4-2-3-1. Apply this in both languages and never spell out formation numbers. '
                  + 'For In Possession, describe use when the player’s team has the ball. '
                  + 'For Out of Possession, describe defensive use when the opponent has the ball. '
-                 + 'Do not generate Usage Recommendation or any other section.'
-                 + (' Do not generate Development Focus or Out of Possession.' if access_tier == 'free' else ''))
+                 + 'Do not generate Usage Recommendation or any other section.')
+        if retained_role_bullets:
+            rules += ' Write only the newly unlocked topics. Keep advice compatible with the existing points: ' + ' '.join(retained_role_bullets.values())
     else:
         if access_tier == 'paid':
             retained_bullets = [
                 line.strip() for line in (texts.get(section) or "").splitlines()
                 if line.strip().startswith("- ")
             ][:1]
-        expected_bullets = 1 if access_tier == 'free' else 3 - len(retained_bullets)
-        rules = rules.replace('exactly 5', f'exactly {expected_bullets}')
+        expected_bullets = 1 if access_tier == 'free' else 2 - len(retained_bullets)
+        rules = rules.format(count=expected_bullets)
         if retained_bullets:
             rules += f" Write only new topics distinct from this existing point: {retained_bullets[0]}"
     raw_section_text = (section_report_chain.invoke({
@@ -684,6 +706,8 @@ def complete_report_section(foundation: Dict[str, Any], section: str, lang: str,
         "rules": rules,
     }) or "").strip()
     bullet_lines = [line.strip() for line in raw_section_text.splitlines() if line.strip().startswith("-")]
+    if retained_role_bullets and len(bullet_lines) != expected_bullets:
+        return _complete_full_role_section(content_json, section, lang, access_tier)
     if len(bullet_lines) != expected_bullets:
         raise ValueError(f"Narrative section must contain exactly {expected_bullets} bullets: {section}")
     if section == "weaknesses":
@@ -700,6 +724,18 @@ def complete_report_section(foundation: Dict[str, Any], section: str, lang: str,
         )
         if any(phrase in normalized_output for phrase in placeholder_phrases):
             raise ValueError("Weakness section contains no-concern placeholder copy")
+    if retained_role_bullets:
+        new_bullets = {}
+        for index, line in zip(requested, bullet_lines):
+            match = re.match(r"^\s*-\s+([^:：]+)[:：]\s*(.+)$", line)
+            title, body = match.groups() if match else ("", "")
+            if not body.strip() or title.strip(" *_").casefold() not in {
+                local_titles[index].casefold(), english_titles[index].casefold(),
+            }:
+                return _complete_full_role_section(content_json, section, lang, access_tier)
+            new_bullets[index] = f"- {local_titles[index]}: {body.strip()}"
+        merged = retained_role_bullets | new_bullets
+        bullet_lines = [merged[index] for index in title_indices]
     section_text = f"{heading}\n" + "\n".join(retained_bullets + bullet_lines)
     section_text = normalize_mobile_report_format(section_text, lang)
     texts[section] = section_text

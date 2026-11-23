@@ -169,6 +169,27 @@ def search_team_pool(
     ]
 
 
+def fixture_coaches(coaches):
+    """Map recorded fixture coaches to their participant IDs."""
+    return {
+        str(participant): coach
+        for coach in coaches or []
+        if (participant := (coach.get('meta') or {}).get('participant_id')) is not None
+    }
+
+
+def with_fixture_coaches(report):
+    coaches = fixture_coaches(report.get('coaches'))
+    if not coaches:
+        return report
+    teams = []
+    for team in report.get('teams') or []:
+        coach = coaches.get(str(team.get('id'))) or {}
+        name = coach.get('display_name') or coach.get('name')
+        teams.append({**team, 'coach_name': name, 'coach_image_url': coach.get('image_path')} if name else team)
+    return {**report, 'teams': teams}
+
+
 def _get_team_details(team_id: int) -> dict[str, Any]:
     now = time.monotonic()
     with _TEAM_DETAILS_CACHE_LOCK:
